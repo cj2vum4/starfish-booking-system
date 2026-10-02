@@ -11,6 +11,9 @@ declare
   h_part text := encode(sha256(convert_to('qa-part','UTF8')),'hex');
   h_dead text := encode(sha256(convert_to('qa-dead','UTF8')),'hex');
 begin
+  -- Isolation from real data: the busy mirror is cleared and dates skip days with a live
+  -- session. Everything here is rolled back at the end.
+  delete from public.calendar_busy;
   insert into public.users(line_user_id,display_name) values ('U0000000000000000000000000000c001','QA 主揪') returning id into org;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000c002') returning id into u2;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000c003') returning id into u3;
@@ -25,6 +28,7 @@ begin
   -- Saturday 09:00 and 14:00 (Taipei) next week are inside the store's opening window.
   sat := (now() at time zone 'Asia/Taipei')::date+1;
   sat := sat+((6-extract(dow from sat)::int+7)%7);
+  while exists(select 1 from public.time_slots where status<>'released' and (starts_at at time zone 'Asia/Taipei')::date in (sat)) loop sat:=sat+7; end loop;
   slot1 := (sat+time '09:00') at time zone 'Asia/Taipei';
   slot2 := (sat+time '14:00') at time zone 'Asia/Taipei';
 

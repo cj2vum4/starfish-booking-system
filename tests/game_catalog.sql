@@ -10,11 +10,15 @@ declare
     {"slug":"qa-gaoqian","title":"QA 搞錢","min_players":7,"max_players":10,"duration_minutes":300,"genres":["歡樂"],"difficulty":"1"},
     {"slug":"qa-long","title":"QA 長本","min_players":6,"max_players":6,"duration_minutes":360,"genres":["推理"],"difficulty":"4"}]';
 begin
+  -- Isolation from real data: the busy mirror is cleared and dates skip days with a live
+  -- session. Everything here is rolled back at the end.
+  delete from public.calendar_busy;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000a0ad') returning id into adm;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000a0b1') returning id into org;
   insert into public.admin_users(user_id) values (adm);
   sat := (now() at time zone 'Asia/Taipei')::date+1; sat := sat+((6-extract(dow from sat)::int+7)%7);
   mon := (now() at time zone 'Asia/Taipei')::date+1; mon := mon+((1-extract(dow from mon)::int+7)%7);
+  while exists(select 1 from public.time_slots where status<>'released' and (starts_at at time zone 'Asia/Taipei')::date in (sat,mon)) loop sat:=sat+7; mon:=mon+7; end loop;
 
   -- 只有店家能同步；格式錯誤的資料整批拒絕。
   begin

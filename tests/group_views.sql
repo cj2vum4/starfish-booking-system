@@ -7,12 +7,16 @@ declare
   h_join text := encode(sha256(convert_to('qa-view-join','UTF8')),'hex');
   h_seat text := encode(sha256(convert_to('qa-view-seat','UTF8')),'hex');
 begin
+  -- Isolation from real data: the busy mirror is cleared and dates skip days with a live
+  -- session. Everything here is rolled back at the end.
+  delete from public.calendar_busy;
   insert into public.users(line_user_id,display_name) values ('U0000000000000000000000000000f001','主揪小明') returning id into org;
   insert into public.users(line_user_id,display_name) values ('U0000000000000000000000000000f002','小華') returning id into u2;
   insert into public.users(line_user_id,display_name) values ('U0000000000000000000000000000f003','路人') returning id into stranger;
   insert into public.games(slug,title,min_players,max_players,price_cents,active)
     values ('qa-view-game','QA 劇本',2,6,60000,true) returning id into g;
   sat := (now() at time zone 'Asia/Taipei')::date+1; sat := sat+((6-extract(dow from sat)::int+7)%7);
+  while exists(select 1 from public.time_slots where status<>'released' and (starts_at at time zone 'Asia/Taipei')::date in (sat)) loop sat:=sat+7; end loop;
   t1 := (sat+time '14:00') at time zone 'Asia/Taipei';
 
   r := public.create_group(org,gen_random_uuid(),t1,6,g,'{推理,還原}','第一次玩','private');

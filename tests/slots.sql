@@ -8,6 +8,9 @@ declare
   sat date; mon date; wed date;
   sat_from timestamptz; sat_to timestamptz; mon_from timestamptz; mon_to timestamptz;
 begin
+  -- Isolation from real data: the busy mirror is cleared and dates skip days with a live
+  -- session. Everything here is rolled back at the end.
+  delete from public.calendar_busy;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000e0ad') returning id into adm;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000e001') returning id into org;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000e002') returning id into u2;
@@ -19,6 +22,7 @@ begin
   sat := d0+((6-extract(dow from d0)::int+7)%7);
   mon := d0+((1-extract(dow from d0)::int+7)%7);
   wed := d0+((3-extract(dow from d0)::int+7)%7);
+  while exists(select 1 from public.time_slots where status<>'released' and (starts_at at time zone 'Asia/Taipei')::date in (sat,mon,wed)) loop sat:=sat+7; mon:=mon+7; wed:=wed+7; end loop;
   sat_from := sat::timestamp at time zone 'Asia/Taipei'; sat_to := sat_from+interval '1 day';
   mon_from := mon::timestamp at time zone 'Asia/Taipei'; mon_to := mon_from+interval '1 day';
 
