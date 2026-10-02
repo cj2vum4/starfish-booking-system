@@ -56,7 +56,7 @@
 - 雲端 tests/booking_rpc.sql PASS；套用後核對 RPC 12 個、users_total=1、active_users=1、測試殘留 0。
 - 突變測試：移除售完檢查、允許 token 重用、略過私人團檢查、允許任何人取消，均被測試抓到。
 
-## P3 LIFF 登入（程式完成，尚未部署）
+## P3 LIFF 登入（資料庫已上雲；API 與 LIFF 頁尚未部署）
 
 - 202610020004_app_sessions.sql：login_line_user、resolve_session、logout_session；session 只存 SHA-256，12 小時到期。
 - supabase/functions/api：POST /auth/line 向 LINE 驗證 ID token（iss、aud、exp、sub），GET /me、POST /auth/logout。
@@ -64,7 +64,7 @@
 - 公開 repo：github.com/cj2vum4/starfish-booking-system（乾淨歷史，不含 docs/evidence 與 docs/backups；
   完整本機歷史保留在 full-history-local 分支）。
 
-## 可預約時段（本機驗證完成，尚未套用雲端）
+## 可預約時段（已套用雲端並驗收）
 
 - 202610020005_time_slots.sql：slot_rules 為每週開放區間（Asia/Taipei）：週一二四五 19–24、週六 9–24、週日 13–24。
 - 每場 240 分鐘，整點開場且須於區間內結束（平日 19:00／20:00；週六 09:00–20:00；週日 13:00–20:00）。
@@ -72,6 +72,8 @@
 - Google 日曆有活動的時間不顯示有空：API 在列出時段與開團前即時呼叫 Google free/busy，
   查不到或出錯一律回 503，不提供也不保留任何時段。只存忙碌起訖，不存行程內容。
 - 店家 admin_create_event 可開在區間外，但仍不可撞到日曆或其他場次。
+- 0004、0005 已透過 SQL Editor 套用（內容取自 GitHub commit 3ed9eb4，SHA-256 與本機一致）；
+  雲端 tests/sessions.sql、tests/slots.sql、tests/booking_rpc.sql 均 PASS；核對 20 張表、開放區間 6 筆、users=1、殘留 0。
 - 測試以 UTC session 執行（與 Supabase 相同）；npm test 24 passed；突變測試均被抓到。
 
 ## 未完成，不能宣稱可供營運

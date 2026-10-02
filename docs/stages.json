@@ -14,16 +14,16 @@
       "evidence": "17 張表全開 RLS；手冊 P2 驗收（建立 LINE user、未綁 LINE player、綁定、6 人團、group 轉 event、超額回滾、匿名無法讀取）在雲端 SQL 測試 PASS。"
     },
     "P3": {
-      "status": "未開始",
-      "evidence": "需在 Provider 劇本殺玩家通知（2005594335）建立 LINE Login Channel 與 LIFF。"
+      "status": "進行中",
+      "evidence": "session RPC 已上雲並 PASS；api Edge Function 與 LIFF 頁程式與測試完成，待建立 LINE Login Channel／LIFF App 後部署並手機實測。"
     },
     "P4": {
       "status": "進行中",
       "evidence": "開團、邀請連結、預留席位與認領、第 7 人阻擋、token 不可重用等 RPC 已上雲並 PASS；待 P3 登入、LIFF 畫面與 LINE 分享實機測試。"
     },
     "P5": {
-      "status": "未開始",
-      "evidence": "依手冊驗收。"
+      "status": "進行中",
+      "evidence": "每週開放區間、同一時間只能一場、Google 日曆忙碌即不開放，已上雲並 PASS；待 Google 授權與缺人場次頁面。"
     },
     "P6": {
       "status": "進行中",
