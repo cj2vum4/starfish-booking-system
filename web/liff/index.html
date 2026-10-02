@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>海星劇本殺｜登入</title>
+<style>
+  :root { --bg:#f7f5f2; --fg:#1f1d1a; --muted:#6b665f; --card:#fff; --accent:#06c755; --line:#e4e0da; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151412; --fg:#f1eee9; --muted:#a7a199; --card:#211f1c; --line:#35322d; } }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; padding:16px;
+    background:var(--bg); color:var(--fg); font:16px/1.6 system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif; }
+  main { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:28px 24px; }
+  h1 { margin:0 0 4px; font-size:20px; }
+  p { margin:0; color:var(--muted); }
+  #status { margin-top:20px; }
+  button { margin-top:20px; width:100%; padding:12px; border:0; border-radius:10px; font:inherit; font-weight:600;
+    background:var(--accent); color:#fff; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  [hidden] { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>海星劇本殺</h1>
+  <p>預約與揪團</p>
+  <div id="status" role="status" aria-live="polite">登入中…</div>
+  <button id="retry" hidden>重新登入</button>
+  <button id="logout" class="secondary" hidden>登出</button>
+</main>
+<script src="https://static.line-scdn.net/liff/edge/2/sdk.js" charset="utf-8"></script>
+<script src="config.js"></script>
+<script>
+  // Session token lives only in this tab; LINE tokens are sent once to the server and never stored.
+  const { LIFF_ID, API_BASE } = window.STARFISH_CONFIG;
+  const KEY = 'starfish.session';
+  const $ = id => document.getElementById(id);
+  const show = (text, { retry = false, logout = false } = {}) => {
+    $('status').textContent = text; $('retry').hidden = !retry; $('logout').hidden = !logout;
+  };
+  const read = () => { try { return sessionStorage.getItem(KEY); } catch { return null; } };
+  const write = v => { try { v ? sessionStorage.setItem(KEY, v) : sessionStorage.removeItem(KEY); } catch {} };
+
+  async function api(path, { method = 'GET', body, token = read() } = {}) {
+    const res = await fetch(API_BASE + path, { method,
+      headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+      body: body ? JSON.stringify(body) : undefined });
+    return { status: res.status, data: await res.json().catch(() => ({})) };
+  }
+
+  async function signIn() {
+    const idToken = liff.getIDToken();
+    if (!idToken) { liff.login({ redirectUri: location.href }); return; }
+    const { status, data } = await api('/auth/line', { method: 'POST', body: { idToken }, token: null });
+    if (status === 401) { liff.logout(); liff.login({ redirectUri: location.href }); return; } // stale ID token
+    if (status !== 200) { show('目前無法登入，請稍後再試。', { retry: true }); return; }
+    write(data.sessionToken);
+    greet(data.user);
+  }
+  const greet = user => show(`你好，${user.displayName || 'LINE 玩家'}！已登入。`, { logout: true });
+
+  async function start() {
+    try {
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+      if (read()) {
+        const { status, data } = await api('/me');
+        if (status === 200) { greet(data.user); return; }
+        write(null);
+      }
+      await signIn();
+    } catch { show('LINE 初始化失敗，請從 LINE 重新開啟。', { retry: true }); }
+  }
+  $('retry').onclick = () => { show('登入中…'); start(); };
+  $('logout').onclick = async () => {
+    await api('/auth/logout', { method: 'POST' }).catch(() => {});
+    write(null); if (liff.isLoggedIn()) liff.logout();
+    show('已登出。', { retry: true });
+  };
+  start();
+</script>
+</body>
+</html>

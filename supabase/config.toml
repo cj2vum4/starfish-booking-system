@@ -1,0 +1,11 @@
+project_id = "starfish-booking-system"
+
+# LINE authenticates with HMAC-SHA256, not a Supabase user JWT.
+# The handler rejects unsigned requests before processing any user data.
+[functions.line-webhook]
+verify_jwt = false
+
+# The API authenticates players with LINE ID tokens and its own server sessions,
+# not Supabase Auth JWTs, so the gateway JWT check is disabled here too.
+[functions.api]
+verify_jwt = false

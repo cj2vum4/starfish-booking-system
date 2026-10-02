@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+supabase/.temp/
+supabase/.branches/
+coverage/
+*.log
+
+# Kept locally only: screenshots show account details; the manual is internal.
+docs/evidence/
+docs/backups/

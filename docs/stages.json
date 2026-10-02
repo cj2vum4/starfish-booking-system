@@ -1,0 +1,57 @@
+{
+  "updated": "2026-10-02",
+  "stages": {
+    "P0": {
+      "status": "進行中",
+      "evidence": "LINE OA、Messaging API、Supabase 及本機 Git 已建立；LINE Login、LIFF、獨立 GitHub remote 與環境隔離待完成。"
+    },
+    "P1": {
+      "status": "已完成",
+      "evidence": "9 項程式測試、雲端交易與權限測試通過；LINE Verify 成功；手機封鎖／解除封鎖各收到 1 事件，users 僅 1 筆且 active。"
+    },
+    "P2": {
+      "status": "已完成",
+      "evidence": "17 張表全開 RLS；手冊 P2 驗收（建立 LINE user、未綁 LINE player、綁定、6 人團、group 轉 event、超額回滾、匿名無法讀取）在雲端 SQL 測試 PASS。"
+    },
+    "P3": {
+      "status": "未開始",
+      "evidence": "需在 Provider 劇本殺玩家通知（2005594335）建立 LINE Login Channel 與 LIFF。"
+    },
+    "P4": {
+      "status": "進行中",
+      "evidence": "開團、邀請連結、預留席位與認領、第 7 人阻擋、token 不可重用等 RPC 已上雲並 PASS；待 P3 登入、LIFF 畫面與 LINE 分享實機測試。"
+    },
+    "P5": {
+      "status": "未開始",
+      "evidence": "依手冊驗收。"
+    },
+    "P6": {
+      "status": "進行中",
+      "evidence": "多人代報、部分取消、同場不重複、售完整筆回滾 RPC 已上雲並 PASS；20 個 concurrent request 搶最後 1 席尚待多連線實測。"
+    },
+    "P7": {
+      "status": "未開始",
+      "evidence": "尚未發行 LINE Channel access token；須由持有人親自輸入。"
+    },
+    "P8": {
+      "status": "未開始",
+      "evidence": "包含現場、匯款與 LINE Pay；正式商戶帳號與對帳需營運方配合。"
+    },
+    "P9": {
+      "status": "未開始",
+      "evidence": "需盤點並匯入既有 53 個劇本，完成履歷與網站串接。"
+    },
+    "P10": {
+      "status": "未開始",
+      "evidence": "含管理後台與 Google Sheets 匯出／同步。"
+    },
+    "P11": {
+      "status": "未開始",
+      "evidence": "局部 webhook 安全測試已通過，完整系統安全與壓力測試尚未完成。"
+    },
+    "P12": {
+      "status": "未開始",
+      "evidence": "需 20–50 位真人封測、10 團、5 場及營運 Go/No-Go 驗收；不可用合成測試替代。"
+    }
+  }
+}
