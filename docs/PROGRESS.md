@@ -66,15 +66,16 @@
 
 ## 可預約時段（本機驗證完成，尚未套用雲端）
 
-- 202610020005_time_slots.sql：slot_rules（每週規則，Asia/Taipei，預設 240 分鐘）、time_slots、calendar_busy。
-- 同一時段只能一場：time_slots 以 exclusion constraint 禁止任何重疊的有效時段。
-- Google 日曆忙碌時間（只存起訖，不存行程內容）重疊的時段自動不開放。
-- create_group 改為選 slot_id，開團即佔住時段；解散釋出；成場轉 booked；admin_create_event 開缺人場次。
-- tests/slots.sql；npm test 20 passed；突變測試（忽略忙碌、允許重疊、取消不釋出、時區錯誤）均被抓到。
+- 202610020005_time_slots.sql：slot_rules 為每週開放區間（Asia/Taipei）：週一二四五 19–24、週六 9–24、週日 13–24。
+- 每場 240 分鐘，整點開場且須於區間內結束（平日 19:00／20:00；週六 09:00–20:00；週日 13:00–20:00）。
+- 同一時間只能一場：time_slots 以 exclusion constraint 禁止重疊；開團即佔住，解散釋出，成場轉 booked。
+- Google 日曆有活動的時間不顯示有空：API 在列出時段與開團前即時呼叫 Google free/busy，
+  查不到或出錯一律回 503，不提供也不保留任何時段。只存忙碌起訖，不存行程內容。
+- 店家 admin_create_event 可開在區間外，但仍不可撞到日曆或其他場次。
+- 測試以 UTC session 執行（與 Supabase 相同）；npm test 24 passed；突變測試均被抓到。
 
 ## 未完成，不能宣稱可供營運
 
-- 店家實際每週時段規則（週六等）待確認後寫入 slot_rules。
 - Google 日曆 free/busy 同步（需店家授權）。
 
 - 20 個 concurrent request 搶最後 1 席的多連線實測（P6）。

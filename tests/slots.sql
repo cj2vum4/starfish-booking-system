@@ -3,9 +3,10 @@ begin;
 set local role service_role;
 do $$
 declare
-  adm uuid; org uuid; u2 uuid; g uuid; r jsonb; msg text; n integer;
-  d0 date := (now() at time zone 'Asia/Taipei')::date + 1;
-  sun date; s_sun14 uuid; s_sun18 uuid; s_busy uuid; s_next uuid; ev uuid;
+  adm uuid; org uuid; u2 uuid; g uuid; r jsonb; msg text; gid uuid; raw_group uuid;
+  d0 date := (now() at time zone 'Asia/Taipei')::date+1;
+  sat date; mon date; wed date;
+  sat_from timestamptz; sat_to timestamptz; mon_from timestamptz; mon_to timestamptz;
 begin
   insert into public.users(line_user_id) values ('U0000000000000000000000000000e0ad') returning id into adm;
   insert into public.users(line_user_id) values ('U0000000000000000000000000000e001') returning id into org;
@@ -14,103 +15,123 @@ begin
   insert into public.games(slug,title,min_players,max_players,price_cents)
     values ('qa-slot-game','QA 劇本',2,6,60000) returning id into g;
 
-  -- 每週規則：週日 14:00、18:00；週一、四、五 19:00；每場 240 分鐘。
-  insert into public.slot_rules(weekday,start_time) values (0,'14:00'),(0,'18:00'),(1,'19:00'),(4,'19:00'),(5,'19:00');
+  -- Upcoming Saturday, Monday and Wednesday (Taipei dates, always in the future).
+  sat := d0+((6-extract(dow from d0)::int+7)%7);
+  mon := d0+((1-extract(dow from d0)::int+7)%7);
+  wed := d0+((3-extract(dow from d0)::int+7)%7);
+  sat_from := sat::timestamp at time zone 'Asia/Taipei'; sat_to := sat_from+interval '1 day';
+  mon_from := mon::timestamp at time zone 'Asia/Taipei'; mon_to := mon_from+interval '1 day';
+
+  -- 開放區間：週一二四五 19–24、週六 9–24、週日 13–24；每場 4 小時，整點開場且 24:00 前結束。
+  if (select count(*) from public.slot_rules where active)<>6 or exists(select 1 from public.slot_rules where weekday=3)
+    then raise exception 'store opening rules not seeded'; end if;
+  r := public.list_available_starts(sat_from,sat_to);
+  if jsonb_array_length(r)<>12
+    or ((r->0->>'starts_at')::timestamptz at time zone 'Asia/Taipei')::time<>'09:00'
+    or ((r->11->>'starts_at')::timestamptz at time zone 'Asia/Taipei')::time<>'20:00'
+    or (r->11->>'ends_at')::timestamptz<>sat_to
+    then raise exception 'Saturday starts wrong: %', r; end if;
+  if jsonb_array_length(public.list_available_starts(mon_from,mon_to))<>2 then raise exception 'Monday should offer 19:00 and 20:00'; end if;
+  if jsonb_array_length(public.list_available_starts(wed::timestamp at time zone 'Asia/Taipei',
+      (wed+1)::timestamp at time zone 'Asia/Taipei'))<>0 then raise exception 'Wednesday must be closed'; end if;
+
+  -- Outside the window, past midnight, off the hour or on a closed day is never bookable.
   begin
-    perform public.admin_generate_slots(org,d0,d0+13);
+    perform public.create_group(org,gen_random_uuid(),(sat+time '21:00') at time zone 'Asia/Taipei',4);
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'NOT_ADMIN' then raise exception 'non-admin generate: %', msg; end if;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'past-midnight session: %', msg; end if;
   end;
-  r := public.admin_generate_slots(adm,d0,d0+13);
-  -- Two full weeks: 2 Sundays x 2 + 2 x (Mon, Thu, Fri) = 10 slots.
-  if (r->>'created')::int<>10 then raise exception 'expected 10 slots, got %', r->>'created'; end if;
-  r := public.admin_generate_slots(adm,d0,d0+13);
-  if (r->>'created')::int<>0 then raise exception 'regenerate created duplicates'; end if;
-
-  -- Times are Asia/Taipei wall-clock and last 4 hours.
-  sun := d0 + ((7-extract(dow from d0)::int)%7);
-  select id into s_sun14 from public.time_slots where starts_at=(sun+time '14:00') at time zone 'Asia/Taipei';
-  select id into s_sun18 from public.time_slots where starts_at=(sun+time '18:00') at time zone 'Asia/Taipei';
-  if s_sun14 is null or s_sun18 is null then raise exception 'Sunday slots missing or wrong timezone'; end if;
-  if (select ends_at-starts_at from public.time_slots where id=s_sun14)<>interval '240 minutes'
-    then raise exception 'wrong slot length'; end if;
-  if exists(select 1 from public.time_slots where extract(dow from starts_at at time zone 'Asia/Taipei') in (2,3,6))
-    then raise exception 'slot created on a closed weekday'; end if;
-
-  -- 同一時段只能一場：重疊的時段無法建立。
   begin
-    insert into public.time_slots(starts_at,ends_at)
-      values ((sun+time '16:00') at time zone 'Asia/Taipei',(sun+time '20:00') at time zone 'Asia/Taipei');
+    perform public.create_group(org,gen_random_uuid(),(sat+time '09:30') at time zone 'Asia/Taipei',4);
     raise exception 'MISSING';
-  exception when exclusion_violation then null;
+  exception when others then get stacked diagnostics msg = message_text;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'off-hour start: %', msg; end if;
+  end;
+  begin
+    perform public.create_group(org,gen_random_uuid(),(wed+time '19:00') at time zone 'Asia/Taipei',4);
+    raise exception 'MISSING';
+  exception when others then get stacked diagnostics msg = message_text;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'closed weekday: %', msg; end if;
   end;
 
-  -- Google 日曆的私人行程（例如家庭聚餐）讓重疊時段自動不開放。
-  select id into s_busy from public.time_slots where id<>s_sun14 and id<>s_sun18 order by starts_at limit 1;
+  -- Google 日曆有活動（例如週一 18:30–19:30 家庭聚餐）就不顯示有空。
   perform public.sync_calendar_busy(now(),now()+interval '30 days',jsonb_build_array(jsonb_build_object(
-    'start',(select starts_at+interval '1 hour' from public.time_slots where id=s_busy),
-    'end',(select starts_at+interval '3 hours' from public.time_slots where id=s_busy))));
-  r := public.list_available_slots(now(),now()+interval '30 days');
-  if jsonb_array_length(r)<>9 or r::text like '%'||s_busy||'%' then raise exception 'busy slot still listed'; end if;
+    'start',(mon+time '18:30') at time zone 'Asia/Taipei','end',(mon+time '19:30') at time zone 'Asia/Taipei')));
+  r := public.list_available_starts(mon_from,mon_to);
+  if jsonb_array_length(r)<>1 or ((r->0->>'starts_at')::timestamptz at time zone 'Asia/Taipei')::time<>'20:00'
+    then raise exception 'busy period not respected: %', r; end if;
+  perform public.sync_calendar_busy(now(),now()+interval '30 days',jsonb_build_array(
+    jsonb_build_object('start',(mon+time '18:30') at time zone 'Asia/Taipei','end',(mon+time '19:30') at time zone 'Asia/Taipei'),
+    jsonb_build_object('start',(mon+time '22:00') at time zone 'Asia/Taipei','end',(mon+time '23:00') at time zone 'Asia/Taipei')));
+  if jsonb_array_length(public.list_available_starts(mon_from,mon_to))<>0 then raise exception 'Monday should be fully busy'; end if;
   begin
-    perform public.create_group(org,gen_random_uuid(),s_busy,4);
+    perform public.create_group(org,gen_random_uuid(),(mon+time '20:00') at time zone 'Asia/Taipei',4);
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'SLOT_UNAVAILABLE' then raise exception 'busy slot bookable: %', msg; end if;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'busy time bookable: %', msg; end if;
   end;
-  -- Re-syncing the window replaces old busy periods: the dinner was cancelled.
+  -- Re-syncing replaces the window: the dinner was removed from the calendar.
   perform public.sync_calendar_busy(now(),now()+interval '30 days','[]');
-  if jsonb_array_length(public.list_available_slots(now(),now()+interval '30 days'))<>10
-    then raise exception 'busy sync did not replace window'; end if;
+  if jsonb_array_length(public.list_available_starts(mon_from,mon_to))<>2 then raise exception 'busy sync did not replace window'; end if;
+  -- Syncing a narrow window keeps the parts of longer busy periods outside it.
+  perform public.sync_calendar_busy(sat_from,sat_to,jsonb_build_array(jsonb_build_object('start',sat_from,'end',sat_to)));
+  perform public.sync_calendar_busy((sat+time '09:00') at time zone 'Asia/Taipei',(sat+time '13:00') at time zone 'Asia/Taipei','[]');
+  if jsonb_array_length(public.list_available_starts(sat_from,sat_to))<>1 then raise exception 'partial sync lost busy time'; end if;
+  perform public.sync_calendar_busy(sat_from,sat_to,'[]');
 
-  -- 開團佔住時段，第二團不能選同一時段；解散後時段釋出。
-  r := public.create_group(org,gen_random_uuid(),s_sun14,4,g);
-  if (select status from public.time_slots where id=s_sun14)<>'held'
-    or (select desired_start_at from public.groups where id=(r->>'group_id')::uuid)
-       <>(select starts_at from public.time_slots where id=s_sun14)
-    then raise exception 'slot not held by group'; end if;
+  -- 同一時間只能一場：週六 13:00 開團後，與 13–17 重疊的開場時間全部消失。
+  r := public.create_group(org,gen_random_uuid(),(sat+time '13:00') at time zone 'Asia/Taipei',4,g);
+  gid := (r->>'group_id')::uuid;
+  if (select status from public.time_slots where group_id=gid)<>'held' then raise exception 'time not held'; end if;
+  r := public.list_available_starts(sat_from,sat_to);
+  if jsonb_array_length(r)<>5 then raise exception 'overlapping starts still listed: %', r; end if;
   begin
-    perform public.create_group(u2,gen_random_uuid(),s_sun14,4);
+    perform public.create_group(u2,gen_random_uuid(),(sat+time '15:00') at time zone 'Asia/Taipei',4);
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'SLOT_UNAVAILABLE' then raise exception 'double hold: %', msg; end if;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'overlapping group: %', msg; end if;
   end;
-  perform public.cancel_group(org,(r->>'group_id')::uuid);
-  if (select status from public.time_slots where id=s_sun14)<>'open' then raise exception 'slot not released'; end if;
-  r := public.create_group(u2,gen_random_uuid(),s_sun14,4,g);
+  -- Even if two requests pass the check at once, the database rejects the overlap.
+  insert into public.groups(organizer_user_id,desired_start_at,capacity,request_id)
+    values (u2,(sat+time '14:00') at time zone 'Asia/Taipei',4,gen_random_uuid()) returning id into raw_group;
+  begin
+    perform public._sf_reserve_time((sat+time '14:00') at time zone 'Asia/Taipei',(sat+time '18:00') at time zone 'Asia/Taipei',
+      'held',raw_group,null);
+    raise exception 'MISSING';
+  exception when others then get stacked diagnostics msg = message_text;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'race not blocked: %', msg; end if;
+  end;
+
+  -- 解散後時段釋出；成場後轉為 booked。
+  perform public.cancel_group(org,gid);
+  if (select status from public.time_slots where group_id=gid)<>'released'
+    or jsonb_array_length(public.list_available_starts(sat_from,sat_to))<>12 then raise exception 'time not released'; end if;
+  r := public.create_group(u2,gen_random_uuid(),(sat+time '13:00') at time zone 'Asia/Taipei',4,g);
   r := public.admin_confirm_group_event(adm,(r->>'group_id')::uuid,'QA 場館','QA DM');
-  if (select status from public.time_slots where id=s_sun14)<>'booked' then raise exception 'slot not booked'; end if;
+  if (select status from public.time_slots where event_id=(r->>'event_id')::uuid)<>'booked'
+    or (select starts_at from public.events where id=(r->>'event_id')::uuid)<>(sat+time '13:00') at time zone 'Asia/Taipei'
+    then raise exception 'confirmed event not booked'; end if;
 
-  -- 店家直接開缺人場次也佔用時段；已關閉或已使用的時段不可再用。
-  r := public.admin_create_event(adm,s_sun18,g,6,'QA 場館','QA DM');
-  ev := (r->>'event_id')::uuid;
-  if (select slot_id from public.events where id=ev)<>s_sun18 then raise exception 'event not linked to slot'; end if;
+  -- 店家可在開放區間外開場，但仍不可撞到其他場次或日曆。
+  r := public.admin_create_event(adm,(wed+time '19:00') at time zone 'Asia/Taipei',g,6,'QA 場館','QA DM');
   begin
-    perform public.admin_create_event(adm,s_sun18,g,6,'QA 場館','QA DM');
+    perform public.admin_create_event(adm,(wed+time '21:00') at time zone 'Asia/Taipei',g,6,'QA 場館','QA DM');
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'SLOT_UNAVAILABLE' then raise exception 'slot reused: %', msg; end if;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'admin overlap: %', msg; end if;
   end;
   begin
-    perform public.admin_close_slot(adm,s_sun18);
+    perform public.admin_create_event(org,(wed+time '09:00') at time zone 'Asia/Taipei',g,6,'QA 場館','QA DM');
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'SLOT_IN_USE' then raise exception 'closed a booked slot: %', msg; end if;
+    if msg<>'NOT_ADMIN' then raise exception 'non-admin event: %', msg; end if;
   end;
-  select id into s_next from public.time_slots where status='open' order by starts_at limit 1;
-  perform public.admin_close_slot(adm,s_next);
-  if exists(select 1 from jsonb_array_elements(public.list_available_slots(now(),now()+interval '30 days')) e
-      where (e->>'slot_id')::uuid=s_next) then raise exception 'closed slot still listed'; end if;
-
-  -- Past slots cannot be generated or used.
-  insert into public.time_slots(starts_at,ends_at,status)
-    values (now()-interval '3 days',now()-interval '3 days'+interval '4 hours','open') returning id into s_next;
   begin
-    perform public.create_group(org,gen_random_uuid(),s_next,4);
+    perform public.admin_create_event(adm,now()-interval '1 day',g,6,'QA 場館','QA DM');
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'SLOT_UNAVAILABLE' then raise exception 'past slot bookable: %', msg; end if;
+    if msg<>'SLOT_UNAVAILABLE' then raise exception 'past event: %', msg; end if;
   end;
 end $$;
 reset role;
@@ -122,11 +143,11 @@ begin
       then raise exception 'RLS missing on %', t; end if;
     foreach r in array array['anon','authenticated'] loop
       if has_table_privilege(r,'public.'||t,'SELECT,INSERT,UPDATE,DELETE') then raise exception '% exposed to %', t, r; end if;
-      if has_function_privilege(r,'public.list_available_slots(timestamptz,timestamptz)','EXECUTE')
+      if has_function_privilege(r,'public.list_available_starts(timestamptz,timestamptz,integer)','EXECUTE')
         or has_function_privilege(r,'public.sync_calendar_busy(timestamptz,timestamptz,jsonb)','EXECUTE')
         then raise exception 'slot RPC exposed to %', r; end if;
     end loop;
   end loop;
 end $$;
-select 'PASS: weekly rules, Taipei time, no overlap, calendar busy, hold, release, confirm, admin event, close, past' as result;
+select 'PASS: opening windows, Taipei time, midnight limit, calendar busy, one session at a time, release, confirm, admin event' as result;
 rollback;

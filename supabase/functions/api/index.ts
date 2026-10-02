@@ -4,6 +4,8 @@ type Settings = {
   supabaseUrl?: string;
   serviceKey?: string;
   allowedOrigins?: string[];
+  // Google service account with "See only free/busy" access to the owner's calendar.
+  google?: { clientEmail: string; privateKey: string; calendarId: string };
   fetcher?: typeof fetch;
   now?: () => number;
 };
@@ -103,6 +105,65 @@ async function requireSession(req: Request, settings: Settings) {
   return { session, hash };
 }
 
+// --- Google Calendar free/busy -------------------------------------------------------
+const b64url = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64urlJson = (value: unknown) => b64url(new TextEncoder().encode(JSON.stringify(value)));
+let googleToken: { value: string; expires: number; email: string } | null = null;
+
+async function googleAccessToken(settings: Settings) {
+  const google = settings.google!;
+  const now = Math.floor((settings.now ?? Date.now)() / 1000);
+  if (googleToken && googleToken.email === google.clientEmail && googleToken.expires > now + 60) return googleToken.value;
+  const pem = google.privateKey.replace(/-----[A-Z ]+-----|\s/g, '');
+  const key = await crypto.subtle.importKey('pkcs8', Uint8Array.from(atob(pem), c => c.charCodeAt(0)),
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const unsigned = `${b64urlJson({ alg: 'RS256', typ: 'JWT' })}.${b64urlJson({ iss: google.clientEmail,
+    scope: 'https://www.googleapis.com/auth/calendar.freebusy', aud: 'https://oauth2.googleapis.com/token',
+    iat: now, exp: now + 3600 })}`;
+  const signature = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned)));
+  const response = await (settings.fetcher ?? fetch)('https://oauth2.googleapis.com/token', {
+    method: 'POST', signal: AbortSignal.timeout(8000),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: `${unsigned}.${b64url(signature)}` }).toString(),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || typeof data?.access_token !== 'string') throw new Error('google_token');
+  googleToken = { value: data.access_token, expires: now + (data.expires_in ?? 3600), email: google.clientEmail };
+  return googleToken.value;
+}
+
+// Refreshes the mirrored busy periods for [from, to) straight from Google. Any failure
+// fails closed: without fresh calendar data nothing is offered or reserved.
+async function syncCalendar(settings: Settings, from: Date, to: Date) {
+  if (!settings.google) throw new ApiError(503, 'CALENDAR_NOT_CONFIGURED');
+  let busy: { start: string; end: string }[];
+  try {
+    const token = await googleAccessToken(settings);
+    const response = await (settings.fetcher ?? fetch)('https://www.googleapis.com/calendar/v3/freeBusy', {
+      method: 'POST', signal: AbortSignal.timeout(8000),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ timeMin: from.toISOString(), timeMax: to.toISOString(),
+        items: [{ id: settings.google.calendarId }] }),
+    });
+    const data = await response.json().catch(() => null);
+    const calendar = data?.calendars?.[settings.google.calendarId];
+    if (!response.ok || !calendar || calendar.errors?.length || !Array.isArray(calendar.busy)) throw new Error('freebusy');
+    busy = calendar.busy.map((b: { start: string; end: string }) => ({ start: b.start, end: b.end }));
+  } catch { throw new ApiError(503, 'CALENDAR_UNAVAILABLE'); }
+  await rpc(settings, 'sync_calendar_busy', { p_from: from.toISOString(), p_to: to.toISOString(), p_busy: busy });
+}
+
+const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
+function taipeiDayStart(date: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+    throw new ApiError(400, 'INVALID_RANGE');
+  }
+  return new Date(Date.parse(`${date}T00:00:00Z`) - TAIPEI_OFFSET_MS);
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 const publicUser = (s: { user_id: string; display_name: string | null; is_admin: boolean }) =>
   ({ id: s.user_id, displayName: s.display_name, isAdmin: s.is_admin });
 
@@ -123,6 +184,42 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   if (req.method === 'GET' && path === '/me') {
     const { session } = await requireSession(req, settings);
     return [200, { user: publicUser(session), expiresAt: session.expires_at }];
+  }
+  if (req.method === 'GET' && path === '/slots') {
+    await requireSession(req, settings);
+    const params = new URL(req.url).searchParams;
+    const days = Number(params.get('days') ?? '14');
+    if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError(400, 'INVALID_RANGE');
+    const nowMs = (settings.now ?? Date.now)();
+    const fromDay = params.get('from');
+    const startMs = fromDay ? taipeiDayStart(fromDay).getTime() : nowMs;
+    const from = new Date(Math.max(nowMs, startMs));
+    const to = new Date(startMs + days * 86400000);
+    if (to <= from) return [200, { slots: [] }];
+    await syncCalendar(settings, from, to);
+    const slots = await rpc<{ starts_at: string; ends_at: string }[]>(settings, 'list_available_starts',
+      { p_from: from.toISOString(), p_to: to.toISOString(), p_minutes: 240 });
+    return [200, { slots: slots.map(s => ({ startsAt: s.starts_at, endsAt: s.ends_at })) }];
+  }
+  if (req.method === 'POST' && path === '/groups') {
+    const { session } = await requireSession(req, settings);
+    const body = await readJson(req);
+    const startsAt = typeof body.startsAt === 'string' ? new Date(body.startsAt) : null;
+    if (typeof body.requestId !== 'string' || !UUID.test(body.requestId)) throw new ApiError(400, 'INVALID_REQUEST');
+    if (!startsAt || Number.isNaN(startsAt.getTime())) throw new ApiError(400, 'SLOT_UNAVAILABLE');
+    if (body.gameId != null && (typeof body.gameId !== 'string' || !UUID.test(body.gameId))) {
+      throw new ApiError(400, 'GAME_NOT_FOUND');
+    }
+    // Re-check the calendar for the whole session window right before reserving it.
+    await syncCalendar(settings, startsAt, new Date(startsAt.getTime() + 12 * 3600 * 1000));
+    const preferences = Array.isArray(body.preferences)
+      ? body.preferences.filter((p: unknown) => typeof p === 'string').slice(0, 10) : [];
+    const result = await rpc<Record<string, unknown>>(settings, 'create_group', {
+      p_actor: session.user_id, p_request_id: body.requestId, p_starts_at: startsAt.toISOString(),
+      p_capacity: body.capacity, p_game_id: body.gameId ?? null, p_preferences: preferences,
+      p_note: typeof body.note === 'string' ? body.note : '',
+      p_visibility: body.visibility === 'public' ? 'public' : 'private' });
+    return [result.created ? 201 : 200, { groupId: result.group_id, startsAt: result.starts_at, endsAt: result.ends_at }];
   }
   if (req.method === 'POST' && path === '/auth/logout') {
     const { hash } = await requireSession(req, settings);
@@ -158,5 +255,14 @@ if (typeof Deno !== 'undefined') {
     supabaseUrl: Deno.env.get('SUPABASE_URL'),
     serviceKey: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
     allowedOrigins: (Deno.env.get('ALLOWED_ORIGINS') ?? '').split(',').map(s => s.trim()).filter(Boolean),
+    google: googleFromEnv(),
   }));
+}
+function googleFromEnv() {
+  try {
+    const account = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') ?? '');
+    const calendarId = Deno.env.get('GOOGLE_CALENDAR_ID');
+    if (!account.client_email || !account.private_key || !calendarId) return undefined;
+    return { clientEmail: account.client_email, privateKey: account.private_key, calendarId };
+  } catch { return undefined; }
 }

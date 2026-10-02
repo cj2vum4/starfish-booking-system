@@ -9,6 +9,7 @@ const read = (path) => readFileSync(new URL(path, root), 'utf8');
 // Mirrors Supabase defaults: new objects in public are granted to the API roles,
 // so migrations must revoke access explicitly.
 const supabaseRoles = `
+  set timezone to 'UTC';  -- Supabase sessions run in UTC; Taipei handling must be explicit.
   create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
   grant usage on schema public to anon, authenticated, service_role;
   alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
