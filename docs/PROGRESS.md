@@ -76,9 +76,14 @@
   雲端 tests/sessions.sql、tests/slots.sql、tests/booking_rpc.sql 均 PASS；核對 20 張表、開放區間 6 筆、users=1、殘留 0。
 - 測試以 UTC session 執行（與 Supabase 相同）；npm test 24 passed；突變測試均被抓到。
 
+## Google 日曆連線（已驗證）
+
+- 店家建立服務帳戶並以「僅查看空閒/忙碌」共用日曆；GOOGLE_SERVICE_ACCOUNT_JSON、GOOGLE_CALENDAR_ID 已存入 Supabase Secrets。
+- api Edge Function 已透過 Dashboard 部署（程式取自 GitHub commit 91b0358，SHA-256 一致），Verify JWT 已關閉。
+- GET /functions/v1/api/health/calendar 回傳 200 {"ok":true}：金鑰有效、Calendar API 已啟用、日曆已共用。
+
 ## 未完成，不能宣稱可供營運
 
-- Google 日曆 free/busy 同步（需店家授權）。
 
 - 20 個 concurrent request 搶最後 1 席的多連線實測（P6）。
 
