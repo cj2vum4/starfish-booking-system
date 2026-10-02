@@ -7,6 +7,8 @@
 
 - LINE OA：海星劇本殺，`@825gdzws`。
 - Messaging API Channel ID：`2011834134`。
+- LINE Login Channel ID：`2011840025`；LIFF ID：`2011840025-6cuU9x8P`。
+- LIFF Endpoint：`https://cj2vum4.github.io/starfish-booking-system/`（GitHub Pages）。
 - Supabase 專案：`starfishlarp`，ref `qrcpmxejhqrvvpnjehri`，東京區域。
 - 現有 Supabase GitHub integration 指向 `cj2vum4/starfishlarp`；本次未修改該 repository。
 - 本專案在本機獨立保存，尚未建立新的 GitHub remote。
