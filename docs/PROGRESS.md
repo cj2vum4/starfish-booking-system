@@ -56,7 +56,26 @@
 - 雲端 tests/booking_rpc.sql PASS；套用後核對 RPC 12 個、users_total=1、active_users=1、測試殘留 0。
 - 突變測試：移除售完檢查、允許 token 重用、略過私人團檢查、允許任何人取消，均被測試抓到。
 
+## P3 LIFF 登入（程式完成，尚未部署）
+
+- 202610020004_app_sessions.sql：login_line_user、resolve_session、logout_session；session 只存 SHA-256，12 小時到期。
+- supabase/functions/api：POST /auth/line 向 LINE 驗證 ID token（iss、aud、exp、sub），GET /me、POST /auth/logout。
+- web/liff：LIFF 登入頁；GitHub Actions 只發布 web/liff 到 GitHub Pages。
+- 公開 repo：github.com/cj2vum4/starfish-booking-system（乾淨歷史，不含 docs/evidence 與 docs/backups；
+  完整本機歷史保留在 full-history-local 分支）。
+
+## 可預約時段（本機驗證完成，尚未套用雲端）
+
+- 202610020005_time_slots.sql：slot_rules（每週規則，Asia/Taipei，預設 240 分鐘）、time_slots、calendar_busy。
+- 同一時段只能一場：time_slots 以 exclusion constraint 禁止任何重疊的有效時段。
+- Google 日曆忙碌時間（只存起訖，不存行程內容）重疊的時段自動不開放。
+- create_group 改為選 slot_id，開團即佔住時段；解散釋出；成場轉 booked；admin_create_event 開缺人場次。
+- tests/slots.sql；npm test 20 passed；突變測試（忽略忙碌、允許重疊、取消不釋出、時區錯誤）均被抓到。
+
 ## 未完成，不能宣稱可供營運
+
+- 店家實際每週時段規則（週六等）待確認後寫入 slot_rules。
+- Google 日曆 free/busy 同步（需店家授權）。
 
 - 20 個 concurrent request 搶最後 1 席的多連線實測（P6）。
 

@@ -4,7 +4,7 @@ set local role service_role;
 do $$
 declare
   org uuid; u2 uuid; u3 uuid; u4 uuid; u5 uuid; u6 uuid; u7 uuid; adm uuid;
-  g uuid; gid uuid; ev uuid; ev2 uuid; grp2 uuid; req uuid := gen_random_uuid();
+  g uuid; gid uuid; ev uuid; ev2 uuid; grp2 uuid; slot1 uuid; slot2 uuid; req uuid := gen_random_uuid();
   r jsonb; msg text; seat6 uuid; hanhan uuid; part uuid; bk uuid; n integer;
   h_join text := encode(sha256(convert_to('qa-join','UTF8')),'hex');
   h_seat text := encode(sha256(convert_to('qa-seat','UTF8')),'hex');
@@ -22,25 +22,29 @@ begin
   insert into public.admin_users(user_id) values (adm);
   insert into public.games(slug,title,min_players,max_players,price_cents)
     values ('qa-rpc-game','QA 劇本',2,6,60000) returning id into g;
+  insert into public.time_slots(starts_at,ends_at) values (now()+interval '7 days',now()+interval '7 days 4 hours')
+    returning id into slot1;
+  insert into public.time_slots(starts_at,ends_at) values (now()+interval '5 days',now()+interval '5 days 4 hours')
+    returning id into slot2;
 
   -- P4: 主揪開 6 人私人團；主揪自動坐 1 號位；同一 request 重送不會開第二團。
-  r := public.create_group(org,req,now()+interval '7 days',6,g,'{推理}','','private');
+  r := public.create_group(org,req,slot1,6,g,'{推理}','','private');
   gid := (r->>'group_id')::uuid;
   if not (r->>'created')::boolean then raise exception 'group not created'; end if;
-  r := public.create_group(org,req,now()+interval '7 days',6,g,'{推理}','','private');
+  r := public.create_group(org,req,slot1,6,g,'{推理}','','private');
   if (r->>'group_id')::uuid<>gid or (r->>'created')::boolean then raise exception 'group request not idempotent'; end if;
   if (select count(*) from public.groups where organizer_user_id=org)<>1 then raise exception 'duplicate group'; end if;
   if (select count(*) from public.group_members where group_id=gid)<>6
     or (select count(*) from public.group_members where group_id=gid and status='joined')<>1
     then raise exception 'seats not created'; end if;
   begin
-    perform public.create_group(org,gen_random_uuid(),now()+interval '7 days',6,g,'{}','','secret');
+    perform public.create_group(org,gen_random_uuid(),slot1,6,g,'{}','','secret');
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
     if msg<>'INVALID_VISIBILITY' then raise exception 'visibility: %', msg; end if;
   end;
   begin
-    perform public.create_group(org,gen_random_uuid(),now()+interval '7 days',8,g);
+    perform public.create_group(org,gen_random_uuid(),slot1,8,g);
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
     if msg<>'INVALID_CAPACITY' then raise exception 'capacity vs game: %', msg; end if;
@@ -116,16 +120,18 @@ begin
 
   -- P2: group 轉 event；只有管理員可確認，重送不會建立第二場。
   begin
-    perform public.admin_confirm_group_event(org,gid,now()+interval '7 days','QA 場館','QA DM');
+    perform public.admin_confirm_group_event(org,gid,'QA 場館','QA DM');
     raise exception 'MISSING';
   exception when others then get stacked diagnostics msg = message_text;
     if msg<>'NOT_ADMIN' then raise exception 'non-admin confirm: %', msg; end if;
   end;
-  r := public.admin_confirm_group_event(adm,gid,now()+interval '7 days','QA 場館','QA DM');
+  r := public.admin_confirm_group_event(adm,gid,'QA 場館','QA DM');
   ev := (r->>'event_id')::uuid;
   if (r->>'participants')::int<>6 or (select status from public.groups where id=gid)<>'confirmed'
+    or (select status from public.time_slots where id=slot1)<>'booked'
+    or (select starts_at from public.events where id=ev)<>(select starts_at from public.time_slots where id=slot1)
     then raise exception 'group to event failed'; end if;
-  r := public.admin_confirm_group_event(adm,gid,now()+interval '7 days','QA 場館','QA DM');
+  r := public.admin_confirm_group_event(adm,gid,'QA 場館','QA DM');
   if (r->>'event_id')::uuid<>ev or (r->>'created')::boolean then raise exception 'confirm not idempotent'; end if;
   begin
     perform public.join_event(u2,ev,gen_random_uuid());
@@ -199,10 +205,11 @@ begin
   if (select count(*) from public.players where user_id=u6)<>1 then raise exception 'claimer has two players'; end if;
 
   -- 解散揪團後所有邀請失效。
-  r := public.create_group(u7,gen_random_uuid(),now()+interval '5 days',4);
+  r := public.create_group(u7,gen_random_uuid(),slot2,4);
   grp2 := (r->>'group_id')::uuid;
   perform public.reserve_group_seat(u7,grp2,'朋友G',h_dead,now()+interval '3 days');
   perform public.cancel_group(u7,grp2);
+  if (select status from public.time_slots where id=slot2)<>'open' then raise exception 'cancel did not free slot'; end if;
   begin
     perform public.claim_invite(u2,h_dead);
     raise exception 'MISSING';
@@ -221,7 +228,8 @@ begin
     where n.nspname='public' and p.proname in ('_sf_actor_player','_sf_is_admin','_sf_audit','_sf_token_expiry',
       '_sf_valid_hash','create_group','create_group_invite','reserve_group_seat','join_group','claim_invite',
       'leave_group_seat','cancel_group','admin_confirm_group_event','create_booking','join_event',
-      'create_participant_claim','cancel_participant') loop
+      'create_participant_claim','cancel_participant','list_available_slots','admin_generate_slots',
+      'admin_close_slot','sync_calendar_busy','admin_create_event','_sf_slot_free','_sf_lock_slot') loop
     foreach r in array array['anon','authenticated'] loop
       if has_function_privilege(r,f,'EXECUTE') then raise exception '% exposed to %', f, r; end if;
     end loop;

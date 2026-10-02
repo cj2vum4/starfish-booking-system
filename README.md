@@ -19,6 +19,9 @@
 - `supabase/migrations/202610020002_booking_core.sql`：開團、場次、預約、多人代報、付款、邀請、通知、稽核等核心表與席位 trigger。
 - `supabase/migrations/202610020003_booking_rpc.sql`：開團、邀請、認領、加入、成場、多人預約、取消 RPC（僅 service_role）。
 - `tests/database.sql`、`tests/booking_core.sql`、`tests/booking_rpc.sql`：實際 Postgres 行為與權限測試；以 ROLLBACK 結束。
+- `supabase/migrations/202610020004_app_sessions.sql`、`supabase/functions/api/`：LIFF ID token 驗證與伺服器 session。
+- `supabase/migrations/202610020005_time_slots.sql`：每週時段規則、可預約時段、Google 日曆忙碌時間；同一時段只能一場。
+- `web/liff/`：LIFF 登入頁，由 GitHub Actions 發布到 GitHub Pages。
 - `tests/database.test.mjs`：以 PGlite 在本機套用所有 migration 並執行上述 SQL 測試。
 - `.env.example`：只有變數名稱，不放秘密值。
 
