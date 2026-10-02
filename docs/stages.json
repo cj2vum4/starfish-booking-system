@@ -15,7 +15,7 @@
     },
     "P3": {
       "status": "進行中",
-      "evidence": "session RPC 已上雲並 PASS；api Edge Function 與 LIFF 頁程式與測試完成，待建立 LINE Login Channel／LIFF App 後部署並手機實測。"
+      "evidence": "LIFF 內登入實機通過，與加好友時同一位 user；偽造 token、未登入、跨來源已擋下。待外部瀏覽器登入與 token 過期重新登入實測。"
     },
     "P4": {
       "status": "進行中",

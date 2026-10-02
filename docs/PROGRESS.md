@@ -56,7 +56,7 @@
 - 雲端 tests/booking_rpc.sql PASS；套用後核對 RPC 12 個、users_total=1、active_users=1、測試殘留 0。
 - 突變測試：移除售完檢查、允許 token 重用、略過私人團檢查、允許任何人取消，均被測試抓到。
 
-## P3 LIFF 登入（資料庫已上雲；API 與 LIFF 頁尚未部署）
+## P3 LIFF 登入（已部署）
 
 - 202610020004_app_sessions.sql：login_line_user、resolve_session、logout_session；session 只存 SHA-256，12 小時到期。
 - supabase/functions/api：POST /auth/line 向 LINE 驗證 ID token（iss、aud、exp、sub），GET /me、POST /auth/logout。
@@ -81,6 +81,15 @@
 - 店家建立服務帳戶並以「僅查看空閒/忙碌」共用日曆；GOOGLE_SERVICE_ACCOUNT_JSON、GOOGLE_CALENDAR_ID 已存入 Supabase Secrets。
 - api Edge Function 已透過 Dashboard 部署（程式取自 GitHub commit 91b0358，SHA-256 一致），Verify JWT 已關閉。
 - GET /functions/v1/api/health/calendar 回傳 200 {"ok":true}：金鑰有效、Calendar API 已啟用、日曆已共用。
+
+## P3 LIFF 實機登入通過
+
+- LINE Login Channel 2011840025、LIFF 2011840025-6cuU9x8P（Endpoint 為 GitHub Pages），scopes openid、profile。
+- Supabase Secrets 新增 LINE_LOGIN_CHANNEL_ID、ALLOWED_ORIGINS（https://cj2vum4.github.io）。
+- 線上檢查：未登入 /me 401、允許來源 preflight 204、其他來源 403、偽造 ID token 401。
+- 帳號持有人以手機 LINE 開啟 LIFF，顯示「你好」已登入。
+- 資料庫：users_total=1（與加好友時同一筆，未重複）、active、暱稱已存、session 12 小時、登入 2 次同一人。
+- 證據：docs/evidence/liff-login-live.jpg（本機，只含統計數字）。
 
 ## 未完成，不能宣稱可供營運
 
