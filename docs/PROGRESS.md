@@ -91,7 +91,7 @@
 - 資料庫：users_total=1（與加好友時同一筆，未重複）、active、暱稱已存、session 12 小時、登入 2 次同一人。
 - 證據：docs/evidence/liff-login-live.jpg（本機，只含統計數字）。
 
-## P4 開團畫面（程式完成）
+## P4 開團畫面（已部署）
 
 - 202610030006_group_views.sql：get_group、list_my_groups、preview_invite、list_active_games；私人團非成員看不到，
   只拿到邀請的人只看到摘要（時間、主揪、人數），看不到座位名字。
@@ -99,6 +99,7 @@
   POST /seats/:id/leave；POST /invites/preview、/invites/claim（token 只放在 POST body，不進網址紀錄）。
 - LIFF 單頁：首頁、選日期與時間、人數（依劇本限制）、劇本或店家推薦與偏好、備註、公開與否；
   揪團頁座位、分享到 LINE（shareTargetPicker，不可用時改用 line.me 分享）、幫朋友保留位子、退出、解散；邀請落地頁。
+- 0006 已套用雲端並 PASS；api 已重新部署（commit e58089a，SHA-256 一致），新路由上線。
 - 本機以模擬 LIFF 與 API 逐一操作所有畫面；LINE 暱稱含 HTML 時以純文字顯示。npm test 31 passed。
 
 ## 未完成，不能宣稱可供營運
