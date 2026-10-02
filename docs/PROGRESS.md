@@ -117,6 +117,14 @@
 - 待辦：店家帳號尚未設為 admin（需店家自行執行 SQL）；設定後可在 LIFF 首頁按「從 GitHub 同步劇本」更新。
 - npm test 35 passed；實際 57 本解析全數有效（5 人 6 本、6 人 27 本、7 人 17 本、8 人 6 本、9 人 2 本、10 人 3 本）。
 
+## 劇本自動同步（程式完成，待設定密碼）
+
+- 202610030008_catalog_autosync.sql：system_sync_games（無 LINE 使用者，須帶 40 碼 commit，稽核來源 github:<commit>）。
+- API POST /hooks/catalog-sync：以 X-Sync-Secret 比對 CATALOG_SYNC_SECRET（雜湊後定時比較），
+  讀取該 commit 的 scripts.js（避免 raw.githubusercontent 對 main 的快取）。
+- starfishlarp 新增 .github/workflows/sync-booking-catalog.yml（commit 86fc1b4）：push 到 main 且 scripts.js 變動時觸發。
+- 店家 LINE Login Channel 已 Publish，朋友可開啟邀請連結。
+
 ## 未完成，不能宣稱可供營運
 
 

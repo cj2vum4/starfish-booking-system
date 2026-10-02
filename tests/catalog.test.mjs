@@ -59,3 +59,33 @@ test('sync is admin-only and sends the parsed catalog to the database', async ()
   assert.equal(sync.p_actor, 'owner');
   assert.equal(sync.p_games.length, 3);
 });
+
+test('GitHub hook syncs the pushed commit only with the shared secret', async () => {
+  const commit = 'c'.repeat(40);
+  const run = async (headers, body, secret = 'shared-secret-for-tests') => {
+    const calls = [];
+    const fetcher = async (url, opts = {}) => {
+      calls.push({ url, body: opts.body });
+      if (url.startsWith('https://raw.example/')) return new Response(source);
+      return Response.json({ synced: 3, deactivated: 0 });
+    };
+    const settings = { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k', allowedOrigins: [],
+      catalogCommitUrl: 'https://raw.example/{commit}/scripts.js', catalogSyncSecret: secret, fetcher };
+    const response = await handleApi(new Request('https://x/functions/v1/api/hooks/catalog-sync', { method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) }), settings);
+    return { status: response.status, data: await response.json(), calls };
+  };
+  const ok = await run({ 'X-Sync-Secret': 'shared-secret-for-tests' }, { commit });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.calls[0].url, `https://raw.example/${commit}/scripts.js`);
+  const rpcCall = JSON.parse(ok.calls.find(c => c.url.endsWith('/system_sync_games')).body);
+  assert.equal(rpcCall.p_commit, commit);
+  assert.equal(rpcCall.p_games.length, 3);
+  for (const headers of [{}, { 'X-Sync-Secret': 'wrong' }, { 'X-Sync-Secret': 'shared-secret-for-test' }]) {
+    const denied = await run(headers, { commit });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.calls.length, 0, 'nothing fetched without the secret');
+  }
+  assert.equal((await run({ 'X-Sync-Secret': 'shared-secret-for-tests' }, { commit: 'main' })).status, 400);
+  assert.equal((await run({ 'X-Sync-Secret': 'x' }, { commit }, '')).status, 503);
+});

@@ -49,6 +49,17 @@ begin
   if (r->>'deactivated')::int<>1 or (select active from public.games where slug='qa-gaoqian')
     or (select title from public.games where slug='qa-wangzuo')<>'QA 王座 新版' then raise exception 'resync wrong: %', r; end if;
 
+  -- GitHub 自動同步：不需要 LINE 使用者，但必須附上合法的 commit。
+  begin
+    perform public.system_sync_games(catalog,'not-a-commit');
+    raise exception 'MISSING';
+  exception when others then get stacked diagnostics msg = message_text;
+    if msg<>'INVALID_COMMIT' then raise exception 'bad commit accepted: %', msg; end if;
+  end;
+  r := public.system_sync_games(jsonb_build_array(catalog->0, catalog->2),repeat('a',40));
+  if (r->>'synced')::int<>2 or not exists(select 1 from public.audit_logs where action='games.sync'
+      and actor_user_id is null and details->>'source'='github:'||repeat('a',40)) then raise exception 'github sync not audited: %', r; end if;
+
   -- 6 小時的劇本放不進平日 19–24，只能排週末。
   select id into long_id from public.games where slug='qa-long';
   if jsonb_array_length(public.list_available_starts(mon::timestamp at time zone 'Asia/Taipei',
@@ -80,7 +91,8 @@ do $$
 declare r text;
 begin
   foreach r in array array['anon','authenticated'] loop
-    if has_function_privilege(r,'public.admin_sync_games(uuid,jsonb)','EXECUTE') then raise exception 'sync exposed to %', r; end if;
+    if has_function_privilege(r,'public.admin_sync_games(uuid,jsonb)','EXECUTE')
+      or has_function_privilege(r,'public.system_sync_games(jsonb,text)','EXECUTE') then raise exception 'sync exposed to %', r; end if;
   end loop;
 end $$;
 select 'PASS: admin-only sync, atomic validation, ranges, resync deactivates, long scripts weekend only, price required' as result;

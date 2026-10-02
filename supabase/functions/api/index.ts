@@ -8,6 +8,8 @@ type Settings = {
   google?: { clientEmail: string; privateKey: string; calendarId: string };
   catalogUrl?: string;  // raw scripts.js in the Starfish site repo
   catalogSiteBase?: string;  // where that repo's pages are published
+  catalogCommitUrl?: string;  // raw file URL template with {commit}, for the GitHub hook
+  catalogSyncSecret?: string;  // shared with the starfishlarp GitHub Action
   fetcher?: typeof fetch;
   now?: () => number;
 };
@@ -191,6 +193,27 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const INVITE_DAYS = 7;
 const CATALOG_URL = 'https://raw.githubusercontent.com/cj2vum4/starfishlarp/main/scripts.js';
 const CATALOG_SITE = 'https://cj2vum4.github.io/starfishlarp/';
+// Pinned to the pushed commit: raw.githubusercontent.com caches branch URLs for minutes.
+const CATALOG_COMMIT_URL = 'https://raw.githubusercontent.com/cj2vum4/starfishlarp/{commit}/scripts.js';
+
+// Compares digests so the time taken does not reveal how much of the secret matched.
+async function sameSecret(given: string, expected: string) {
+  const [a, b] = await Promise.all([sha256Hex(given), sha256Hex(expected)]);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function fetchCatalog(settings: Settings, url: string) {
+  try {
+    const response = await (settings.fetcher ?? fetch)(url, { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) throw new Error();
+    return parseStarfishCatalog(await response.text(), settings.catalogSiteBase ?? CATALOG_SITE);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(502, 'CATALOG_UNAVAILABLE');
+  }
+}
 
 // The Starfish site keeps its catalog as `window.SCRIPTS = [...]` in scripts.js. The array
 // is read as JSON only, never executed, and each entry is reduced to the fields we store.
@@ -298,15 +321,18 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   if (req.method === 'POST' && path === '/admin/games/sync') {
     const { session } = await requireSession(req, settings);
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
-    let source: string;
-    try {
-      const response = await (settings.fetcher ?? fetch)(settings.catalogUrl ?? CATALOG_URL,
-        { signal: AbortSignal.timeout(8000) });
-      if (!response.ok) throw new Error();
-      source = await response.text();
-    } catch { throw new ApiError(502, 'CATALOG_UNAVAILABLE'); }
-    const games = parseStarfishCatalog(source, settings.catalogSiteBase ?? CATALOG_SITE);
+    const games = await fetchCatalog(settings, settings.catalogUrl ?? CATALOG_URL);
     return [200, camel(await rpc(settings, 'admin_sync_games', { p_actor: session.user_id, p_games: games }))];
+  }
+  if (req.method === 'POST' && path === '/hooks/catalog-sync') {
+    if (!settings.catalogSyncSecret) throw new ApiError(503, 'SYNC_NOT_CONFIGURED');
+    if (!(await sameSecret(req.headers.get('x-sync-secret') ?? '', settings.catalogSyncSecret))) {
+      throw new ApiError(401, 'INVALID_SECRET');
+    }
+    const { commit } = await readJson(req);
+    if (typeof commit !== 'string' || !/^[0-9a-f]{40}$/.test(commit)) throw new ApiError(400, 'INVALID_COMMIT');
+    const games = await fetchCatalog(settings, (settings.catalogCommitUrl ?? CATALOG_COMMIT_URL).replace('{commit}', commit));
+    return [200, camel(await rpc(settings, 'system_sync_games', { p_games: games, p_commit: commit }))];
   }
   if (req.method === 'GET' && path === '/me/groups') {
     const { session } = await requireSession(req, settings);
@@ -385,6 +411,7 @@ if (typeof Deno !== 'undefined') {
     serviceKey: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
     allowedOrigins: (Deno.env.get('ALLOWED_ORIGINS') ?? '').split(',').map(s => s.trim()).filter(Boolean),
     google: googleFromEnv(),
+    catalogSyncSecret: Deno.env.get('CATALOG_SYNC_SECRET') || undefined,
   }));
 }
 function googleFromEnv() {
