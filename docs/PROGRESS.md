@@ -102,7 +102,7 @@
 - 0006 已套用雲端並 PASS；api 已重新部署（commit e58089a，SHA-256 一致），新路由上線。
 - 本機以模擬 LIFF 與 API 逐一操作所有畫面；LINE 暱稱含 HTML 時以純文字顯示。npm test 31 passed。
 
-## 劇本目錄（已部署，待店家首次同步）
+## 劇本目錄（已部署，57 本已匯入）
 
 - 劇本唯一來源：GitHub cj2vum4/starfishlarp 的 scripts.js（window.SCRIPTS，57 本）。
 - 202610030007_game_catalog.sql：admin_sync_games（僅店家、整批驗證、GitHub 移除者只停用不刪除）；
@@ -112,7 +112,9 @@
 - 長本（如 6 小時）自動只出現在可容納的時段（週末）；店家推薦先保留 4 小時。
 - 0007 已上雲；api 已重新部署（commit 732a3fc）。雲端 game_catalog、slots、booking_rpc、group_views 測試均 PASS。
 - 雲端測試改為在回滾交易中清空忙碌鏡像並跳過已有場次的日期，真實資料（13 筆忙碌時段、店家的揪團）未受影響。
-- 待辦：店家帳號尚未設為 admin（需店家自行執行 SQL），之後在 LIFF 首頁按「從 GitHub 同步劇本」。
+- 2026-10-03 以 SQL Editor 從 GitHub scripts.js 首次匯入 57 本（與 admin_sync_games 相同的轉換與驗證規則）：
+  active 57、範圍人數 2、無海報 5。
+- 待辦：店家帳號尚未設為 admin（需店家自行執行 SQL）；設定後可在 LIFF 首頁按「從 GitHub 同步劇本」更新。
 - npm test 35 passed；實際 57 本解析全數有效（5 人 6 本、6 人 27 本、7 人 17 本、8 人 6 本、9 人 2 本、10 人 3 本）。
 
 ## 未完成，不能宣稱可供營運
