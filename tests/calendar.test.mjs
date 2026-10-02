@@ -99,3 +99,17 @@ test('slot and group routes require a session and validate input', async () => {
   assert.equal((await handleApi(post('/groups', { ...group, startsAt: 'tomorrow-ish' }), settings)).status, 400);
   assert.ok(!calls.some(c => c.url.endsWith('/freeBusy')));
 });
+
+test('setup check reports which Google step failed without exposing calendar data', async () => {
+  const check = async options => {
+    const { calls, settings } = backend(options);
+    const response = await handleApi(new Request(`${base}/health/calendar`), { ...settings, loginChannelId: undefined });
+    return { status: response.status, body: await response.json(), calls };
+  };
+  const ok = await check({});
+  assert.deepEqual([ok.status, ok.body], [200, { ok: true }]);
+  assert.ok(!JSON.stringify(ok.body).includes(dinner.start), 'busy times leaked');
+  assert.ok(!ok.calls.some(c => c.url.includes('/rpc/')), 'health check touched the database');
+  assert.equal((await check({ calendarError: true })).body.error, 'CALENDAR_NOT_SHARED');
+  assert.equal((await check({ withGoogle: false })).body.error, 'CALENDAR_NOT_CONFIGURED');
+});

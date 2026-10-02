@@ -155,6 +155,29 @@ async function syncCalendar(settings: Settings, from: Date, to: Date) {
   await rpc(settings, 'sync_calendar_busy', { p_from: from.toISOString(), p_to: to.toISOString(), p_busy: busy });
 }
 
+// Setup check: says which step is wrong, never returns busy times or writes anything.
+async function checkCalendar(settings: Settings): Promise<[number, unknown]> {
+  if (!settings.google) return [503, { ok: false, error: 'CALENDAR_NOT_CONFIGURED' }];
+  let token: string;
+  try { token = await googleAccessToken(settings); }
+  catch { return [503, { ok: false, error: 'GOOGLE_KEY_INVALID' }]; }
+  const nowMs = (settings.now ?? Date.now)();
+  try {
+    const response = await (settings.fetcher ?? fetch)('https://www.googleapis.com/calendar/v3/freeBusy', {
+      method: 'POST', signal: AbortSignal.timeout(8000),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ timeMin: new Date(nowMs).toISOString(), timeMax: new Date(nowMs + 86400000).toISOString(),
+        items: [{ id: settings.google.calendarId }] }),
+    });
+    const data = await response.json().catch(() => null);
+    if (response.status === 403) return [503, { ok: false, error: 'CALENDAR_API_DISABLED' }];
+    const calendar = data?.calendars?.[settings.google.calendarId];
+    if (!response.ok || !calendar) return [503, { ok: false, error: 'CALENDAR_UNAVAILABLE' }];
+    if (calendar.errors?.length) return [503, { ok: false, error: 'CALENDAR_NOT_SHARED' }];
+    return [200, { ok: true }];
+  } catch { return [503, { ok: false, error: 'CALENDAR_UNAVAILABLE' }]; }
+}
+
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
 function taipeiDayStart(date: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
@@ -234,11 +257,15 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), {
     status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
   if (req.method === 'OPTIONS') return new Response(null, { status: cors['Access-Control-Allow-Origin'] ? 204 : 403, headers: cors });
+  // Supabase serves this function at /functions/v1/api/...; strip everything up to "/api".
+  const path = new URL(req.url).pathname.replace(/^.*?\/api(?=\/|$)/, '') || '/';
+  if (req.method === 'GET' && path === '/health/calendar') {
+    const [status, data] = await checkCalendar(settings);
+    return reply(status, data);
+  }
   if (!settings.loginChannelId || !settings.supabaseUrl || !settings.serviceKey) {
     return reply(503, { error: 'API_NOT_CONFIGURED' });
   }
-  // Supabase serves this function at /functions/v1/api/...; strip everything up to "/api".
-  const path = new URL(req.url).pathname.replace(/^.*?\/api(?=\/|$)/, '') || '/';
   try {
     const [status, data] = await route(req, path, settings);
     return reply(status, data);
