@@ -27,7 +27,7 @@ async function migratedDb() {
   return db;
 }
 
-for (const file of ['tests/database.sql', 'tests/booking_core.sql', 'tests/booking_rpc.sql', 'tests/sessions.sql', 'tests/slots.sql']) {
+for (const file of ['tests/database.sql', 'tests/booking_core.sql', 'tests/booking_rpc.sql', 'tests/sessions.sql', 'tests/slots.sql', 'tests/group_views.sql']) {
   test(`${file} passes on a fresh Postgres`, async () => {
     const db = await migratedDb();
     const results = await db.exec(read(file));

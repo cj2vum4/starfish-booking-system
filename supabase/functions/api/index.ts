@@ -186,6 +186,21 @@ function taipeiDayStart(date: string) {
   return new Date(Date.parse(`${date}T00:00:00Z`) - TAIPEI_OFFSET_MS);
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const INVITE_DAYS = 7;
+
+// Database rows use snake_case; the LIFF page uses camelCase.
+function camel(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(camel);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), camel(v)]));
+}
+// Invite tokens arrive in POST bodies (never URLs) so they stay out of request logs.
+function inviteToken(body: Record<string, unknown>) {
+  if (typeof body.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.token)) throw new ApiError(400, 'INVITE_INVALID');
+  return body.token;
+}
+const inviteExpiry = (settings: Settings) =>
+  new Date((settings.now ?? Date.now)() + INVITE_DAYS * 86400000).toISOString();
 
 const publicUser = (s: { user_id: string; display_name: string | null; is_admin: boolean }) =>
   ({ id: s.user_id, displayName: s.display_name, isAdmin: s.is_admin });
@@ -243,6 +258,48 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       p_note: typeof body.note === 'string' ? body.note : '',
       p_visibility: body.visibility === 'public' ? 'public' : 'private' });
     return [result.created ? 201 : 200, { groupId: result.group_id, startsAt: result.starts_at, endsAt: result.ends_at }];
+  }
+  if (req.method === 'GET' && path === '/games') {
+    await requireSession(req, settings);
+    return [200, { games: camel(await rpc(settings, 'list_active_games', {})) }];
+  }
+  if (req.method === 'GET' && path === '/me/groups') {
+    const { session } = await requireSession(req, settings);
+    return [200, { groups: camel(await rpc(settings, 'list_my_groups', { p_actor: session.user_id })) }];
+  }
+  if (req.method === 'POST' && (path === '/invites/preview' || path === '/invites/claim')) {
+    const { session } = await requireSession(req, settings);
+    const hash = await sha256Hex(inviteToken(await readJson(req)));
+    const name = path === '/invites/preview' ? 'preview_invite' : 'claim_invite';
+    return [200, camel(await rpc(settings, name, { p_actor: session.user_id, p_token_hash: hash }))];
+  }
+  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel))?$/.exec(path);
+  if (groupRoute && UUID.test(groupRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    const [, groupId, action] = groupRoute;
+    const actor = { p_actor: session.user_id, p_group_id: groupId };
+    if (req.method === 'GET' && !action) return [200, camel(await rpc(settings, 'get_group', actor))];
+    if (req.method === 'POST' && action === 'share-link') {
+      const token = newToken();
+      await rpc(settings, 'create_group_invite', { ...actor, p_token_hash: await sha256Hex(token),
+        p_expires_at: inviteExpiry(settings) });
+      return [201, { token }];
+    }
+    if (req.method === 'POST' && action === 'reserve') {
+      const { displayName } = await readJson(req);
+      if (typeof displayName !== 'string') throw new ApiError(400, 'INVALID_NAME');
+      const token = newToken();
+      const seat = await rpc<Record<string, unknown>>(settings, 'reserve_group_seat', { ...actor,
+        p_display_name: displayName, p_token_hash: await sha256Hex(token), p_expires_at: inviteExpiry(settings) });
+      return [201, { token, seatNumber: seat.seat_number }];
+    }
+    if (req.method === 'POST' && action === 'join') return [200, camel(await rpc(settings, 'join_group', actor))];
+    if (req.method === 'POST' && action === 'cancel') return [200, camel(await rpc(settings, 'cancel_group', actor))];
+  }
+  const seatRoute = /^\/seats\/([0-9a-f-]{36})\/leave$/.exec(path);
+  if (req.method === 'POST' && seatRoute && UUID.test(seatRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    return [200, camel(await rpc(settings, 'leave_group_seat', { p_actor: session.user_id, p_group_member_id: seatRoute[1] }))];
   }
   if (req.method === 'POST' && path === '/auth/logout') {
     const { hash } = await requireSession(req, settings);

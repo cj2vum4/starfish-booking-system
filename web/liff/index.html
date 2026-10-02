@@ -2,31 +2,63 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>海星劇本殺｜登入</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>海星劇本殺｜預約與揪團</title>
 <style>
-  :root { --bg:#f7f5f2; --fg:#1f1d1a; --muted:#6b665f; --card:#fff; --accent:#06c755; --line:#e4e0da; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#151412; --fg:#f1eee9; --muted:#a7a199; --card:#211f1c; --line:#35322d; } }
+  :root { --bg:#f6f4f0; --fg:#1f1d1a; --muted:#6b665f; --card:#fff; --line:#e4dfd8; --accent:#06c755;
+    --accent-fg:#fff; --soft:#eef8f1; --warn:#b3261e; --chip:#f1eee9; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141311; --fg:#f1eee9; --muted:#a7a199; --card:#1f1d1a;
+    --line:#35322d; --soft:#16301f; --warn:#f2b8b5; --chip:#2a2723; } }
   * { box-sizing:border-box; }
-  body { margin:0; min-height:100vh; display:grid; place-items:center; padding:16px;
-    background:var(--bg); color:var(--fg); font:16px/1.6 system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif; }
-  main { width:100%; max-width:380px; background:var(--card); border:1px solid var(--line); border-radius:16px; padding:28px 24px; }
-  h1 { margin:0 0 4px; font-size:20px; }
-  p { margin:0; color:var(--muted); }
-  #status { margin-top:20px; }
-  button { margin-top:20px; width:100%; padding:12px; border:0; border-radius:10px; font:inherit; font-weight:600;
-    background:var(--accent); color:#fff; cursor:pointer; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.55 system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif; }
+  main { max-width:480px; margin:0 auto; padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
+  header { display:flex; align-items:center; justify-content:space-between; margin:4px 0 16px; }
+  header h1 { margin:0; font-size:18px; }
+  header small { color:var(--muted); }
+  h2 { font-size:17px; margin:0 0 12px; }
+  h3 { font-size:15px; margin:20px 0 8px; color:var(--muted); font-weight:600; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:12px; }
+  .muted { color:var(--muted); font-size:14px; }
+  .error { color:var(--warn); font-size:14px; margin-top:8px; }
+  button, .btn { display:block; width:100%; padding:13px; border:0; border-radius:10px; font:inherit; font-weight:600;
+    background:var(--accent); color:var(--accent-fg); cursor:pointer; text-align:center; text-decoration:none; }
   button.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); }
-  [hidden] { display:none; }
+  button.danger { background:transparent; color:var(--warn); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  .stack > * + * { margin-top:10px; }
+  .chips { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; scrollbar-width:none; }
+  .chips.wrap { flex-wrap:wrap; overflow:visible; }
+  .chip { flex:0 0 auto; width:auto; padding:8px 12px; border-radius:999px; background:var(--chip); color:var(--fg);
+    border:1px solid transparent; font-weight:500; font-size:14px; }
+  .chip[aria-pressed="true"] { background:var(--soft); border-color:var(--accent); color:var(--fg); }
+  .day { min-width:64px; text-align:center; line-height:1.3; }
+  .day b { display:block; font-size:18px; }
+  .times { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+  .times .chip { width:100%; border-radius:10px; padding:10px; }
+  .stepper { display:flex; align-items:center; gap:12px; }
+  .stepper button { width:44px; padding:8px; }
+  .stepper output { min-width:56px; text-align:center; font-size:20px; font-weight:700; }
+  select, textarea, input[type=text] { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line);
+    background:var(--card); color:var(--fg); font:inherit; }
+  textarea { min-height:72px; resize:vertical; }
+  .seats { list-style:none; padding:0; margin:0; }
+  .seats li { display:flex; justify-content:space-between; gap:8px; padding:10px 0; border-top:1px solid var(--line); }
+  .seats li:first-child { border-top:0; }
+  .seats li > span:last-child { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+  .seats .chip { padding:4px 10px; font-size:13px; }
+  .tag { font-size:12px; padding:2px 8px; border-radius:999px; background:var(--chip); color:var(--muted); white-space:nowrap; }
+  .tag.ok { background:var(--soft); color:var(--fg); }
+  .group-row { display:block; width:100%; text-align:left; background:var(--card); color:var(--fg); border:1px solid var(--line);
+    font-weight:400; }
+  .big { font-size:20px; font-weight:700; }
+  [hidden] { display:none !important; }
 </style>
 </head>
 <body>
 <main>
-  <h1>海星劇本殺</h1>
-  <p>預約與揪團</p>
-  <div id="status" role="status" aria-live="polite">登入中…</div>
-  <button id="retry" hidden>重新登入</button>
-  <button id="logout" class="secondary" hidden>登出</button>
+  <header><h1>海星劇本殺</h1><small id="who"></small></header>
+  <div id="view" aria-live="polite"><div class="card">載入中…</div></div>
 </main>
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js" charset="utf-8"></script>
 <script src="config.js"></script>
@@ -34,49 +66,266 @@
   // Session token lives only in this tab; LINE tokens are sent once to the server and never stored.
   const { LIFF_ID, API_BASE } = window.STARFISH_CONFIG;
   const KEY = 'starfish.session';
-  const $ = id => document.getElementById(id);
-  const show = (text, { retry = false, logout = false } = {}) => {
-    $('status').textContent = text; $('retry').hidden = !retry; $('logout').hidden = !logout;
+  const PREFS = ['推理', '還原', '情感', '恐怖', '歡樂', '陣營', '機制', '新手友善'];
+  const ERRORS = {
+    SLOT_UNAVAILABLE: '這個時段剛被預約，或店家剛好有事，請改選其他時間。',
+    CALENDAR_UNAVAILABLE: '暫時無法確認店家行事曆，請稍後再試。',
+    GROUP_FULL: '這團已經滿了。', SOLD_OUT: '這團已經滿了。',
+    GROUP_CLOSED: '這團已停止招募。', INVITE_USED: '這個位子已經被別人認領了。',
+    INVITE_INVALID: '邀請連結已失效，請向主揪索取新的連結。', ALREADY_MEMBER: '你已經在這團裡了。',
+    GROUP_NOT_FOUND: '找不到這個揪團，或你沒有查看權限。', ORGANIZER_CANNOT_LEAVE: '主揪不能退出，請改用「解散揪團」。',
+    INVALID_CAPACITY: '人數不符合這個劇本的人數限制。', INVALID_NAME: '請輸入 1–100 字的名字。',
   };
-  const read = () => { try { return sessionStorage.getItem(KEY); } catch { return null; } };
-  const write = v => { try { v ? sessionStorage.setItem(KEY, v) : sessionStorage.removeItem(KEY); } catch {} };
+  const view = document.getElementById('view');
+  const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch {} } };
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  const message = code => ERRORS[code] || '發生錯誤，請稍後再試。';
+  const tz = { timeZone: 'Asia/Taipei' };
+  const dayKey = iso => new Intl.DateTimeFormat('en-CA', { ...tz, year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date(iso));
+  const fmtDay = iso => new Intl.DateTimeFormat('zh-TW', { ...tz, month:'numeric', day:'numeric', weekday:'short' }).format(new Date(iso));
+  const fmtTime = iso => new Intl.DateTimeFormat('zh-TW', { ...tz, hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).format(new Date(iso));
+  const fmtRange = (a, b) => `${fmtDay(a)} ${fmtTime(a)}${b ? '–' + fmtTime(b) : ''}`;
+  let me = null;
 
-  async function api(path, { method = 'GET', body, token = read() } = {}) {
+  // An expired session signs in again once and retries; 'reauth' means LINE login is redirecting.
+  async function api(path, { method = 'GET', body, retried = false } = {}) {
+    const token = store.get(KEY);
     const res = await fetch(API_BASE + path, { method,
       headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
       body: body ? JSON.stringify(body) : undefined });
-    return { status: res.status, data: await res.json().catch(() => ({})) };
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 && !retried) {
+      store.set(KEY, null);
+      if (await signIn()) return api(path, { method, body, retried: true });
+      throw new Error('reauth');
+    }
+    if (!res.ok) { const e = new Error(data.error || 'ERROR'); e.code = data.error; throw e; }
+    return data;
   }
 
   async function signIn() {
     const idToken = liff.getIDToken();
-    if (!idToken) { liff.login({ redirectUri: location.href }); return; }
-    const { status, data } = await api('/auth/line', { method: 'POST', body: { idToken }, token: null });
-    if (status === 401) { liff.logout(); liff.login({ redirectUri: location.href }); return; } // stale ID token
-    if (status !== 200) { show('目前無法登入，請稍後再試。', { retry: true }); return; }
-    write(data.sessionToken);
-    greet(data.user);
+    if (!idToken) { liff.login({ redirectUri: location.href }); return false; }
+    const res = await fetch(API_BASE + '/auth/line', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken }) });
+    if (res.status === 401) { liff.logout(); liff.login({ redirectUri: location.href }); return false; } // stale ID token
+    if (!res.ok) throw new Error('LOGIN_FAILED');
+    const data = await res.json();
+    store.set(KEY, data.sessionToken);
+    me = data.user;
+    return true;
   }
-  const greet = user => show(`你好，${user.displayName || 'LINE 玩家'}！已登入。`, { logout: true });
+
+  const render = html => { view.innerHTML = html; window.scrollTo(0, 0); };
+  const go = hash => { location.hash = hash; };
+  const busy = (btn, on) => { if (btn) { btn.disabled = on; btn.dataset.label ??= btn.textContent; btn.textContent = on ? '處理中…' : btn.dataset.label; } };
+
+  // ---- Home -------------------------------------------------------------------------
+  async function showHome() {
+    render(`<div class="card stack"><div class="big">你好，${esc(me.displayName || 'LINE 玩家')}</div>
+      <p class="muted">選好時間就能開團，再把邀請連結分享給朋友。</p>
+      <button id="new">我要開團</button></div>
+      <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>`);
+    document.getElementById('new').onclick = () => go('#/create');
+    try {
+      const { groups } = await api('/me/groups');
+      document.getElementById('mine').innerHTML = groups.length ? groups.map(g => `
+        <button class="card group-row" data-id="${esc(g.groupId)}"><div><b>${esc(fmtRange(g.startsAt, g.endsAt))}</b></div>
+        <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}・${g.filled}/${g.capacity} 人・${g.isOrganizer ? '我是主揪' : '已加入'}</div></button>`).join('')
+        : '<div class="card muted">目前沒有揪團。</div>';
+      document.querySelectorAll('[data-id]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.id));
+    } catch (e) { if (e.message !== 'reauth') document.getElementById('mine').textContent = message(e.code); }
+  }
+
+  // ---- Create a group ---------------------------------------------------------------
+  async function showCreate() {
+    render(`<h2>我要開團</h2><div class="card">正在確認店家可預約的時間…</div>`);
+    let slots = [], games = [];
+    try { [{ slots }, { games }] = await Promise.all([api('/slots?days=21'), api('/games')]); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>我要開團</h2><div class="card error">${esc(message(e.code))}</div>
+      <button class="secondary" onclick="history.back()">返回</button>`); return; }
+    if (!slots.length) { render(`<h2>我要開團</h2><div class="card muted">接下來三週沒有可預約的時間。</div>
+      <button class="secondary" onclick="history.back()">返回</button>`); return; }
+
+    const days = [...new Set(slots.map(s => dayKey(s.startsAt)))];
+    const state = { day: days[0], start: null, capacity: 6, gameId: '', prefs: new Set(), note: '', visibility: 'private' };
+    // One request ID per form keeps double taps and retries from opening two groups.
+    const requestId = store.get('starfish.createRequest') || crypto.randomUUID();
+    store.set('starfish.createRequest', requestId);
+
+    render(`<h2>我要開團</h2>
+      <div class="card"><h3 style="margin-top:0">1. 選日期</h3><div class="chips" id="days"></div>
+        <h3>2. 選開始時間（每場 4 小時）</h3><div class="times" id="times"></div></div>
+      <div class="card"><h3 style="margin-top:0">3. 預計人數</h3>
+        <div class="stepper"><button class="secondary" id="minus" aria-label="減少">−</button>
+        <output id="cap">6</output><button class="secondary" id="plus" aria-label="增加">＋</button></div>
+        <h3>4. 劇本</h3><select id="game"><option value="">請店家推薦</option>${games.map(g =>
+          `<option value="${esc(g.gameId)}">${esc(g.title)}（${g.minPlayers}–${g.maxPlayers} 人）</option>`).join('')}</select>
+        <div id="prefsBox"><h3>喜歡的類型（可複選）</h3><div class="chips wrap" id="prefs">${PREFS.map(p =>
+          `<button class="chip" aria-pressed="false" data-pref="${esc(p)}">${esc(p)}</button>`).join('')}</div></div>
+        <h3>備註</h3><textarea id="note" maxlength="2000" placeholder="例如：有人第一次玩、想要不恐怖的"></textarea>
+        <h3>誰可以加入</h3><div class="chips">
+          <button class="chip" aria-pressed="true" data-vis="private">只有收到連結的人</button>
+          <button class="chip" aria-pressed="false" data-vis="public">公開招募</button></div></div>
+      <div class="stack"><div id="summary" class="muted"></div><button id="submit" disabled>確認開團</button>
+        <div id="err" class="error" hidden></div><button class="secondary" onclick="history.back()">返回</button></div>`);
+
+    const $ = id => document.getElementById(id);
+    const game = () => games.find(g => g.gameId === state.gameId);
+    const limits = () => game() ? [game().minPlayers, game().maxPlayers] : [2, 12];
+    function paint() {
+      $('days').innerHTML = days.map(d => { const first = slots.find(s => dayKey(s.startsAt) === d);
+        return `<button class="chip day" aria-pressed="${d === state.day}" data-day="${d}">${esc(fmtDay(first.startsAt).replace(/\(|\)/g, ' '))}</button>`; }).join('');
+      $('times').innerHTML = slots.filter(s => dayKey(s.startsAt) === state.day).map(s =>
+        `<button class="chip" aria-pressed="${s.startsAt === state.start}" data-start="${esc(s.startsAt)}">${esc(fmtTime(s.startsAt))}–${esc(fmtTime(s.endsAt))}</button>`).join('');
+      const [lo, hi] = limits(); state.capacity = Math.min(hi, Math.max(lo, state.capacity));
+      $('cap').textContent = state.capacity; $('minus').disabled = state.capacity <= lo; $('plus').disabled = state.capacity >= hi;
+      $('prefsBox').hidden = !!state.gameId;
+      const slot = slots.find(s => s.startsAt === state.start);
+      $('summary').textContent = slot ? `${fmtRange(slot.startsAt, slot.endsAt)}・${state.capacity} 人・${game()?.title || '請店家推薦'}` : '請選擇開始時間';
+      $('submit').disabled = !slot;
+      document.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { state.day = b.dataset.day; state.start = null; paint(); });
+      document.querySelectorAll('[data-start]').forEach(b => b.onclick = () => { state.start = b.dataset.start; paint(); });
+    }
+    $('minus').onclick = () => { state.capacity--; paint(); };
+    $('plus').onclick = () => { state.capacity++; paint(); };
+    $('game').onchange = e => { state.gameId = e.target.value; paint(); };
+    document.querySelectorAll('[data-pref]').forEach(b => b.onclick = () => {
+      const p = b.dataset.pref; state.prefs.has(p) ? state.prefs.delete(p) : state.prefs.add(p);
+      b.setAttribute('aria-pressed', state.prefs.has(p)); });
+    document.querySelectorAll('[data-vis]').forEach(b => b.onclick = () => { state.visibility = b.dataset.vis;
+      document.querySelectorAll('[data-vis]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
+    $('submit').onclick = async () => {
+      busy($('submit'), true); $('err').hidden = true;
+      try {
+        const group = await api('/groups', { method: 'POST', body: { requestId, startsAt: state.start, capacity: state.capacity,
+          gameId: state.gameId || null, preferences: state.gameId ? [] : [...state.prefs], note: $('note').value,
+          visibility: state.visibility } });
+        store.set('starfish.createRequest', null);
+        go('#/group/' + group.groupId);
+      } catch (e) {
+        if (e.message === 'reauth') return;
+        busy($('submit'), false); $('err').textContent = message(e.code); $('err').hidden = false;
+        if (e.code === 'SLOT_UNAVAILABLE') { store.set('starfish.createRequest', null); setTimeout(showCreate, 1800); }
+      }
+    };
+    paint();
+  }
+
+  // ---- Group page -------------------------------------------------------------------
+  async function share(text, url) {
+    const full = `${text}\n${url}`;
+    if (liff.isApiAvailable('shareTargetPicker')) {
+      try { await liff.shareTargetPicker([{ type: 'text', text: full }]); return; } catch {}
+    }
+    location.href = 'https://line.me/R/share?text=' + encodeURIComponent(full);
+  }
+  const inviteUrl = token => `https://liff.line.me/${LIFF_ID}?invite=${encodeURIComponent(token)}`;
+
+  async function showGroup(id) {
+    let g;
+    try { g = await api('/groups/' + id); }
+    catch (e) { if (e.message !== 'reauth') render(`<div class="card error">${esc(message(e.code))}</div>
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
+    const open = g.capacity - g.filled;
+    const statusText = { recruiting: '招募中', pending_confirmation: '等待店家確認', confirmed: '已成團', cancelled: '已解散' }[g.status] || g.status;
+    render(`<div class="card stack"><div class="big">${esc(fmtRange(g.startsAt, g.endsAt))}</div>
+        <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}${g.preferences?.length ? '・' + esc(g.preferences.join('、')) : ''}</div>
+        <div><span class="tag ok">${esc(statusText)}</span> <span class="tag">${g.filled}/${g.capacity} 人${open > 0 ? `・還缺 ${open} 人` : ''}</span>
+        <span class="tag">${g.visibility === 'public' ? '公開招募' : '憑連結加入'}</span></div>
+        ${g.note ? `<div class="muted">備註：${esc(g.note)}</div>` : ''}</div>
+      <div class="card"><h3 style="margin-top:0">座位</h3><ul class="seats">${(g.seats || []).map(s => `<li>
+        <span>${s.seatNumber}. ${s.status === 'open' ? '<span class="muted">空位</span>' : esc(s.name)}${s.isMe ? '（我）' : ''}</span>
+        <span>${s.status === 'reserved' ? '<span class="tag">保留中・待認領</span>' : s.status === 'joined' ? '<span class="tag ok">已加入</span>' : ''}
+        ${(g.isOrganizer && s.status === 'reserved') || (s.isMe && !g.isOrganizer) ? `<button class="chip" data-leave="${esc(s.seatId)}">${s.isMe ? '退出' : '取消保留'}</button>` : ''}</span></li>`).join('')}</ul></div>
+      <div class="stack" id="actions"></div><div id="err" class="error" hidden></div>`);
+    const actions = document.getElementById('actions');
+    const err = text => { const el = document.getElementById('err'); el.textContent = text; el.hidden = false; };
+    if (g.isOrganizer && g.status === 'recruiting') {
+      actions.innerHTML = `${open > 0 ? '<button id="invite">分享邀請連結到 LINE</button><button class="secondary" id="reserve">幫朋友保留位子</button>' : ''}
+        <button class="danger" id="cancel">解散揪團</button>`;
+      document.getElementById('invite')?.addEventListener('click', async e => {
+        busy(e.target, true);
+        try { const { token } = await api(`/groups/${id}/share-link`, { method: 'POST' });
+          await share(`${me.displayName || '我'}揪團玩劇本殺！\n${fmtRange(g.startsAt, g.endsAt)}，還缺 ${open} 人，點連結加入：`, inviteUrl(token)); }
+        catch (x) { if (x.message !== 'reauth') err(message(x.code)); }
+        busy(e.target, false);
+      });
+      document.getElementById('reserve')?.addEventListener('click', async e => {
+        const name = prompt('幫誰保留位子？輸入朋友的名字（之後他用連結認領）');
+        if (!name || !name.trim()) return;
+        busy(e.target, true);
+        try { const { token } = await api(`/groups/${id}/reserve`, { method: 'POST', body: { displayName: name.trim() } });
+          await share(`${name.trim()}，我幫你在劇本殺揪團保留了位子！\n${fmtRange(g.startsAt, g.endsAt)}，點連結認領：`, inviteUrl(token));
+          showGroup(id); }
+        catch (x) { if (x.message !== 'reauth') err(message(x.code)); busy(e.target, false); }
+      });
+      document.getElementById('cancel').onclick = async e => {
+        if (!confirm('確定要解散這團嗎？所有邀請連結都會失效，時段也會釋出。')) return;
+        busy(e.target, true);
+        try { await api(`/groups/${id}/cancel`, { method: 'POST' }); go('#/'); }
+        catch (x) { if (x.message !== 'reauth') err(message(x.code)); busy(e.target, false); }
+      };
+    }
+    actions.insertAdjacentHTML('beforeend', '<button class="secondary" id="home">回首頁</button>');
+    document.getElementById('home').onclick = () => go('#/');
+    document.querySelectorAll('[data-leave]').forEach(b => b.onclick = async () => {
+      if (!confirm(b.textContent === '退出' ? '確定要退出這團嗎？' : '確定要取消這個保留位子嗎？')) return;
+      try { await api(`/seats/${b.dataset.leave}/leave`, { method: 'POST' }); b.textContent === '退出' ? go('#/') : showGroup(id); }
+      catch (x) { if (x.message !== 'reauth') err(message(x.code)); }
+    });
+  }
+
+  // ---- Invite landing ---------------------------------------------------------------
+  async function showInvite(token) {
+    let inv;
+    try { inv = await api('/invites/preview', { method: 'POST', body: { token } }); }
+    catch (e) { if (e.message !== 'reauth') render(`<div class="card error">${esc(message(e.code))}</div>
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
+    if (inv.claimedByMe) { go('#/group/' + inv.groupId); return; }
+    const seat = inv.purpose === 'claim_group_seat';
+    render(`<div class="card stack"><div class="muted">${esc(inv.organizerName)} 邀請你一起玩劇本殺</div>
+        <div class="big">${esc(fmtRange(inv.startsAt, inv.endsAt))}</div>
+        <div class="muted">${esc(inv.gameTitle || '劇本待店家推薦')}・目前 ${inv.filled}/${inv.capacity} 人</div>
+        ${seat ? `<div>主揪幫「<b>${esc(inv.reservedFor)}</b>」保留了一個位子。</div>` : ''}</div>
+      <div class="stack">${inv.usable && inv.status === 'recruiting'
+        ? `<button id="join">${seat ? `我是${esc(inv.reservedFor)}，認領這個位子` : '加入這團'}</button>`
+        : `<div class="card error">${esc(message(inv.status === 'cancelled' ? 'INVITE_INVALID' : seat ? 'INVITE_USED' : 'GROUP_CLOSED'))}</div>`}
+        <div id="err" class="error" hidden></div><button class="secondary" id="home">回首頁</button></div>`);
+    document.getElementById('home').onclick = () => go('#/');
+    document.getElementById('join')?.addEventListener('click', async e => {
+      busy(e.target, true);
+      try { await api('/invites/claim', { method: 'POST', body: { token } }); go('#/group/' + inv.groupId); }
+      catch (x) { if (x.message === 'reauth') return; if (x.code === 'ALREADY_MEMBER') { go('#/group/' + inv.groupId); return; }
+        const el = document.getElementById('err'); el.textContent = message(x.code); el.hidden = false; busy(e.target, false); }
+    });
+  }
+
+  // ---- Router -----------------------------------------------------------------------
+  function route() {
+    const h = location.hash;
+    let m;
+    if (h === '#/create') return showCreate();
+    if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
+    if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
+    return showHome();
+  }
 
   async function start() {
     try {
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
-      if (read()) {
-        const { status, data } = await api('/me');
-        if (status === 200) { greet(data.user); return; }
-        write(null);
-      }
-      await signIn();
-    } catch { show('LINE 初始化失敗，請從 LINE 重新開啟。', { retry: true }); }
+      // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
+      const invite = new URLSearchParams(location.search).get('invite');
+      if (invite && /^[A-Za-z0-9_-]{43}$/.test(invite)) history.replaceState(null, '', location.pathname + '#/invite/' + invite);
+      if (store.get(KEY)) { try { me = (await api('/me')).user; } catch (e) { if (e.message === 'reauth') return; } }
+      if (!me && !(await signIn())) return;
+      document.getElementById('who').textContent = me.displayName || '';
+      window.addEventListener('hashchange', route);
+      route();
+    } catch { render('<div class="card error">LINE 初始化失敗，請從 LINE 重新開啟。</div>'); }
   }
-  $('retry').onclick = () => { show('登入中…'); start(); };
-  $('logout').onclick = async () => {
-    await api('/auth/logout', { method: 'POST' }).catch(() => {});
-    write(null); if (liff.isLoggedIn()) liff.logout();
-    show('已登出。', { retry: true });
-  };
   start();
 </script>
 </body>
