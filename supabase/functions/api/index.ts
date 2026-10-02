@@ -6,6 +6,8 @@ type Settings = {
   allowedOrigins?: string[];
   // Google service account with "See only free/busy" access to the owner's calendar.
   google?: { clientEmail: string; privateKey: string; calendarId: string };
+  catalogUrl?: string;  // raw scripts.js in the Starfish site repo
+  catalogSiteBase?: string;  // where that repo's pages are published
   fetcher?: typeof fetch;
   now?: () => number;
 };
@@ -187,6 +189,34 @@ function taipeiDayStart(date: string) {
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const INVITE_DAYS = 7;
+const CATALOG_URL = 'https://raw.githubusercontent.com/cj2vum4/starfishlarp/main/scripts.js';
+const CATALOG_SITE = 'https://cj2vum4.github.io/starfishlarp/';
+
+// The Starfish site keeps its catalog as `window.SCRIPTS = [...]` in scripts.js. The array
+// is read as JSON only, never executed, and each entry is reduced to the fields we store.
+export function parseStarfishCatalog(source: string, siteBase = CATALOG_SITE) {
+  const match = /window\.SCRIPTS\s*=\s*(\[[\s\S]*?\n\]);/.exec(source);
+  if (!match) throw new ApiError(502, 'CATALOG_UNREADABLE');
+  let entries: Record<string, unknown>[];
+  try { entries = JSON.parse(match[1]); } catch { throw new ApiError(502, 'CATALOG_UNREADABLE'); }
+  if (!Array.isArray(entries) || !entries.length) throw new ApiError(502, 'CATALOG_UNREADABLE');
+  const https = (v: unknown) => typeof v === 'string' && /^https:\/\//.test(v) ? v : null;
+  return entries.map(e => {
+    const players = Number(e.players);
+    const label = typeof e.playersLabel === 'string' ? e.playersLabel : '';
+    const range = /(\d+)\s*[-–~]\s*(\d+)\s*人/.exec(label);
+    const min = range ? Math.min(Number(range[1]), players) : players;
+    const max = range ? Math.max(Number(range[2]), players) : players;
+    return {
+      slug: String(e.id ?? ''), title: String(e.name ?? ''), min_players: min, max_players: max,
+      duration_minutes: Math.round(Number(e.time) * 60),
+      genres: Array.isArray(e.types) ? e.types.filter(t => typeof t === 'string').slice(0, 20) : [],
+      difficulty: e.difficulty == null ? null : String(e.difficulty), players_label: label || null,
+      image_url: https(e.poster),
+      source_url: typeof e.file === 'string' ? siteBase + e.file.split('/').map(encodeURIComponent).join('/') : null,
+    };
+  });
+}
 
 // Database rows use snake_case; the LIFF page uses camelCase.
 function camel(value: unknown): unknown {
@@ -227,7 +257,9 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     await requireSession(req, settings);
     const params = new URL(req.url).searchParams;
     const days = Number(params.get('days') ?? '14');
+    const minutes = Number(params.get('minutes') ?? '240');
     if (!Number.isInteger(days) || days < 1 || days > 31) throw new ApiError(400, 'INVALID_RANGE');
+    if (!Number.isInteger(minutes) || minutes < 30 || minutes > 720) throw new ApiError(400, 'INVALID_RANGE');
     const nowMs = (settings.now ?? Date.now)();
     const fromDay = params.get('from');
     const startMs = fromDay ? taipeiDayStart(fromDay).getTime() : nowMs;
@@ -236,7 +268,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (to <= from) return [200, { slots: [] }];
     await syncCalendar(settings, from, to);
     const slots = await rpc<{ starts_at: string; ends_at: string }[]>(settings, 'list_available_starts',
-      { p_from: from.toISOString(), p_to: to.toISOString(), p_minutes: 240 });
+      { p_from: from.toISOString(), p_to: to.toISOString(), p_minutes: minutes });
     return [200, { slots: slots.map(s => ({ startsAt: s.starts_at, endsAt: s.ends_at })) }];
   }
   if (req.method === 'POST' && path === '/groups') {
@@ -262,6 +294,19 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   if (req.method === 'GET' && path === '/games') {
     await requireSession(req, settings);
     return [200, { games: camel(await rpc(settings, 'list_active_games', {})) }];
+  }
+  if (req.method === 'POST' && path === '/admin/games/sync') {
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    let source: string;
+    try {
+      const response = await (settings.fetcher ?? fetch)(settings.catalogUrl ?? CATALOG_URL,
+        { signal: AbortSignal.timeout(8000) });
+      if (!response.ok) throw new Error();
+      source = await response.text();
+    } catch { throw new ApiError(502, 'CATALOG_UNAVAILABLE'); }
+    const games = parseStarfishCatalog(source, settings.catalogSiteBase ?? CATALOG_SITE);
+    return [200, camel(await rpc(settings, 'admin_sync_games', { p_actor: session.user_id, p_games: games }))];
   }
   if (req.method === 'GET' && path === '/me/groups') {
     const { session } = await requireSession(req, settings);

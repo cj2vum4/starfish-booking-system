@@ -52,6 +52,13 @@
   .group-row { display:block; width:100%; text-align:left; background:var(--card); color:var(--fg); border:1px solid var(--line);
     font-weight:400; }
   .big { font-size:20px; font-weight:700; }
+  .game-card { display:flex; gap:12px; align-items:flex-start; text-align:left; background:var(--card); color:var(--fg);
+    border:1px solid var(--line); font-weight:400; padding:10px; }
+  .game-card[aria-pressed="true"] { border-color:var(--accent); background:var(--soft); }
+  .game-card b { display:block; font-size:16px; }
+  .poster { width:56px; height:78px; flex:0 0 56px; border-radius:8px; object-fit:cover; background:var(--chip); }
+  .poster.none { display:grid; place-items:center; color:var(--muted); font-size:13px; }
+  .link { display:inline-block; margin-top:4px; color:var(--accent); font-size:14px; text-decoration:underline; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -66,7 +73,6 @@
   // Session token lives only in this tab; LINE tokens are sent once to the server and never stored.
   const { LIFF_ID, API_BASE } = window.STARFISH_CONFIG;
   const KEY = 'starfish.session';
-  const PREFS = ['推理', '還原', '情感', '恐怖', '歡樂', '陣營', '機制', '新手友善'];
   const ERRORS = {
     SLOT_UNAVAILABLE: '這個時段剛被預約，或店家剛好有事，請改選其他時間。',
     CALENDAR_UNAVAILABLE: '暫時無法確認店家行事曆，請稍後再試。',
@@ -75,6 +81,8 @@
     INVITE_INVALID: '邀請連結已失效，請向主揪索取新的連結。', ALREADY_MEMBER: '你已經在這團裡了。',
     GROUP_NOT_FOUND: '找不到這個揪團，或你沒有查看權限。', ORGANIZER_CANNOT_LEAVE: '主揪不能退出，請改用「解散揪團」。',
     INVALID_CAPACITY: '人數不符合這個劇本的人數限制。', INVALID_NAME: '請輸入 1–100 字的名字。',
+    CATALOG_UNAVAILABLE: '暫時讀不到 GitHub 上的劇本資料。', CATALOG_UNREADABLE: 'GitHub 上的 scripts.js 格式無法辨識。',
+    INVALID_CATALOG: '劇本資料有欄位不正確，已整批取消同步。',
   };
   const view = document.getElementById('view');
   const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -126,8 +134,17 @@
     render(`<div class="card stack"><div class="big">你好，${esc(me.displayName || 'LINE 玩家')}</div>
       <p class="muted">選好時間就能開團，再把邀請連結分享給朋友。</p>
       <button id="new">我要開團</button></div>
-      <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>`);
+      <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
+      ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
+        <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
+    document.getElementById('sync')?.addEventListener('click', async e => {
+      busy(e.target, true);
+      try { const r = await api('/admin/games/sync', { method: 'POST' });
+        document.getElementById('syncMsg').textContent = `已同步 ${r.synced} 本${r.deactivated ? `，停用 ${r.deactivated} 本（GitHub 已移除）` : ''}。`; }
+      catch (x) { if (x.message !== 'reauth') document.getElementById('syncMsg').textContent = message(x.code); }
+      busy(e.target, false);
+    });
     try {
       const { groups } = await api('/me/groups');
       document.getElementById('mine').innerHTML = groups.length ? groups.map(g => `
@@ -139,32 +156,35 @@
   }
 
   // ---- Create a group ---------------------------------------------------------------
+  // Tags in the catalog use several spellings for one idea; filters match all of them.
+  const TAG_FILTERS = [['推理', ['推理', '硬核推理', '日式推理', '本格']], ['情感', ['情感', '愛情', '遺憾']],
+    ['歡樂', ['歡樂', '搞笑']], ['驚悚', ['驚悚', '恐怖', '微恐', '微恐怖']], ['陣營', ['陣營']], ['機制', ['機制']],
+    ['新手', ['新手', '新手友善']]];
+  const hours = m => `${+(m / 60).toFixed(1)} 小時`;
+  const stars = d => d == null || d === '' ? '' : '・難度 ' + '★'.repeat(Math.max(0, Math.min(5, +d))) + '☆'.repeat(5 - Math.max(0, Math.min(5, +d)));
+
   async function showCreate() {
-    render(`<h2>我要開團</h2><div class="card">正在確認店家可預約的時間…</div>`);
-    let slots = [], games = [];
-    try { [{ slots }, { games }] = await Promise.all([api('/slots?days=21'), api('/games')]); }
+    render(`<h2>我要開團</h2><div class="card">讀取劇本中…</div>`);
+    let games = [];
+    try { ({ games } = await api('/games')); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>我要開團</h2><div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="history.back()">返回</button>`); return; }
-    if (!slots.length) { render(`<h2>我要開團</h2><div class="card muted">接下來三週沒有可預約的時間。</div>
-      <button class="secondary" onclick="history.back()">返回</button>`); return; }
 
-    const days = [...new Set(slots.map(s => dayKey(s.startsAt)))];
-    const state = { day: days[0], start: null, capacity: 6, gameId: '', prefs: new Set(), note: '', visibility: 'private' };
+    const state = { capacity: 6, tag: '', gameId: '', day: null, start: null, visibility: 'private' };
+    const slotCache = {};  // minutes -> slots (or {error})
     // One request ID per form keeps double taps and retries from opening two groups.
     const requestId = store.get('starfish.createRequest') || crypto.randomUUID();
     store.set('starfish.createRequest', requestId);
 
     render(`<h2>我要開團</h2>
-      <div class="card"><h3 style="margin-top:0">1. 選日期</h3><div class="chips" id="days"></div>
-        <h3>2. 選開始時間（每場 4 小時）</h3><div class="times" id="times"></div></div>
-      <div class="card"><h3 style="margin-top:0">3. 預計人數</h3>
+      <div class="card"><h3 style="margin-top:0">1. 幾個人玩？</h3>
         <div class="stepper"><button class="secondary" id="minus" aria-label="減少">−</button>
-        <output id="cap">6</output><button class="secondary" id="plus" aria-label="增加">＋</button></div>
-        <h3>4. 劇本</h3><select id="game"><option value="">請店家推薦</option>${games.map(g =>
-          `<option value="${esc(g.gameId)}">${esc(g.title)}（${g.minPlayers}–${g.maxPlayers} 人）</option>`).join('')}</select>
-        <div id="prefsBox"><h3>喜歡的類型（可複選）</h3><div class="chips wrap" id="prefs">${PREFS.map(p =>
-          `<button class="chip" aria-pressed="false" data-pref="${esc(p)}">${esc(p)}</button>`).join('')}</div></div>
-        <h3>備註</h3><textarea id="note" maxlength="2000" placeholder="例如：有人第一次玩、想要不恐怖的"></textarea>
+        <output id="cap">6</output><button class="secondary" id="plus" aria-label="增加">＋</button></div></div>
+      <div class="card"><h3 style="margin-top:0">2. 選劇本</h3>
+        <div class="chips" id="tags"></div><p class="muted" id="gameCount"></p><div id="games" class="stack"></div></div>
+      <div class="card"><h3 style="margin-top:0">3. 選時間</h3><div id="when"></div></div>
+      <div class="card"><h3 style="margin-top:0">4. 備註</h3>
+        <textarea id="note" maxlength="2000" placeholder="例如：有人第一次玩、想要不恐怖的"></textarea>
         <h3>誰可以加入</h3><div class="chips">
           <button class="chip" aria-pressed="true" data-vis="private">只有收到連結的人</button>
           <button class="chip" aria-pressed="false" data-vis="public">公開招募</button></div></div>
@@ -173,44 +193,83 @@
 
     const $ = id => document.getElementById(id);
     const game = () => games.find(g => g.gameId === state.gameId);
-    const limits = () => game() ? [game().minPlayers, game().maxPlayers] : [2, 12];
-    function paint() {
-      $('days').innerHTML = days.map(d => { const first = slots.find(s => dayKey(s.startsAt) === d);
-        return `<button class="chip day" aria-pressed="${d === state.day}" data-day="${d}">${esc(fmtDay(first.startsAt).replace(/\(|\)/g, ' '))}</button>`; }).join('');
-      $('times').innerHTML = slots.filter(s => dayKey(s.startsAt) === state.day).map(s =>
-        `<button class="chip" aria-pressed="${s.startsAt === state.start}" data-start="${esc(s.startsAt)}">${esc(fmtTime(s.startsAt))}–${esc(fmtTime(s.endsAt))}</button>`).join('');
-      const [lo, hi] = limits(); state.capacity = Math.min(hi, Math.max(lo, state.capacity));
-      $('cap').textContent = state.capacity; $('minus').disabled = state.capacity <= lo; $('plus').disabled = state.capacity >= hi;
-      $('prefsBox').hidden = !!state.gameId;
-      const slot = slots.find(s => s.startsAt === state.start);
+    const minutes = () => game()?.durationMinutes || 240;
+    const tagMatch = g => !state.tag || TAG_FILTERS.find(([t]) => t === state.tag)[1].some(t => (g.genres || []).includes(t));
+    const fits = g => g.minPlayers <= state.capacity && state.capacity <= g.maxPlayers;
+
+    function paintGames() {
+      $('cap').textContent = state.capacity;
+      $('minus').disabled = state.capacity <= 2; $('plus').disabled = state.capacity >= 12;
+      $('tags').innerHTML = [['', '全部'], ...TAG_FILTERS.map(([t]) => [t, t])].map(([v, label]) =>
+        `<button class="chip" aria-pressed="${state.tag === v}" data-tag="${esc(v)}">${esc(label)}</button>`).join('');
+      const list = games.filter(g => fits(g) && tagMatch(g));
+      if (state.gameId && !list.some(g => g.gameId === state.gameId)) { state.gameId = ''; state.day = state.start = null; }
+      $('gameCount').textContent = `${state.capacity} 人可玩${state.tag ? '・' + state.tag : ''}：${list.length} 本`;
+      $('games').innerHTML = `<button class="game-card" aria-pressed="${!state.gameId}" data-game="">
+          <div class="poster none">?</div><div><b>請店家推薦</b><div class="muted">依人數${state.tag ? '與「' + esc(state.tag) + '」' : ''}幫你挑，先保留 4 小時</div></div></button>`
+        + list.map(g => `<button class="game-card" aria-pressed="${g.gameId === state.gameId}" data-game="${esc(g.gameId)}">
+          ${g.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(g.imageUrl)}">` : '<div class="poster none">海星</div>'}
+          <div><b>${esc(g.title)}</b><div class="muted">${esc(g.playersLabel || g.minPlayers + ' 人')}・${hours(g.durationMinutes)}${esc(stars(g.difficulty))}</div>
+          <div class="muted">${esc((g.genres || []).slice(0, 4).join('、'))}</div>
+          ${g.sourceUrl ? `<span class="link" data-intro="${esc(g.sourceUrl)}">看劇本介紹</span>` : ''}</div></button>`).join('');
+      document.querySelectorAll('[data-tag]').forEach(b => b.onclick = () => { state.tag = b.dataset.tag; paintGames(); });
+      document.querySelectorAll('[data-game]').forEach(b => b.onclick = e => {
+        if (e.target.dataset.intro) { liff.openWindow({ url: e.target.dataset.intro, external: true }); return; }
+        if (state.gameId !== b.dataset.game) { state.gameId = b.dataset.game; state.day = state.start = null; }
+        paintGames();
+      });
+      paintWhen();
+    }
+
+    async function paintWhen() {
+      const m = minutes();
+      if (!slotCache[m]) {
+        $('when').innerHTML = '<p class="muted">正在確認店家可預約的時間…</p>';
+        try { slotCache[m] = (await api(`/slots?days=21&minutes=${m}`)).slots; }
+        catch (e) { if (e.message === 'reauth') return; slotCache[m] = { error: e.code }; }
+        if (m !== minutes()) return;  // the player picked another script meanwhile
+      }
+      const slots = slotCache[m];
+      if (slots.error) { $('when').innerHTML = `<p class="error">${esc(message(slots.error))}</p>`; paintSummary(); return; }
+      if (!slots.length) { $('when').innerHTML = `<p class="muted">接下來三週沒有可容納 ${esc(hours(m))} 的時段，請換劇本或洽店家。</p>`; paintSummary(); return; }
+      const days = [...new Set(slots.map(s => dayKey(s.startsAt)))];
+      if (!days.includes(state.day)) { state.day = days[0]; state.start = null; }
+      $('when').innerHTML = `<p class="muted">每場 ${esc(hours(m))}</p><div class="chips" id="days">${days.map(d => {
+          const first = slots.find(s => dayKey(s.startsAt) === d);
+          return `<button class="chip day" aria-pressed="${d === state.day}" data-day="${d}">${esc(fmtDay(first.startsAt))}</button>`; }).join('')}</div>
+        <div class="times" style="margin-top:10px">${slots.filter(s => dayKey(s.startsAt) === state.day).map(s =>
+          `<button class="chip" aria-pressed="${s.startsAt === state.start}" data-start="${esc(s.startsAt)}">${esc(fmtTime(s.startsAt))}–${esc(fmtTime(s.endsAt))}</button>`).join('')}</div>`;
+      document.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { state.day = b.dataset.day; state.start = null; paintWhen(); });
+      document.querySelectorAll('[data-start]').forEach(b => b.onclick = () => { state.start = b.dataset.start; paintWhen(); });
+      paintSummary();
+    }
+
+    function paintSummary() {
+      const slots = slotCache[minutes()];
+      const slot = Array.isArray(slots) && slots.find(s => s.startsAt === state.start);
       $('summary').textContent = slot ? `${fmtRange(slot.startsAt, slot.endsAt)}・${state.capacity} 人・${game()?.title || '請店家推薦'}` : '請選擇開始時間';
       $('submit').disabled = !slot;
-      document.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { state.day = b.dataset.day; state.start = null; paint(); });
-      document.querySelectorAll('[data-start]').forEach(b => b.onclick = () => { state.start = b.dataset.start; paint(); });
     }
-    $('minus').onclick = () => { state.capacity--; paint(); };
-    $('plus').onclick = () => { state.capacity++; paint(); };
-    $('game').onchange = e => { state.gameId = e.target.value; paint(); };
-    document.querySelectorAll('[data-pref]').forEach(b => b.onclick = () => {
-      const p = b.dataset.pref; state.prefs.has(p) ? state.prefs.delete(p) : state.prefs.add(p);
-      b.setAttribute('aria-pressed', state.prefs.has(p)); });
+
+    $('minus').onclick = () => { state.capacity--; paintGames(); };
+    $('plus').onclick = () => { state.capacity++; paintGames(); };
     document.querySelectorAll('[data-vis]').forEach(b => b.onclick = () => { state.visibility = b.dataset.vis;
       document.querySelectorAll('[data-vis]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
     $('submit').onclick = async () => {
       busy($('submit'), true); $('err').hidden = true;
       try {
         const group = await api('/groups', { method: 'POST', body: { requestId, startsAt: state.start, capacity: state.capacity,
-          gameId: state.gameId || null, preferences: state.gameId ? [] : [...state.prefs], note: $('note').value,
+          gameId: state.gameId || null, preferences: !state.gameId && state.tag ? [state.tag] : [], note: $('note').value,
           visibility: state.visibility } });
         store.set('starfish.createRequest', null);
         go('#/group/' + group.groupId);
       } catch (e) {
         if (e.message === 'reauth') return;
         busy($('submit'), false); $('err').textContent = message(e.code); $('err').hidden = false;
-        if (e.code === 'SLOT_UNAVAILABLE') { store.set('starfish.createRequest', null); setTimeout(showCreate, 1800); }
+        if (e.code === 'SLOT_UNAVAILABLE') { store.set('starfish.createRequest', null); delete slotCache[minutes()]; state.start = null; paintWhen(); }
       }
     };
-    paint();
+    paintGames();
   }
 
   // ---- Group page -------------------------------------------------------------------

@@ -102,6 +102,16 @@
 - 0006 已套用雲端並 PASS；api 已重新部署（commit e58089a，SHA-256 一致），新路由上線。
 - 本機以模擬 LIFF 與 API 逐一操作所有畫面；LINE 暱稱含 HTML 時以純文字顯示。npm test 31 passed。
 
+## 劇本目錄（程式完成）
+
+- 劇本唯一來源：GitHub cj2vum4/starfishlarp 的 scripts.js（window.SCRIPTS，57 本）。
+- 202610030007_game_catalog.sql：admin_sync_games（僅店家、整批驗證、GitHub 移除者只停用不刪除）；
+  價格可空（GitHub 無價格），成團時必須填價格（PRICE_REQUIRED）。
+- API POST /admin/games/sync：只以 JSON 解析 scripts.js，不執行任何程式碼；人數區間取自 playersLabel（如 7-10人）。
+- 開團流程改為：人數 → 該人數可玩的劇本（類型篩選、海報、時長、難度、介紹連結）→ 依劇本時長列出時間 → 備註。
+- 長本（如 6 小時）自動只出現在可容納的時段（週末）；店家推薦先保留 4 小時。
+- npm test 35 passed；實際 57 本解析全數有效（5 人 6 本、6 人 27 本、7 人 17 本、8 人 6 本、9 人 2 本、10 人 3 本）。
+
 ## 未完成，不能宣稱可供營運
 
 
