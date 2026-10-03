@@ -148,7 +148,7 @@
   （INTERVAL、COUNT、UNTIL、BYDAY 含 -1MO、BYMONTHDAY），處理 EXDATE 與 RECURRENCE-ID；不支援的規則 fail closed。
 - 下載結果暫存 5 分鐘；讀不到時列時段與開團一律 503。
 - 以店家實際 Outlook 檔驗證：224 筆、60 天內 3 筆忙碌，與另一種計算交叉核對一致（未輸出任何行程內容）。
-- npm test 47 passed。
+- npm test 47 passed；api 已重新部署（commit 46a8e88），待店家設定 BUSY_ICS_URLS。
 
 ## 未完成，不能宣稱可供營運
 
