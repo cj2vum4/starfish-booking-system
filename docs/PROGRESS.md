@@ -177,7 +177,8 @@
 - API：GET /groups/public、POST /groups/:id/visibility。
 - LIFF：首頁「看缺人場次」、缺人場次列表、非成員看公開團可「加入這團」、主揪「改為公開招募／改為只限收到連結的人」。
 - 圖文選單連結：?view=open（缺人場次）、?view=create（我要開團）、無參數（首頁／我的揪團）。
-- npm test 57 passed。
+- npm test 57 passed；0012 已上雲，雲端 public_groups 測試 PASS；LIFF 頁已發布。
+- 待辦：api 需重新部署 commit b056cf4（瀏覽器面板隱藏時 Dashboard 編輯器無法載入，尚未部署）。
 
 ## 未完成，不能宣稱可供營運
 
