@@ -14,6 +14,7 @@ type Settings = {
   catalogSyncSecret?: string;  // shared with the starfishlarp GitHub Action
   lineAccessToken?: string;  // Messaging API channel access token, for push notifications
   liffId?: string;  // links in notifications open this LIFF app
+  richMenuImageUrl?: string;
   background?: (work: Promise<unknown>) => void;  // run after the response (EdgeRuntime.waitUntil)
   fetcher?: typeof fetch;
   now?: () => number;
@@ -507,6 +508,52 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
   return tally;
 }
 
+// --- Rich Menu -------------------------------------------------------------------
+// Three tap areas over the 2500x843 image published with the LIFF pages.
+const RICH_MENU_NAME = '海星預約選單';
+const RICH_MENU_IMAGE = 'https://cj2vum4.github.io/starfish-booking-system/richmenu.jpg';
+export function richMenuDefinition(liffId = DEFAULT_LIFF_ID) {
+  const base = `https://liff.line.me/${liffId}`;
+  const links = [`${base}?view=create`, `${base}?view=open`, base];
+  const widths = [833, 834, 833];
+  let x = 0;
+  return {
+    size: { width: 2500, height: 843 }, selected: true, name: RICH_MENU_NAME, chatBarText: '開團・缺人場次',
+    areas: links.map((uri, i) => {
+      const area = { bounds: { x, y: 0, width: widths[i], height: 843 }, action: { type: 'uri', uri } };
+      x += widths[i];
+      return area;
+    }),
+  };
+}
+
+// Creates the menu, uploads its image, makes it the default, then removes older copies of it.
+async function setupRichMenu(settings: Settings) {
+  const token = settings.lineAccessToken;
+  if (!token) throw new ApiError(503, 'LINE_NOT_CONFIGURED');
+  const f = settings.fetcher ?? fetch;
+  const auth = { Authorization: `Bearer ${token}` };
+  const call = async (url: string, init: RequestInit = {}) => {
+    const response = await f(url, { signal: AbortSignal.timeout(15000), ...init, headers: { ...auth, ...(init.headers ?? {}) } });
+    if (!response.ok) throw new ApiError(502, `LINE_${response.status}`);
+    return response.headers.get('content-type')?.includes('json') ? response.json() : null;
+  };
+  const image = await f(settings.richMenuImageUrl ?? RICH_MENU_IMAGE, { signal: AbortSignal.timeout(15000) });
+  if (!image.ok) throw new ApiError(502, 'RICH_MENU_IMAGE_UNAVAILABLE');
+  const bytes = new Uint8Array(await image.arrayBuffer());
+  if (bytes.length > 1024 * 1024) throw new ApiError(502, 'RICH_MENU_IMAGE_TOO_LARGE');
+  const before = await call('https://api.line.me/v2/bot/richmenu/list');
+  const { richMenuId } = await call('https://api.line.me/v2/bot/richmenu', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(richMenuDefinition(settings.liffId)) });
+  await call(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, { method: 'POST',
+    headers: { 'Content-Type': 'image/jpeg' }, body: bytes });
+  await call(`https://api.line.me/v2/bot/user/all/richmenu/${richMenuId}`, { method: 'POST' });
+  const old = (before?.richmenus ?? []).filter((m: { name: string; richMenuId: string }) =>
+    m.name === RICH_MENU_NAME && m.richMenuId !== richMenuId);
+  for (const m of old) await call(`https://api.line.me/v2/bot/richmenu/${m.richMenuId}`, { method: 'DELETE' });
+  return { richMenuId, replaced: old.length };
+}
+
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
 function taipeiDayStart(date: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
@@ -685,6 +732,13 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
     const games = await fetchCatalog(settings, settings.catalogUrl ?? CATALOG_URL);
     return [200, camel(await rpc(settings, 'admin_sync_games', { p_actor: session.user_id, p_games: games }))];
+  }
+  if (req.method === 'POST' && path === '/hooks/richmenu-setup') {
+    if (!settings.catalogSyncSecret) throw new ApiError(503, 'SYNC_NOT_CONFIGURED');
+    if (!(await sameSecret(req.headers.get('x-sync-secret') ?? '', settings.catalogSyncSecret))) {
+      throw new ApiError(401, 'INVALID_SECRET');
+    }
+    return [200, await setupRichMenu(settings)];
   }
   if (req.method === 'POST' && path === '/hooks/catalog-sync') {
     if (!settings.catalogSyncSecret) throw new ApiError(503, 'SYNC_NOT_CONFIGURED');

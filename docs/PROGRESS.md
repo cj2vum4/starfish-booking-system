@@ -180,6 +180,14 @@
 - npm test 57 passed；0012 已上雲，雲端 public_groups 測試 PASS；LIFF 頁已發布。
 - 待辦：api 需重新部署 commit b056cf4（瀏覽器面板隱藏時 Dashboard 編輯器無法載入，尚未部署）。
 
+## 圖文選單（程式完成）
+
+- web/liff/richmenu.jpg（2500×843，依 starfishlarp 深色主視覺：金 #c8a056／#ecd08a、深褐底、海星徽章浮水印），
+  產生器 scripts/richmenu_image.py。
+- API POST /hooks/richmenu-setup（X-Sync-Secret 保護）：建立選單、上傳圖片、設為預設、移除舊版同名選單。
+  三格連結：?view=create、?view=open、首頁。
+- npm test 59 passed。
+
 ## 未完成，不能宣稱可供營運
 
 
