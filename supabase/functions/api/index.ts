@@ -347,8 +347,15 @@ async function googleAccessToken(settings: Settings) {
 
 // Refreshes the mirrored busy periods for [from, to) straight from Google. Any failure
 // fails closed: without fresh calendar data nothing is offered or reserved.
-async function syncCalendar(settings: Settings, from: Date, to: Date) {
+// Listings may reuse a sync of a covering window from the last minute (protects the Google
+// quota from request floods); reservations always pass maxAgeMs 0 and sync live.
+const LISTING_SYNC_MAX_AGE_MS = 60 * 1000;
+let lastSync: { from: number; to: number; at: number } | null = null;
+async function syncCalendar(settings: Settings, from: Date, to: Date, maxAgeMs = 0) {
   if (!settings.google) throw new ApiError(503, 'CALENDAR_NOT_CONFIGURED');
+  const now = (settings.now ?? Date.now)();
+  if (maxAgeMs > 0 && lastSync && now - lastSync.at < maxAgeMs
+      && lastSync.from <= from.getTime() && lastSync.to >= to.getTime()) return;
   let busy: { start: string; end: string }[];
   try {
     const token = await googleAccessToken(settings);
@@ -365,6 +372,7 @@ async function syncCalendar(settings: Settings, from: Date, to: Date) {
     busy.push(...await icsBusy(settings, from, to));
   } catch { throw new ApiError(503, 'CALENDAR_UNAVAILABLE'); }
   await rpc(settings, 'sync_calendar_busy', { p_from: from.toISOString(), p_to: to.toISOString(), p_busy: busy });
+  lastSync = { from: from.getTime(), to: to.getTime(), at: now };
 }
 
 // Setup check: says which step is wrong, never returns busy times or writes anything.
@@ -715,7 +723,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const from = new Date(Math.max(nowMs, startMs));
     const to = new Date(startMs + days * 86400000);
     if (to <= from) return [200, { slots: [] }];
-    await syncCalendar(settings, from, to);
+    await syncCalendar(settings, from, to, LISTING_SYNC_MAX_AGE_MS);
     const slots = await rpc<{ starts_at: string; ends_at: string }[]>(settings, 'list_available_starts',
       { p_from: from.toISOString(), p_to: to.toISOString(), p_minutes: minutes });
     return [200, { slots: slots.map(s => ({ startsAt: s.starts_at, endsAt: s.ends_at })) }];

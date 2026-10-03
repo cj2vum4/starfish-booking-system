@@ -113,3 +113,20 @@ test('setup check reports which Google step failed without exposing calendar dat
   assert.equal((await check({ calendarError: true })).body.error, 'CALENDAR_NOT_SHARED');
   assert.equal((await check({ withGoogle: false })).body.error, 'CALENDAR_NOT_CONFIGURED');
 });
+
+test('listing reuses a fresh sync of a covering window; creating a group always syncs live', async () => {
+  const { calls, settings } = backend();
+  let clock = now;
+  settings.now = () => clock;
+  const freebusy = () => calls.filter(c => c.url.endsWith('/freeBusy')).length;
+  await handleApi(get('/slots?from=2026-10-05&days=7'), settings);
+  const first = freebusy();
+  await handleApi(get('/slots?from=2026-10-05&days=3'), settings);   // inside the synced window, 0s later
+  assert.equal(freebusy(), first, 'flood of listings does not hit Google each time');
+  clock += 61 * 1000;
+  await handleApi(get('/slots?from=2026-10-05&days=3'), settings);
+  assert.equal(freebusy(), first + 1, 'stale after a minute');
+  await handleApi(post('/groups', group), settings);
+  await handleApi(post('/groups', group), settings);
+  assert.equal(freebusy(), first + 3, 'every reservation re-checks the calendar');
+});
