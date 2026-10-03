@@ -188,6 +188,15 @@
 - npm test 59 passed；api 重新部署（commit d62883a，含缺人場次與公開切換）。
 - 2026-10-03 執行 /hooks/richmenu-setup：建立 richmenu-7f69f3fa71fcb0eaba33c63e83034c0f 並設為預設（取代 0 個舊版）。
 
+## P6 正式資料庫同時搶位實測（通過）
+
+- 0013、0014：selftest_targets_ok／selftest_targets 只允許測試標記資料（LINE ID Ufeedfacefeedface…、劇本 qa-stress-*），
+  測試玩家不產生任何 LINE 通知；/hooks/selftest-race 以 X-Sync-Secret 保護。
+- 2026-10-03 於正式資料庫：scripts/selftest/race_setup.sql 建立剩 1 席的測試場次與 20 位測試玩家。
+- 20 個請求同時搶最後 1 席：成功 1、SOLD_OUT 19；場次 2/2 席，未超賣。
+- 19 個請求同時開同一時段（2027-03-06 10:00）：成功 1、SLOT_UNAVAILABLE 18；只有 1 個佔用時段。
+- 期間測試相關通知 0 則；race_cleanup.sql 清除後測試玩家 0、測試劇本 0，真實使用者 3、劇本 57 不受影響。
+
 ## 未完成，不能宣稱可供營運
 
 
