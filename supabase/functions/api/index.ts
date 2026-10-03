@@ -12,6 +12,9 @@ type Settings = {
   catalogSiteBase?: string;  // where that repo's pages are published
   catalogCommitUrl?: string;  // raw file URL template with {commit}, for the GitHub hook
   catalogSyncSecret?: string;  // shared with the starfishlarp GitHub Action
+  lineAccessToken?: string;  // Messaging API channel access token, for push notifications
+  liffId?: string;  // links in notifications open this LIFF app
+  background?: (work: Promise<unknown>) => void;  // run after the response (EdgeRuntime.waitUntil)
   fetcher?: typeof fetch;
   now?: () => number;
 };
@@ -440,6 +443,70 @@ async function removeCalendarEvent(settings: Settings, e: Record<string, any>) {
   return { calendarRemoved: true };
 }
 
+// --- LINE notifications ------------------------------------------------------------
+const DEFAULT_LIFF_ID = '2011840025-6cuU9x8P';
+const taipeiFormat = (opts: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', ...opts });
+function sessionRange(p: Record<string, any>) {
+  if (!p.starts_at) return '';
+  const day = taipeiFormat({ month: 'numeric', day: 'numeric', weekday: 'short' }).format(new Date(p.starts_at));
+  const time = (iso: string) => taipeiFormat({ hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(iso));
+  return `${day} ${time(p.starts_at)}${p.ends_at ? '–' + time(p.ends_at) : ''}`;
+}
+export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_ID) {
+  const link = `https://liff.line.me/${liffId}?group=${p.group_id}`;
+  const when = sessionRange(p);
+  const game = p.game_title ? `《${p.game_title}》` : '劇本待店家推薦';
+  const price = p.price_cents == null ? '' : `\n每人 NT$${Math.round(p.price_cents / 100)}`;
+  switch (p.kind) {
+    case 'group_created':
+      return `【新揪團】${p.organizer_name} 開了一團\n${when}\n${game}・${p.capacity} 人\n查看：${link}`;
+    case 'member_joined':
+      return `【有人加入】${p.joiner_name} 加入了你的揪團\n${when}・目前 ${p.filled}/${p.capacity} 人`
+        + (p.filled >= p.capacity ? '\n已滿團！店家確認後會再通知大家。' : '') + `\n查看：${link}`;
+    case 'group_full':
+      return `【滿團待確認】${p.organizer_name} 的揪團已滿 ${p.capacity} 人\n${when}・${game}\n請確認成團：${link}`;
+    case 'group_confirmed':
+      return `【成團確認】${game}\n${when}\n場地：${p.venue}\nDM：${p.dm_name}${price}\n詳情：${link}`;
+    case 'event_cancelled':
+      return `【場次取消】很抱歉，店家取消了 ${when} 的${game}`
+        + (p.cancel_reason ? `\n原因：${p.cancel_reason}` : '') + `\n詳情：${link}`;
+    case 'group_dissolved':
+      return `【揪團解散】${p.organizer_name} 解散了 ${when} 的揪團\n詳情：${link}`;
+    default:
+      return null;
+  }
+}
+
+// Sends queued notifications. LINE's retry key makes a resend after a timeout a no-op.
+export async function deliverNotifications(settings: Settings, limit = 20) {
+  if (!settings.lineAccessToken) return { sent: 0, skipped: 0, failed: 0 };
+  const batch = await rpc<Record<string, any>[]>(settings, 'claim_notifications', { p_limit: limit });
+  const tally = { sent: 0, skipped: 0, failed: 0 };
+  for (const n of batch) {
+    const text = notificationText(n.payload, settings.liffId ?? DEFAULT_LIFF_ID);
+    let result: 'sent' | 'skipped' | 'failed', error: string | null = null;
+    if (!text) { result = 'skipped'; error = 'UNKNOWN_KIND'; }
+    else if (n.friend_status === 'blocked') { result = 'skipped'; error = 'BLOCKED'; }
+    else {
+      try {
+        const response = await (settings.fetcher ?? fetch)('https://api.line.me/v2/bot/message/push', {
+          method: 'POST', signal: AbortSignal.timeout(8000),
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.lineAccessToken}`,
+            'X-Line-Retry-Key': n.retry_key },
+          body: JSON.stringify({ to: n.line_user_id, messages: [{ type: 'text', text: text.slice(0, 5000) }] }),
+        });
+        // 409: this retry key was already accepted, i.e. the message went out earlier.
+        if (response.ok || response.status === 409) result = 'sent';
+        else if (response.status === 429 || response.status >= 500) { result = 'failed'; error = `HTTP_${response.status}`; }
+        else { result = 'skipped'; error = `HTTP_${response.status}`; }  // e.g. not a friend of the OA
+      } catch { result = 'failed'; error = 'NETWORK'; }
+    }
+    tally[result]++;
+    await rpc(settings, 'complete_notification', { p_id: n.id, p_result: result, p_error: error });
+  }
+  return tally;
+}
+
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
 function taipeiDayStart(date: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
@@ -691,6 +758,10 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   }
   try {
     const [status, data] = await route(req, path, settings);
+    if (req.method === 'POST' && status < 300 && settings.lineAccessToken) {
+      const work = deliverNotifications(settings).catch(() => undefined);
+      if (settings.background) settings.background(work); else await work;
+    }
     return reply(status, data);
   } catch (error) {
     if (error instanceof ApiError) return reply(error.status, { error: error.message });
@@ -707,6 +778,10 @@ if (typeof Deno !== 'undefined') {
     allowedOrigins: (Deno.env.get('ALLOWED_ORIGINS') ?? '').split(',').map(s => s.trim()).filter(Boolean),
     google: googleFromEnv(),
     catalogSyncSecret: Deno.env.get('CATALOG_SYNC_SECRET') || undefined,
+    lineAccessToken: Deno.env.get('LINE_CHANNEL_ACCESS_TOKEN') || undefined,
+    liffId: Deno.env.get('LIFF_ID') || undefined,
+    // deno-lint-ignore no-explicit-any
+    background: (work: Promise<unknown>) => (globalThis as any).EdgeRuntime?.waitUntil?.(work),
     icsUrls: (Deno.env.get('BUSY_ICS_URLS') ?? '').split(/[\s,]+/).filter(u => /^https:\/\//.test(u)),
   }));
 }

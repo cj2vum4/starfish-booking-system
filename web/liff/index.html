@@ -488,6 +488,9 @@
       // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
       const invite = new URLSearchParams(location.search).get('invite');
       if (invite && /^[A-Za-z0-9_-]{43}$/.test(invite)) history.replaceState(null, '', location.pathname + '#/invite/' + invite);
+      // Notification links arrive as ?group=<id>.
+      const group = new URLSearchParams(location.search).get('group');
+      if (group && /^[0-9a-f-]{36}$/.test(group)) history.replaceState(null, '', location.pathname + '#/group/' + group);
       if (store.get(KEY)) { try { me = (await api('/me')).user; } catch (e) { if (e.message === 'reauth') return; } }
       if (!me && !(await signIn())) return;
       document.getElementById('who').textContent = me.displayName || '';

@@ -161,6 +161,15 @@
 - 新增 tests/liff.test.mjs：每次 npm test 檢查 LIFF 頁面程式可被解析（本次開發中曾抓到一個換行字元錯誤）。
 - npm test 51 passed；0010 已上雲，雲端 cancel_event、group_views、confirm 測試 PASS；api 重新部署（commit 7f9b09c）。
 
+## LINE 通知（程式完成，待發行 Channel access token）
+
+- 202610030011_notifications.sql：outbox——觸發器在同一交易內寫入 notification_logs（成功才通知、失敗不通知）：
+  新揪團→店家；有人加入→主揪；滿團→店家；成團→全體成員（場地、DM、價格）；店家取消→全體（含原因）；主揪解散→其他成員。
+- claim_notifications（skip locked、2 分鐘鎖定、超過 1 天視為過期不送）、complete_notification（1/2/4/8 分鐘退避、5 次後放棄）。
+- API：成功的 POST 之後於背景送出（EdgeRuntime.waitUntil），LINE push 帶 X-Line-Retry-Key 防重複；
+  封鎖者不送、4xx 放棄、429/5xx 重試。通知連結 ?group=<id> 直接開啟揪團頁。
+- npm test 55 passed。
+
 ## 未完成，不能宣稱可供營運
 
 
