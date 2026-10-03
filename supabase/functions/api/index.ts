@@ -466,6 +466,8 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
         + (p.filled >= p.capacity ? '\n已滿團！店家確認後會再通知大家。' : '') + `\n查看：${link}`;
     case 'group_full':
       return `【滿團待確認】${p.organizer_name} 的揪團已滿 ${p.capacity} 人\n${when}・${game}\n請確認成團：${link}`;
+    case 'group_full_members':
+      return `【已滿團】${when} 的${game}已經滿 ${p.capacity} 人\n店家確認成團後會再通知你。\n查看：${link}`;
     case 'group_confirmed':
       return `【成團確認】${game}\n${when}\n場地：${p.venue}\nDM：${p.dm_name}${price}\n詳情：${link}`;
     case 'event_cancelled':

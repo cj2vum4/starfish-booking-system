@@ -52,6 +52,7 @@
   .group-row { display:block; width:100%; text-align:left; background:var(--card); color:var(--fg); border:1px solid var(--line);
     font-weight:400; }
   .big { font-size:20px; font-weight:700; }
+  .friend-bar { border-color:var(--accent); background:var(--soft); }
   .game-card { display:flex; gap:12px; align-items:flex-start; text-align:left; background:var(--card); color:var(--fg);
     border:1px solid var(--line); font-weight:400; padding:10px; }
   .game-card[aria-pressed="true"] { border-color:var(--accent); background:var(--soft); }
@@ -65,6 +66,11 @@
 <body>
 <main>
   <header><h1>海星劇本殺</h1><small id="who"></small></header>
+  <div id="friendBar" class="card stack friend-bar" hidden>
+    <div><b>加入「海星劇本殺」好友，才收得到通知</b></div>
+    <div class="muted">成團、滿團、取消等消息都會用 LINE 傳給你。沒加好友的話，LINE 不允許我們傳訊息。</div>
+    <button id="addFriend">加入好友</button>
+  </div>
   <div id="view" aria-live="polite"><div class="card">載入中…</div></div>
 </main>
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js" charset="utf-8"></script>
@@ -508,6 +514,15 @@
     });
   }
 
+  // ---- Friendship: LINE only delivers notifications to friends of the OA ----------------
+  const OA_ADD_FRIEND = 'https://line.me/R/ti/p/@825gdzws';
+  async function checkFriendship() {
+    const bar = document.getElementById('friendBar');
+    try { bar.hidden = (await liff.getFriendship()).friendFlag; }
+    catch { bar.hidden = true; }  // unavailable outside a linked LIFF context: say nothing
+  }
+  document.getElementById('addFriend').onclick = () => liff.openWindow({ url: OA_ADD_FRIEND, external: false });
+
   // ---- Router -----------------------------------------------------------------------
   function route() {
     const h = location.hash;
@@ -535,6 +550,8 @@
       if (store.get(KEY)) { try { me = (await api('/me')).user; } catch (e) { if (e.message === 'reauth') return; } }
       if (!me && !(await signIn())) return;
       document.getElementById('who').textContent = me.displayName || '';
+      checkFriendship();
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) checkFriendship(); });
       window.addEventListener('hashchange', route);
       route();
     } catch { render('<div class="card error">LINE 初始化失敗，請從 LINE 重新開啟。</div>'); }

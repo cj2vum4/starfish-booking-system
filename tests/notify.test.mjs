@@ -8,7 +8,7 @@ const facts = { group_id: gid, starts_at: '2026-10-10T05:00:00+00:00', ends_at: 
   dm_name: '海星', price_cents: 40000, cancel_reason: 'DM 生病' };
 
 test('every notification names the session in Taipei time and links to its group page', () => {
-  const kinds = ['group_created', 'member_joined', 'group_full', 'group_confirmed', 'event_cancelled', 'group_dissolved'];
+  const kinds = ['group_created', 'member_joined', 'group_full', 'group_full_members', 'group_confirmed', 'event_cancelled', 'group_dissolved'];
   for (const kind of kinds) {
     const text = notificationText({ ...facts, kind }, 'LIFF-ID');
     assert.ok(text.includes('13:00–17:00'), `${kind}: Taipei time`);

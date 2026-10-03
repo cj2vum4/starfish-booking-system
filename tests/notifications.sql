@@ -38,6 +38,9 @@ begin
   perform public.claim_invite(u3,h_seat);
   if not exists(select 1 from public.notification_logs where user_id=adm and notification_type='group_full' and group_id=gid)
     then raise exception 'store not told the group is full'; end if;
+  if (select count(*) from public.notification_logs where notification_type='group_full_members' and group_id=gid)<>2
+    or exists(select 1 from public.notification_logs where user_id=org and notification_type='group_full_members')
+    then raise exception 'members not told the group is full'; end if;
 
   -- 失敗的動作不產生任何通知。
   select count(*) into n from public.notification_logs;
