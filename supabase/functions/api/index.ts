@@ -740,6 +740,34 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     }
     return [200, await setupRichMenu(settings)];
   }
+  if (req.method === 'POST' && path === '/hooks/selftest-race') {
+    // P6 acceptance on the live database: many simultaneous requests for one last seat
+    // (or one time range). Only synthetic players and a qa-stress-* script are accepted.
+    if (!settings.catalogSyncSecret) throw new ApiError(503, 'SYNC_NOT_CONFIGURED');
+    if (!(await sameSecret(req.headers.get('x-sync-secret') ?? '', settings.catalogSyncSecret))) {
+      throw new ApiError(401, 'INVALID_SECRET');
+    }
+    const body = await readJson(req);
+    const userIds = Array.isArray(body.userIds) ? body.userIds.filter((u: unknown) => typeof u === 'string' && UUID.test(u)) : [];
+    const gameId = typeof body.gameId === 'string' && UUID.test(body.gameId) ? body.gameId : null;
+    const eventId = typeof body.eventId === 'string' && UUID.test(body.eventId) ? body.eventId : null;
+    if (!gameId || !userIds.length || (body.mode === 'booking' && !eventId)) throw new ApiError(400, 'INVALID_SELFTEST');
+    const allowed = await rpc<boolean>(settings, 'selftest_targets_ok',
+      { p_user_ids: userIds, p_game_id: gameId, p_event_id: eventId });
+    if (!allowed) throw new ApiError(403, 'SELFTEST_TARGETS_REJECTED');
+    const attempt = (u: string) => body.mode === 'booking'
+      ? rpc(settings, 'join_event', { p_actor: u, p_event_id: eventId, p_request_id: crypto.randomUUID() })
+      : rpc(settings, 'create_group', { p_actor: u, p_request_id: crypto.randomUUID(), p_starts_at: body.startsAt,
+          p_capacity: 2, p_game_id: null });  // the test script stays hidden (inactive)
+    const results = await Promise.allSettled(userIds.map(attempt));
+    const errors: Record<string, number> = {};
+    for (const r of results) if (r.status === 'rejected') {
+      const code = r.reason instanceof ApiError ? r.reason.message : 'UNKNOWN';
+      errors[code] = (errors[code] ?? 0) + 1;
+    }
+    return [200, { mode: body.mode, attempts: results.length,
+      succeeded: results.filter(r => r.status === 'fulfilled').length, errors }];
+  }
   if (req.method === 'POST' && path === '/hooks/catalog-sync') {
     if (!settings.catalogSyncSecret) throw new ApiError(503, 'SYNC_NOT_CONFIGURED');
     if (!(await sameSecret(req.headers.get('x-sync-secret') ?? '', settings.catalogSyncSecret))) {
@@ -821,7 +849,7 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   }
   try {
     const [status, data] = await route(req, path, settings);
-    if (req.method === 'POST' && status < 300 && settings.lineAccessToken) {
+    if (req.method === 'POST' && status < 300 && settings.lineAccessToken && !path.startsWith('/hooks/')) {
       const work = deliverNotifications(settings).catch(() => undefined);
       if (settings.background) settings.background(work); else await work;
     }

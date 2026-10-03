@@ -80,6 +80,11 @@ begin
   if jsonb_array_length(r)<>(select count(*) from public.notification_logs)-base then raise exception 'claim count wrong'; end if;
   if not exists(select 1 from jsonb_array_elements(r) x where x->>'friend_status'='blocked') then raise exception 'friend status missing'; end if;
   if jsonb_array_length(public.claim_notifications(100))<>0 then raise exception 'claimed rows handed out twice'; end if;
+  -- Self-test players (synthetic LINE IDs) never generate messages.
+  insert into public.users(line_user_id) values ('Ufeedfacefeedface0000000000000001') returning id into u3;
+  gid2 := (public.create_group(u3,gen_random_uuid(),(sat+time '18:00') at time zone 'Asia/Taipei',2,g)->>'group_id')::uuid;
+  set constraints all immediate;
+  if exists(select 1 from public.notification_logs where group_id=gid2) then raise exception 'self-test group notified the store'; end if;
   insert into public.notification_logs(user_id,notification_type,payload,dedupe_key,created_at)
     values (u2,'group_confirmed','{}','qa-stale',now()-interval '2 days');
   perform public.claim_notifications(100);
