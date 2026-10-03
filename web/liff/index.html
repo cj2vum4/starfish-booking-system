@@ -92,7 +92,9 @@
     INVALID_PRICE: '請輸入每人價格（整數元）。', PRICE_REQUIRED: '請輸入每人價格。', INVALID_VENUE: '請輸入場地。',
     INVALID_DM: '請輸入 DM 名字。', NOT_ADMIN: '只有店家可以操作。', GAME_NOT_FOUND: '請選擇劇本。',
     SHEETS_NOT_CONFIGURED: '還沒設定要匯出的 Google 試算表（GOOGLE_SHEET_ID）。',
-    SHEET_NOT_SHARED: '試算表沒有共用給系統的服務帳戶，或 Google Sheets API 尚未啟用。',
+    SHEET_NOT_SHARED: '試算表沒有共用給下面這個服務帳戶（權限要選「編輯者」）。',
+    SHEETS_API_DISABLED: '下面這個 Google Cloud 專案還沒啟用 Google Sheets API。',
+    SHEET_NOT_FOUND: '找不到這份試算表，請檢查 GOOGLE_SHEET_ID 是否填對。',
     SHEETS_FAILED: 'Google Sheets 暫時寫入失敗，請稍後再試。', INVALID_RANGE: '查詢的日期範圍不正確。', GOOGLE_KEY_INVALID: 'Google 服務帳戶金鑰無效。',
     CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
     CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
@@ -219,7 +221,18 @@
         const x = await api('/admin/sheets/export', { method: 'POST' });
         msg.innerHTML = `已匯出：場次 ${x.sessions}、出席 ${x.attendance}、玩家 ${x.players} 筆。<span class="link" id="openSheet">打開試算表</span>`;
         document.getElementById('openSheet').onclick = () => liff.openWindow({ url: x.url, external: true });
-      } catch (x) { if (x.message !== 'reauth') msg.textContent = message(x.code); }
+      } catch (x) {
+        if (x.message === 'reauth') return;
+        msg.textContent = message(x.code);
+        // For setup problems, show exactly which account/project/sheet to check.
+        if (/^SHEET|^SHEETS_API/.test(x.code || '')) {
+          try {
+            const g = await api('/admin/google-account');
+            msg.insertAdjacentHTML('beforeend', `<div style="margin-top:8px;word-break:break-all">服務帳戶：<b>${esc(g.serviceAccountEmail)}</b>
+              <br>Google Cloud 專案：<b>${esc(g.projectId)}</b><br>試算表 ID：<b>${esc(g.sheetId)}</b></div>`);
+          } catch {}
+        }
+      }
       busy(e.target, false);
     };
   }

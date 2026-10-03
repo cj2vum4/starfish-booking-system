@@ -6,7 +6,8 @@ type Settings = {
   allowedOrigins?: string[];
   // Google service account: "See only free/busy" on the owner's calendar (calendarId) and
   // "Make changes to events" on a dedicated store calendar (eventsCalendarId).
-  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string; sheetId?: string };
+  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string; sheetId?: string;
+    projectId?: string };
   icsUrls?: string[];  // published busy calendars, e.g. the owner's Outlook (capability URLs: keep secret)
   catalogUrl?: string;  // raw scripts.js in the Starfish site repo
   catalogSiteBase?: string;  // where that repo's pages are published
@@ -600,7 +601,13 @@ async function exportToSheets(settings: Settings, actor: string) {
   const call = async (url: string, method: string, body?: unknown) => {
     const response = await f(url, { method, signal: AbortSignal.timeout(15000),
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-    if (response.status === 403 || response.status === 404) throw new ApiError(503, 'SHEET_NOT_SHARED');
+    if (response.status === 403 || response.status === 404) {
+      // Tell the store which setup step is wrong; these come from Google's error body.
+      const err = (await response.json().catch(() => null))?.error ?? {};
+      const disabled = (err.details ?? []).some((d: any) => d.reason === 'SERVICE_DISABLED')
+        || /has not been used|is disabled/i.test(err.message ?? '');
+      throw new ApiError(503, response.status === 404 ? 'SHEET_NOT_FOUND' : disabled ? 'SHEETS_API_DISABLED' : 'SHEET_NOT_SHARED');
+    }
     if (!response.ok) throw new ApiError(502, 'SHEETS_FAILED');
     return response.json().catch(() => null);
   };
@@ -817,6 +824,13 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const to = params.get('to') ? new Date(taipeiDayStart(params.get('to')!).getTime() + 86400000) : new Date(nowMs + 60 * 86400000);
     return [200, camel(await rpc(settings, 'admin_report', { p_actor: session.user_id, p_from: from.toISOString(), p_to: to.toISOString() }))];
   }
+  if (req.method === 'GET' && path === '/admin/google-account') {
+    // Which service account and Cloud project the store must share with / enable APIs in.
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    return [200, { serviceAccountEmail: settings.google?.clientEmail ?? null, projectId: settings.google?.projectId ?? null,
+      sheetId: settings.google?.sheetId ?? null }];
+  }
   if (req.method === 'POST' && path === '/admin/sheets/export') {
     const { session } = await requireSession(req, settings);
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
@@ -983,7 +997,7 @@ function googleFromEnv() {
     const account = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') ?? '');
     const calendarId = Deno.env.get('GOOGLE_CALENDAR_ID');
     if (!account.client_email || !account.private_key || !calendarId) return undefined;
-    return { clientEmail: account.client_email, privateKey: account.private_key, calendarId,
+    return { clientEmail: account.client_email, privateKey: account.private_key, calendarId, projectId: account.project_id,
       eventsCalendarId: Deno.env.get('GOOGLE_EVENTS_CALENDAR_ID') || undefined,
       sheetId: Deno.env.get('GOOGLE_SHEET_ID') || undefined };
   } catch { return undefined; }

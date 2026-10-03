@@ -25,7 +25,7 @@ test('report rows are Taipei-timed, in Chinese, with prices in NT$', () => {
   assert.deepEqual(t['玩家'][1].slice(0, 4), ['阿明', '是', '是', 3]);
 });
 
-function backend({ isAdmin = true, sheetStatus = 200, tabs = ['場次'], sheetId = 'SHEET123' } = {}) {
+function backend({ isAdmin = true, sheetStatus = 200, sheetError = {}, tabs = ['場次'], sheetId = 'SHEET123' } = {}) {
   const calls = [];
   const fetcher = async (url, opts = {}) => {
     let body = null;
@@ -33,7 +33,7 @@ function backend({ isAdmin = true, sheetStatus = 200, tabs = ['場次'], sheetId
     calls.push({ url, method: opts.method, body });
     if (url === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'g', expires_in: 3600 });
     if (url.startsWith('https://sheets.googleapis.com/')) {
-      if (sheetStatus !== 200) return new Response('{}', { status: sheetStatus });
+      if (sheetStatus !== 200) return Response.json({ error: sheetError }, { status: sheetStatus });
       if (url.includes('?fields=')) return Response.json({ sheets: tabs.map(title => ({ properties: { title } })) });
       return Response.json({});
     }
@@ -71,4 +71,19 @@ test('export: admin only, clear errors for an unshared or unconfigured sheet', a
   assert.deepEqual([unshared.status, await unshared.json()], [503, { error: 'SHEET_NOT_SHARED' }]);
   const unset = await handleApi(exportReq(), backend({ sheetId: null }).settings);
   assert.deepEqual(await unset.json(), { error: 'SHEETS_NOT_CONFIGURED' });
+});
+
+test('export errors say which Google step is wrong; admins can see the service account to share with', async () => {
+  const code = async opts => (await (await handleApi(exportReq(), backend(opts).settings)).json()).error;
+  assert.equal(await code({ sheetStatus: 403, sheetError: { status: 'PERMISSION_DENIED', message: 'The caller does not have permission' } }), 'SHEET_NOT_SHARED');
+  assert.equal(await code({ sheetStatus: 403, sheetError: { message: 'Google Sheets API has not been used in project 123 before or it is disabled.',
+    details: [{ reason: 'SERVICE_DISABLED' }] } }), 'SHEETS_API_DISABLED');
+  assert.equal(await code({ sheetStatus: 404, sheetError: { status: 'NOT_FOUND' } }), 'SHEET_NOT_FOUND');
+  const info = backend();
+  info.settings.google.projectId = 'starfish-booking';
+  const res = await handleApi(new Request('https://x/functions/v1/api/admin/google-account', { headers: { Authorization: `Bearer ${session}` } }), info.settings);
+  assert.deepEqual(await res.json(), { serviceAccountEmail: google.clientEmail, projectId: 'starfish-booking', sheetId: 'SHEET123' });
+  const denied = await handleApi(new Request('https://x/functions/v1/api/admin/google-account', { headers: { Authorization: `Bearer ${session}` } }),
+    backend({ isAdmin: false }).settings);
+  assert.equal(denied.status, 403);
 });
