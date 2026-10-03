@@ -7,6 +7,7 @@ type Settings = {
   // Google service account: "See only free/busy" on the owner's calendar (calendarId) and
   // "Make changes to events" on a dedicated store calendar (eventsCalendarId).
   google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string };
+  icsUrls?: string[];  // published busy calendars, e.g. the owner's Outlook (capability URLs: keep secret)
   catalogUrl?: string;  // raw scripts.js in the Starfish site repo
   catalogSiteBase?: string;  // where that repo's pages are published
   catalogCommitUrl?: string;  // raw file URL template with {commit}, for the GitHub hook
@@ -110,6 +111,205 @@ async function requireSession(req: Request, settings: Settings) {
   return { session, hash };
 }
 
+// --- Published calendars (.ics, e.g. Outlook) ---------------------------------------
+// Only busy intervals are extracted; titles and details are never kept. Free and
+// "show as available" items are skipped; tentative counts as busy. Recurrences are
+// expanded in local wall time; unsupported rules fail closed rather than guess.
+type IcsProp = { name: string; params: Record<string, string>; value: string };
+type Busy = { start: string; end: string };
+const ICS_MAX_OCCURRENCES = 5000;
+
+function unfoldIcs(text: string) {
+  return text.replace(/\r\n/g, '\n').replace(/\n[ \t]/g, '').split('\n');
+}
+function parseIcsLine(line: string): IcsProp | null {
+  const colon = line.indexOf(':');
+  if (colon < 0) return null;
+  const [name, ...rest] = line.slice(0, colon).split(';');
+  const params: Record<string, string> = {};
+  for (const p of rest) { const eq = p.indexOf('='); if (eq > 0) params[p.slice(0, eq).toUpperCase()] = p.slice(eq + 1).replace(/^"|"$/g, ''); }
+  return { name: name.toUpperCase(), params, value: line.slice(colon + 1) };
+}
+// Minutes east of UTC for a TZID: from its VTIMEZONE STANDARD offset, Taipei by default.
+function tzOffsets(lines: string[]) {
+  const map: Record<string, number> = {};
+  let tzid = '', inStandard = false;
+  for (const line of lines) {
+    if (line.startsWith('TZID:')) tzid = line.slice(5);
+    else if (line === 'BEGIN:STANDARD') inStandard = true;
+    else if (line === 'END:STANDARD') inStandard = false;
+    else if (inStandard && line.startsWith('TZOFFSETTO:')) {
+      const m = /^([+-])(\d{2})(\d{2})$/.exec(line.slice(11));
+      if (m && tzid) map[tzid] = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+    }
+  }
+  return map;
+}
+// A wall-clock instant kept as "local milliseconds" plus the zone offset in minutes.
+type Local = { ms: number; offset: number; allDay: boolean };
+function icsTime(prop: IcsProp, zones: Record<string, number>): Local {
+  const m = /^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/.exec(prop.value.trim());
+  if (!m) throw new Error('ICS_UNSUPPORTED');
+  const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0));
+  const tz = prop.params.TZID;
+  const offset = m[7] ? 0 : tz && /taipei/i.test(tz) ? 480 : tz && zones[tz] != null ? zones[tz] : 480;
+  return { ms, offset, allDay: !m[4] };
+}
+const toIso = (t: Local) => new Date(t.ms - t.offset * 60000).toISOString();
+function icsDuration(value: string) {
+  const m = /^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(value.trim());
+  if (!m) throw new Error('ICS_UNSUPPORTED');
+  return ((+(m[1] ?? 0) * 7 + +(m[2] ?? 0)) * 86400 + +(m[3] ?? 0) * 3600 + +(m[4] ?? 0) * 60 + +(m[5] ?? 0)) * 1000;
+}
+const WEEKDAYS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+const DAY = 86400000;
+// The nth (1-based, negative from the end) given weekday of a month, as local midnight ms.
+function nthWeekday(year: number, month: number, weekday: number, n: number) {
+  const days = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const matches = [];
+  for (let d = 1; d <= days; d++) if (new Date(Date.UTC(year, month, d)).getUTCDay() === weekday) matches.push(d);
+  const day = n > 0 ? matches[n - 1] : matches[matches.length + n];
+  return day ? Date.UTC(year, month, day) : null;
+}
+// Occurrence starts (local ms) of a recurring event, ascending, up to untilLocal.
+function expandRule(rule: string, start: Local, fromLocal: number, horizon: number): number[] {
+  const parts: Record<string, string> = Object.fromEntries(rule.split(';').map(p => p.split('=') as [string, string]));
+  const allowed = new Set(['FREQ', 'INTERVAL', 'COUNT', 'UNTIL', 'BYDAY', 'BYMONTHDAY', 'WKST']);
+  if (Object.keys(parts).some(k => !allowed.has(k))) throw new Error('ICS_UNSUPPORTED');
+  const interval = Number(parts.INTERVAL ?? 1);
+  const count = parts.COUNT ? Number(parts.COUNT) : Infinity;
+  let until = horizon;
+  if (parts.UNTIL) {
+    const u = icsTime({ name: 'UNTIL', params: {}, value: parts.UNTIL }, {});
+    // UNTIL in UTC (Z) is converted to the event's local wall time.
+    until = Math.min(until, parts.UNTIL.endsWith('Z') ? u.ms + start.offset * 60000 : u.ms + (u.allDay ? DAY - 1 : 0));
+  }
+  const timeOfDay = start.ms % DAY;
+  const out: number[] = [];
+  const push = (ms: number) => { if (ms >= start.ms && ms <= until && out.length < count) out.push(ms); };
+  const d0 = new Date(start.ms);
+  const byday = (parts.BYDAY ?? '').split(',').filter(Boolean).map(s => {
+    const m = /^([+-]?\d{1,2})?(SU|MO|TU|WE|TH|FR|SA)$/.exec(s);
+    if (!m) throw new Error('ICS_UNSUPPORTED');
+    return { n: m[1] ? Number(m[1]) : 0, wd: WEEKDAYS.indexOf(m[2]) };
+  });
+  // Without COUNT, skip whole periods before the window (estimates err early, never late).
+  const periodDays = { DAILY: 1, WEEKLY: 7, MONTHLY: 31, YEARLY: 366 }[parts.FREQ] ?? 1;
+  let first = 0;
+  if (count === Infinity && fromLocal > start.ms) {
+    first = Math.max(0, Math.floor((fromLocal - start.ms) / (periodDays * DAY)) - 2);
+    if (parts.FREQ === 'MONTHLY' || parts.FREQ === 'YEARLY') first = Math.max(0, first - 1);
+    first -= first % interval;
+  }
+  let guard = 0;
+  for (let i = first; out.length < count; i += interval) {
+    if (++guard > ICS_MAX_OCCURRENCES) throw new Error('ICS_UNSUPPORTED');
+    if (parts.FREQ === 'DAILY') {
+      const ms = start.ms + i * DAY;
+      if (ms > until) break;
+      if (!byday.length || byday.some(b => b.wd === new Date(ms).getUTCDay())) push(ms);
+    } else if (parts.FREQ === 'WEEKLY') {
+      const wkst = WEEKDAYS.indexOf(parts.WKST ?? 'MO');
+      const weekStart = start.ms - timeOfDay - ((d0.getUTCDay() - wkst + 7) % 7) * DAY + i * 7 * DAY;
+      if (weekStart > until) break;
+      const days = byday.length ? byday.map(b => b.wd) : [d0.getUTCDay()];
+      for (const wd of [...days].sort((a, b) => ((a - wkst + 7) % 7) - ((b - wkst + 7) % 7))) {
+        push(weekStart + ((wd - wkst + 7) % 7) * DAY + timeOfDay);
+      }
+    } else if (parts.FREQ === 'MONTHLY' || parts.FREQ === 'YEARLY') {
+      const months = parts.FREQ === 'MONTHLY' ? i : i * 12;
+      const y = d0.getUTCFullYear() + Math.floor((d0.getUTCMonth() + months) / 12);
+      const mo = (d0.getUTCMonth() + months) % 12;
+      if (Date.UTC(y, mo, 1) > until) break;
+      const candidates: number[] = [];
+      if (byday.length) {
+        for (const b of byday) {
+          if (!b.n) throw new Error('ICS_UNSUPPORTED');
+          const day = nthWeekday(y, mo, b.wd, b.n);
+          if (day != null) candidates.push(day + timeOfDay);
+        }
+      } else {
+        const days = parts.BYMONTHDAY ? parts.BYMONTHDAY.split(',').map(Number) : [d0.getUTCDate()];
+        const len = new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+        for (const d of days) { const day = d < 0 ? len + d + 1 : d; if (day >= 1 && day <= len) candidates.push(Date.UTC(y, mo, day) + timeOfDay); }
+      }
+      candidates.sort((a, b) => a - b).forEach(push);
+    } else throw new Error('ICS_UNSUPPORTED');
+  }
+  return out;
+}
+
+export function parseIcsBusy(text: string, from: Date, to: Date): Busy[] {
+  if (!/BEGIN:VCALENDAR/.test(text)) throw new Error('ICS_UNREADABLE');
+  const lines = unfoldIcs(text);
+  const zones = tzOffsets(lines);
+  const events: IcsProp[][] = [];
+  let current: IcsProp[] | null = null, depth = 0;
+  for (const line of lines) {
+    if (line === 'BEGIN:VEVENT') { current = []; depth = 0; continue; }
+    if (line === 'END:VEVENT') { if (current) events.push(current); current = null; continue; }
+    if (!current) continue;
+    if (line.startsWith('BEGIN:')) { depth++; continue; }   // e.g. VALARM
+    if (line.startsWith('END:')) { depth--; continue; }
+    if (depth === 0) { const p = parseIcsLine(line); if (p) current.push(p); }
+  }
+  const get = (e: IcsProp[], n: string) => e.find(p => p.name === n);
+  // Single-instance overrides replace the matching occurrence of their series.
+  const overridden = new Set<string>();
+  for (const e of events) {
+    const rid = get(e, 'RECURRENCE-ID'); const uid = get(e, 'UID')?.value;
+    if (rid && uid) overridden.add(`${uid}|${toIso(icsTime(rid, zones))}`);
+  }
+  const fromMs = from.getTime(), toMs = to.getTime();
+  const busy: Busy[] = [];
+  for (const e of events) {
+    const status = get(e, 'STATUS')?.value.toUpperCase();
+    const transp = get(e, 'TRANSP')?.value.toUpperCase();
+    const show = get(e, 'X-MICROSOFT-CDO-BUSYSTATUS')?.value.toUpperCase();
+    if (status === 'CANCELLED' || transp === 'TRANSPARENT' || show === 'FREE') continue;
+    const dtstart = get(e, 'DTSTART');
+    if (!dtstart) continue;
+    const start = icsTime(dtstart, zones);
+    const dtend = get(e, 'DTEND'), duration = get(e, 'DURATION');
+    const length = dtend ? icsTime(dtend, zones).ms - start.ms : duration ? icsDuration(duration.value) : start.allDay ? DAY : 0;
+    if (length <= 0) continue;
+    const rule = get(e, 'RRULE')?.value;
+    const isOverride = !!get(e, 'RECURRENCE-ID');
+    const uid = get(e, 'UID')?.value ?? '';
+    const excluded = new Set(e.filter(p => p.name === 'EXDATE').flatMap(p =>
+      p.value.split(',').map(v => toIso(icsTime({ ...p, value: v }, zones)))));
+    // Expand far enough (in local time) to cover the window.
+    const horizon = toMs + start.offset * 60000;
+    const starts = rule && !isOverride ? expandRule(rule, start, fromMs + start.offset * 60000 - length, horizon) : [start.ms];
+    for (const ms of starts) {
+      const occurrence = { ...start, ms };
+      const iso = toIso(occurrence);
+      if (excluded.has(iso) || (!isOverride && rule && overridden.has(`${uid}|${iso}`))) continue;
+      const s = ms - start.offset * 60000, en = s + length;
+      if (en > fromMs && s < toMs) busy.push({ start: new Date(Math.max(s, fromMs)).toISOString(), end: new Date(Math.min(en, toMs)).toISOString() });
+    }
+  }
+  return busy;
+}
+
+const ICS_CACHE_MS = 5 * 60 * 1000;  // Outlook republishes slowly; avoid a 0.5 MB download per request
+const icsCache = new Map<string, { at: number; text: string }>();
+async function icsBusy(settings: Settings, from: Date, to: Date) {
+  const busy: Busy[] = [];
+  for (const url of settings.icsUrls ?? []) {
+    const now = (settings.now ?? Date.now)();
+    let cached = icsCache.get(url);
+    if (!cached || now - cached.at > ICS_CACHE_MS) {
+      const response = await (settings.fetcher ?? fetch)(url, { signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error('ICS_UNAVAILABLE');
+      cached = { at: now, text: await response.text() };
+      icsCache.set(url, cached);
+    }
+    busy.push(...parseIcsBusy(cached.text, from, to));
+  }
+  return busy;
+}
+
 // --- Google Calendar free/busy -------------------------------------------------------
 const b64url = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -157,6 +357,7 @@ async function syncCalendar(settings: Settings, from: Date, to: Date) {
     const calendar = data?.calendars?.[settings.google.calendarId];
     if (!response.ok || !calendar || calendar.errors?.length || !Array.isArray(calendar.busy)) throw new Error('freebusy');
     busy = calendar.busy.map((b: { start: string; end: string }) => ({ start: b.start, end: b.end }));
+    busy.push(...await icsBusy(settings, from, to));
   } catch { throw new ApiError(503, 'CALENDAR_UNAVAILABLE'); }
   await rpc(settings, 'sync_calendar_busy', { p_from: from.toISOString(), p_to: to.toISOString(), p_busy: busy });
 }
@@ -180,7 +381,11 @@ async function checkCalendar(settings: Settings): Promise<[number, unknown]> {
     const calendar = data?.calendars?.[settings.google.calendarId];
     if (!response.ok || !calendar) return [503, { ok: false, error: 'CALENDAR_UNAVAILABLE' }];
     if (calendar.errors?.length) return [503, { ok: false, error: 'CALENDAR_NOT_SHARED' }];
-    return [200, { ok: true }];
+    try { await icsBusy(settings, new Date(nowMs), new Date(nowMs + 86400000)); }
+    catch (error) {
+      return [503, { ok: false, error: (error as Error).message === 'ICS_UNSUPPORTED' ? 'OUTLOOK_UNSUPPORTED' : 'OUTLOOK_UNAVAILABLE' }];
+    }
+    return [200, { ok: true, publishedCalendars: settings.icsUrls?.length ?? 0 }];
   } catch { return [503, { ok: false, error: 'CALENDAR_UNAVAILABLE' }]; }
 }
 
@@ -475,6 +680,7 @@ if (typeof Deno !== 'undefined') {
     allowedOrigins: (Deno.env.get('ALLOWED_ORIGINS') ?? '').split(',').map(s => s.trim()).filter(Boolean),
     google: googleFromEnv(),
     catalogSyncSecret: Deno.env.get('CATALOG_SYNC_SECRET') || undefined,
+    icsUrls: (Deno.env.get('BUSY_ICS_URLS') ?? '').split(/[\s,]+/).filter(u => /^https:\/\//.test(u)),
   }));
 }
 function googleFromEnv() {

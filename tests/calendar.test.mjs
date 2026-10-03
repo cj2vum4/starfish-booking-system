@@ -107,7 +107,7 @@ test('setup check reports which Google step failed without exposing calendar dat
     return { status: response.status, body: await response.json(), calls };
   };
   const ok = await check({});
-  assert.deepEqual([ok.status, ok.body], [200, { ok: true }]);
+  assert.deepEqual([ok.status, ok.body], [200, { ok: true, publishedCalendars: 0 }]);
   assert.ok(!JSON.stringify(ok.body).includes(dinner.start), 'busy times leaked');
   assert.ok(!ok.calls.some(c => c.url.includes('/rpc/')), 'health check touched the database');
   assert.equal((await check({ calendarError: true })).body.error, 'CALENDAR_NOT_SHARED');

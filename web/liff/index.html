@@ -354,6 +354,7 @@
   }
 
   // ---- Store panel: confirm a group, or retry writing it to Google Calendar ------------
+  const DEFAULT_PRICE = 400, DEFAULT_DM = '海星', VENUES = ['南港', '北車', '新竹交大'];
   async function renderStorePanel(g, id) {
     const box = document.getElementById('store');
     if (g.status === 'confirmed' && g.event) {
@@ -377,9 +378,10 @@
       ${g.filled < g.capacity ? `<div class="muted">目前 ${g.filled}/${g.capacity} 人。成團後邀請連結就不能再加入新成員。</div>` : ''}
       <label class="muted">劇本</label><select id="cGame"><option value="">請選擇</option>${fitting.map(x =>
         `<option value="${esc(x.gameId)}" ${x.gameId === g.gameId ? 'selected' : ''}>${esc(x.title)}（${esc(hours(x.durationMinutes))}）</option>`).join('')}</select>
-      <label class="muted">每人價格（元）</label><input type="text" id="cPrice" inputmode="numeric" placeholder="例如 650">
-      <label class="muted">場地</label><input type="text" id="cVenue" value="海星劇本殺" maxlength="200">
-      <label class="muted">DM</label><input type="text" id="cDm" value="${esc(me.displayName || '')}" maxlength="100">
+      <label class="muted">每人價格（元）</label><input type="text" id="cPrice" inputmode="numeric" value="${DEFAULT_PRICE}">
+      <label class="muted">場地</label><select id="cVenue">${VENUES.map(v => `<option>${esc(v)}</option>`).join('')}<option value="">自選場地</option></select>
+      <input type="text" id="cVenueOther" maxlength="200" placeholder="輸入場地名稱或地址" hidden>
+      <label class="muted">DM</label><input type="text" id="cDm" value="${esc(DEFAULT_DM)}" maxlength="100">
       <div id="cHint" class="muted"></div>
       <button id="cGo">確認成團並寫入 Google 日曆</button><div id="cErr" class="error" hidden></div></div>`;
     const $ = x => document.getElementById(x);
@@ -388,15 +390,18 @@
       $('cHint').textContent = !x ? '' : x.durationMinutes > held ? `這本 ${hours(x.durationMinutes)}，比保留的 ${hours(held)} 長，會檢查後面時間是否空著再延長。`
         : x.durationMinutes < held ? `這本 ${hours(x.durationMinutes)}，多保留的時間會釋出。` : ''; };
     $('cGame').onchange = hint; hint();
+    $('cVenue').onchange = () => { $('cVenueOther').hidden = $('cVenue').value !== ''; if (!$('cVenueOther').hidden) $('cVenueOther').focus(); };
+    const venue = () => $('cVenue').value || $('cVenueOther').value.trim();
     $('cGo').onclick = async e => {
       const err = t => { $('cErr').textContent = t; $('cErr').hidden = false; };
       const price = $('cPrice').value.trim();
       if (!$('cGame').value) return err(message('GAME_NOT_FOUND'));
       if (!/^\d{1,6}$/.test(price)) return err(message('INVALID_PRICE'));
+      if (!venue()) return err(message('INVALID_VENUE'));
       busy(e.target, true); $('cErr').hidden = true;
       try {
         const r = await api(`/admin/groups/${id}/confirm`, { method: 'POST', body: { gameId: $('cGame').value,
-          priceTwd: Number(price), venue: $('cVenue').value, dmName: $('cDm').value } });
+          priceTwd: Number(price), venue: venue(), dmName: $('cDm').value } });
         if (!r.calendarSynced) alert(message(r.calendarError));
         showGroup(id);
       } catch (x) {

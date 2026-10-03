@@ -128,7 +128,7 @@
   稽核紀錄來源 github:35e0aa4…，同步 57 本、停用 0 本。
 - 店家 LINE Login Channel 已 Publish，朋友可開啟邀請連結。
 
-## 店家確認成團與寫入 Google 日曆（已部署，待設定店家日曆）
+## 店家確認成團與寫入 Google 日曆（已啟用並驗證）
 
 - 202610030009_confirm_and_calendar.sql：確認時依劇本時長延長（須不撞場次與日曆）或縮短保留時段；
   驗證人數、場地、DM、價格；event_calendar_payload、mark_event_calendar_synced、admin_list_groups。
@@ -138,7 +138,17 @@
 - LIFF：店家首頁「近期揪團」、揪團頁「店家確認成團」表單、成團後顯示場地／DM／價格與日曆狀態。
 - npm test 41 passed；模擬環境操作含日曆寫入失敗後重試。
 - 0009 已上雲；雲端 confirm、booking_rpc、game_catalog、slots 測試 PASS；api 重新部署（commit 6944d8a）。
-- 待辦：店家建立專用日曆並共用給服務帳戶（可變更活動），設定 GOOGLE_EVENTS_CALENDAR_ID。
+- 店家已建立「海星劇本殺預約」日曆並設定 GOOGLE_EVENTS_CALENDAR_ID；實測成團後已出現在 Google 日曆。
+- 確認成團預設：每人 400 元、DM「海星」、場地下拉（南港／北車／新竹交大／自選場地）。
+
+## Outlook 行事曆忙碌時間（程式完成，待設定）
+
+- API 讀取 BUSY_ICS_URLS 內的已發布 .ics（Outlook），與 Google free/busy 合併後寫入忙碌鏡像；只存起訖。
+- 規則：BUSY 與 TENTATIVE 視為忙碌；FREE、TRANSPARENT、CANCELLED 略過；展開 DAILY／WEEKLY／MONTHLY／YEARLY
+  （INTERVAL、COUNT、UNTIL、BYDAY 含 -1MO、BYMONTHDAY），處理 EXDATE 與 RECURRENCE-ID；不支援的規則 fail closed。
+- 下載結果暫存 5 分鐘；讀不到時列時段與開團一律 503。
+- 以店家實際 Outlook 檔驗證：224 筆、60 天內 3 筆忙碌，與另一種計算交叉核對一致（未輸出任何行程內容）。
+- npm test 47 passed。
 
 ## 未完成，不能宣稱可供營運
 
