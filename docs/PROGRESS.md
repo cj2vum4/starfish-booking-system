@@ -151,6 +151,16 @@
 - npm test 47 passed；api 已重新部署（commit 46a8e88），店家已設定 BUSY_ICS_URLS，health 回 publishedCalendars=1。
 - Google 預約頁勾選的「日历」即此 Outlook 行事曆；店家決定不需「至少提前 4 小時」。
 
+## 取消已成團的場次（程式完成）
+
+- 202610030010_cancel_event.sql：admin_cancel_event（僅店家；場次、揪團、座位、報名、邀請一併取消；時段釋出；
+  未付款分攤作廢、已付款回報需退款；可重複呼叫）；取消原因與時間保存；成員仍可看到取消與原因。
+- API POST /admin/events/:id/cancel；之後刪除店家日曆上的 Google 行程（404/410 視為已刪除），失敗可由
+  POST /admin/events/:id/calendar 重試。
+- LIFF：已成團頁「取消這場」（可填原因）、取消後顯示原因與日曆狀態、「重試刪除 Google 日曆行程」。
+- 新增 tests/liff.test.mjs：每次 npm test 檢查 LIFF 頁面程式可被解析（本次開發中曾抓到一個換行字元錯誤）。
+- npm test 51 passed。
+
 ## 未完成，不能宣稱可供營運
 
 

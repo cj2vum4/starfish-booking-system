@@ -90,3 +90,40 @@ test('only admins confirm or retry; price must be a whole amount', async () => {
     assert.equal((await handleApi(post(`/admin/groups/${groupId}/confirm`, { ...confirmBody, priceTwd }), settings)).status, 400);
   }
 });
+
+test('cancelling removes the calendar entry; gone entries count as removed; failures are retryable', async () => {
+  const run = async ({ googleStatus = 204, removed = false, synced = true } = {}) => {
+    const calls = [];
+    const fetcher = async (url, opts = {}) => {
+      calls.push({ url, method: opts.method, body: opts.body });
+      if (url === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'g', expires_in: 3600 });
+      if (url.startsWith('https://www.googleapis.com/calendar/v3/calendars/')) return new Response(null, { status: googleStatus });
+      const name = url.split('/rpc/')[1];
+      const args = JSON.parse(opts.body);
+      if (name === 'resolve_session') return Response.json(args.p_session_hash === await sha256Hex(session)
+        ? { user_id: 'owner', display_name: '店長', is_admin: true, expires_at: 'x' } : null);
+      if (name === 'admin_cancel_event') return Response.json({ cancelled: true, event_id: eventId, refund_required: true });
+      if (name === 'event_calendar_payload') return Response.json({ ...payload, status: 'cancelled',
+        google_event_id: synced ? eventId.replace(/-/g, '') : null, calendar_removed: removed });
+      return Response.json({ ok: true });
+    };
+    const settings = { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k', allowedOrigins: [], google, fetcher };
+    const res = await handleApi(post(`/admin/events/${eventId}/cancel`, { reason: 'DM 生病' }), settings);
+    return { status: res.status, data: await res.json(), calls };
+  };
+  const ok = await run();
+  assert.deepEqual([ok.status, ok.data], [200, { cancelled: true, refundRequired: true, calendarRemoved: true }]);
+  const del = ok.calls.find(c => c.method === 'DELETE');
+  assert.ok(del.url.endsWith(`/events/${eventId.replace(/-/g, '')}`));
+  assert.ok(del.url.includes(encodeURIComponent(google.eventsCalendarId)) && !del.url.includes(encodeURIComponent(google.calendarId)));
+  assert.equal(JSON.parse(ok.calls.find(c => c.url.endsWith('/admin_cancel_event')).body).p_reason, 'DM 生病');
+  for (const googleStatus of [404, 410]) assert.equal((await run({ googleStatus })).data.calendarRemoved, true);
+  const failed = await run({ googleStatus: 500 });
+  assert.deepEqual(failed.data, { cancelled: true, refundRequired: true, calendarRemoved: false, calendarError: 'CALENDAR_REMOVE_FAILED' });
+  assert.ok(!failed.calls.some(c => c.url.endsWith('/mark_event_calendar_removed')));
+  for (const opts of [{ removed: true }, { synced: false }]) {
+    const skip = await run(opts);
+    assert.equal(skip.data.calendarRemoved, true);
+    assert.ok(!skip.calls.some(c => c.method === 'DELETE'), 'nothing to delete');
+  }
+});

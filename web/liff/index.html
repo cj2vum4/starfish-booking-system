@@ -87,6 +87,8 @@
     INVALID_DM: '請輸入 DM 名字。', NOT_ADMIN: '只有店家可以操作。', GAME_NOT_FOUND: '請選擇劇本。',
     CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
     CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
+    CALENDAR_REMOVE_FAILED: '場次已取消，但 Google 日曆上的行程沒刪成功，請按「重試刪除」。',
+    EVENT_COMPLETED: '這場已經結束，不能取消。', INVALID_REASON: '取消原因最多 500 字。',
   };
   const view = document.getElementById('view');
   const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -147,7 +149,7 @@
       const box = document.getElementById('adminGroups');
       box.innerHTML = groups.length ? groups.map(g => `
         <button class="card group-row" data-admin-group="${esc(g.groupId)}"><div><b>${esc(fmtRange(g.startsAt, g.endsAt))}</b>
-        <span class="tag ${g.status === 'confirmed' ? 'ok' : ''}">${g.status === 'confirmed' ? '已成團' : '待確認'}</span></div>
+        <span class="tag ${g.status === 'confirmed' ? 'ok' : ''}">${{ confirmed: '已成團', cancelled: '已取消' }[g.status] || '待確認'}</span></div>
         <div class="muted">${esc(g.organizerName)}・${esc(g.gameTitle || '請店家推薦')}・${g.filled}/${g.capacity} 人</div></button>`).join('')
         : '<div class="card muted">目前沒有揪團。</div>';
       box.querySelectorAll('[data-admin-group]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.adminGroup));
@@ -163,7 +165,8 @@
       const { groups } = await api('/me/groups');
       document.getElementById('mine').innerHTML = groups.length ? groups.map(g => `
         <button class="card group-row" data-id="${esc(g.groupId)}"><div><b>${esc(fmtRange(g.startsAt, g.endsAt))}</b></div>
-        <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}・${g.filled}/${g.capacity} 人・${g.isOrganizer ? '我是主揪' : '已加入'}</div></button>`).join('')
+        <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}・${g.filled}/${g.capacity} 人・${g.isOrganizer ? '我是主揪' : '已加入'}</div>
+        ${g.status === 'cancelled' ? '<div class="error">場次已取消</div>' : g.status === 'confirmed' ? '<span class="tag ok">已成團</span>' : ''}</button>`).join('')
         : '<div class="card muted">目前沒有揪團。</div>';
       document.querySelectorAll('[data-id]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.id));
     } catch (e) { if (e.message !== 'reauth') document.getElementById('mine').textContent = message(e.code); }
@@ -302,13 +305,15 @@
     catch (e) { if (e.message !== 'reauth') render(`<div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
     const open = g.capacity - g.filled;
-    const statusText = { recruiting: '招募中', pending_confirmation: '等待店家確認', confirmed: '已成團', cancelled: '已解散' }[g.status] || g.status;
+    const statusText = g.status === 'cancelled' && g.event ? '場次已取消'
+      : { recruiting: '招募中', pending_confirmation: '等待店家確認', confirmed: '已成團', cancelled: '已解散' }[g.status] || g.status;
     render(`<div class="card stack"><div class="big">${esc(fmtRange(g.startsAt, g.endsAt))}</div>
         <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}${g.preferences?.length ? '・' + esc(g.preferences.join('、')) : ''}</div>
         <div><span class="tag ok">${esc(statusText)}</span> <span class="tag">${g.filled}/${g.capacity} 人${open > 0 && g.status === 'recruiting' ? `・還缺 ${open} 人` : ''}</span>
         ${g.status === 'recruiting' ? `<span class="tag">${g.visibility === 'public' ? '公開招募' : '憑連結加入'}</span>` : ''}</div>
         ${g.note ? `<div class="muted">備註：${esc(g.note)}</div>` : ''}
-        ${g.event ? `<div class="muted">場地：${esc(g.event.venue)}・DM：${esc(g.event.dmName)}・每人 NT$${Math.round(g.event.priceCents / 100)}</div>` : ''}</div>
+        ${g.event?.status === 'cancelled' ? `<div class="error">店家已取消這場${g.event.cancelReason ? '：' + esc(g.event.cancelReason) : '。'}</div>` : ''}
+        ${g.event && g.event.status !== 'cancelled' ? `<div class="muted">場地：${esc(g.event.venue)}・DM：${esc(g.event.dmName)}・每人 NT$${Math.round(g.event.priceCents / 100)}</div>` : ''}</div>
       <div id="store"></div>
       <div class="card"><h3 style="margin-top:0">座位</h3><ul class="seats">${(g.seats || []).map(s => `<li>
         <span>${s.seatNumber}. ${s.status === 'open' ? '<span class="muted">空位</span>' : esc(s.name)}${s.isMe ? '（我）' : ''}</span>
@@ -357,10 +362,39 @@
   const DEFAULT_PRICE = 400, DEFAULT_DM = '海星', VENUES = ['南港', '北車', '新竹交大'];
   async function renderStorePanel(g, id) {
     const box = document.getElementById('store');
+    if (g.status === 'cancelled' && g.event) {
+      const pending = g.event.calendarSynced && !g.event.calendarRemoved;
+      box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家</h3>
+        <div>${pending ? '⚠️ Google 日曆上的行程還沒刪除' : '✅ Google 日曆已同步（行程已移除）'}</div>
+        ${pending ? '<button class="secondary" id="calRetry">重試刪除 Google 日曆行程</button>' : ''}<div id="calMsg" class="muted"></div></div>`;
+      document.getElementById('calRetry')?.addEventListener('click', async e => {
+        busy(e.target, true);
+        try { const r = await api(`/admin/events/${g.event.eventId}/calendar`, { method: 'POST' });
+          if (r.calendarRemoved) { showGroup(id); return; } document.getElementById('calMsg').textContent = message(r.calendarError); }
+        catch (x) { if (x.message !== 'reauth') document.getElementById('calMsg').textContent = message(x.code); }
+        busy(e.target, false);
+      });
+      return;
+    }
     if (g.status === 'confirmed' && g.event) {
       box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家</h3>
         <div>${g.event.calendarSynced ? '✅ 已寫入 Google 日曆' : '⚠️ 尚未寫入 Google 日曆'}</div>
-        ${g.event.calendarSynced ? '' : '<button class="secondary" id="calRetry">重新寫入 Google 日曆</button>'}<div id="calMsg" class="muted"></div></div>`;
+        ${g.event.calendarSynced ? '' : '<button class="secondary" id="calRetry">重新寫入 Google 日曆</button>'}<div id="calMsg" class="muted"></div>
+        <button class="danger" id="evCancel">取消這場</button></div>`;
+      document.getElementById('evCancel').onclick = async e => {
+        const reason = prompt('取消原因（成員會看到，可留空）', '');
+        if (reason === null) return;
+        if (!confirm('確定取消這場嗎？所有成員的報名會一併取消，時段會釋出，Google 日曆上的行程也會刪除。')) return;
+        busy(e.target, true);
+        try {
+          const r = await api(`/admin/events/${g.event.eventId}/cancel`, { method: 'POST', body: { reason: reason.trim() || null } });
+          const notes = [];
+          if (r.refundRequired) notes.push('有成員已付款，請記得退款。');
+          if (!r.calendarRemoved) notes.push(message(r.calendarError));
+          if (notes.length) alert(notes.join(' '));
+          showGroup(id);
+        } catch (x) { if (x.message !== 'reauth') document.getElementById('calMsg').textContent = message(x.code); busy(e.target, false); }
+      };
       document.getElementById('calRetry')?.addEventListener('click', async e => {
         busy(e.target, true);
         try { const r = await api(`/admin/events/${g.event.eventId}/calendar`, { method: 'POST' });

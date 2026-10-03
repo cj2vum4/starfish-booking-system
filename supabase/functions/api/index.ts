@@ -396,6 +396,7 @@ async function writeCalendarEvent(settings: Settings, eventId: string) {
   if (!settings.google || !calendarId) return { calendarSynced: false, calendarError: 'CALENDAR_WRITE_NOT_CONFIGURED' };
   const e = await rpc<Record<string, any>>(settings, 'event_calendar_payload', { p_event_id: eventId });
   if (!e) throw new ApiError(404, 'EVENT_NOT_FOUND');
+  if (e.status === 'cancelled') return removeCalendarEvent(settings, e);
   if (e.google_event_id) return { calendarSynced: true };
   const googleId = eventId.replace(/-/g, '');
   const price = e.price_cents == null ? '未定' : `NT$${Math.round(e.price_cents / 100)}`;
@@ -421,6 +422,22 @@ async function writeCalendarEvent(settings: Settings, eventId: string) {
   } catch { return { calendarSynced: false, calendarError: 'CALENDAR_WRITE_FAILED' }; }
   await rpc(settings, 'mark_event_calendar_synced', { p_event_id: eventId, p_google_event_id: googleId });
   return { calendarSynced: true };
+}
+
+// Removes a cancelled session from the store calendar. Already-gone entries count as removed.
+async function removeCalendarEvent(settings: Settings, e: Record<string, any>) {
+  if (!e.google_event_id || e.calendar_removed) return { calendarRemoved: true };
+  const calendarId = settings.google?.eventsCalendarId;
+  if (!settings.google || !calendarId) return { calendarRemoved: false, calendarError: 'CALENDAR_WRITE_NOT_CONFIGURED' };
+  try {
+    const token = await googleAccessToken(settings);
+    const response = await (settings.fetcher ?? fetch)(`https://www.googleapis.com/calendar/v3/calendars/${
+      encodeURIComponent(calendarId)}/events/${encodeURIComponent(e.google_event_id)}`, {
+      method: 'DELETE', signal: AbortSignal.timeout(8000), headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok && response.status !== 404 && response.status !== 410) throw new Error(String(response.status));
+  } catch { return { calendarRemoved: false, calendarError: 'CALENDAR_REMOVE_FAILED' }; }
+  await rpc(settings, 'mark_event_calendar_removed', { p_event_id: e.event_id });
+  return { calendarRemoved: true };
 }
 
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
@@ -579,6 +596,16 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       p_dm_name: typeof body.dmName === 'string' ? body.dmName : '', p_game_id: body.gameId ?? null,
       p_price_cents: price * 100 });
     return [result.created ? 201 : 200, { eventId: result.event_id, ...(await writeCalendarEvent(settings, result.event_id)) }];
+  }
+  const cancelRoute = /^\/admin\/events\/([0-9a-f-]{36})\/cancel$/.exec(path);
+  if (req.method === 'POST' && cancelRoute && UUID.test(cancelRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    const { reason } = await readJson(req);
+    if (reason != null && (typeof reason !== 'string' || reason.length > 500)) throw new ApiError(400, 'INVALID_REASON');
+    const result = await rpc<Record<string, any>>(settings, 'admin_cancel_event', {
+      p_actor: session.user_id, p_event_id: cancelRoute[1], p_reason: reason ?? null });
+    return [200, { cancelled: result.cancelled, refundRequired: !!result.refund_required,
+      ...(await writeCalendarEvent(settings, cancelRoute[1])) }];
   }
   const calendarRoute = /^\/admin\/events\/([0-9a-f-]{36})\/calendar$/.exec(path);
   if (req.method === 'POST' && calendarRoute && UUID.test(calendarRoute[1])) {
