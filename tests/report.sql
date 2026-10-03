@@ -44,6 +44,9 @@ begin
   if not exists(select 1 from jsonb_array_elements(r->'players') x where x->>'player'='主揪' and (x->>'played')::int=1 and x->>'oa_friend'='active')
     or not exists(select 1 from jsonb_array_elements(r->'players') x where x->>'player'='小華' and (x->>'played')::int=0)
     then raise exception 'player totals wrong'; end if;
+  -- The exact range the Google Sheets export asks for (last year + 90 days ahead) is accepted.
+  r := public.admin_report(adm,now()-interval '365 days',now()+interval '90 days');
+  if not exists(select 1 from jsonb_array_elements(r->'sessions') x where (x->>'event_id')::uuid=ev) then raise exception 'export range rejected or empty'; end if;
   -- Out-of-range sessions are excluded.
   r := public.admin_report(adm,now()+interval '5 days',now()+interval '60 days');
   if exists(select 1 from jsonb_array_elements(r->'sessions') x where (x->>'event_id')::uuid=ev) then raise exception 'range filter wrong'; end if;

@@ -93,7 +93,7 @@
     INVALID_DM: '請輸入 DM 名字。', NOT_ADMIN: '只有店家可以操作。', GAME_NOT_FOUND: '請選擇劇本。',
     SHEETS_NOT_CONFIGURED: '還沒設定要匯出的 Google 試算表（GOOGLE_SHEET_ID）。',
     SHEET_NOT_SHARED: '試算表沒有共用給系統的服務帳戶，或 Google Sheets API 尚未啟用。',
-    SHEETS_FAILED: 'Google Sheets 暫時寫入失敗，請稍後再試。', GOOGLE_KEY_INVALID: 'Google 服務帳戶金鑰無效。',
+    SHEETS_FAILED: 'Google Sheets 暫時寫入失敗，請稍後再試。', INVALID_RANGE: '查詢的日期範圍不正確。', GOOGLE_KEY_INVALID: 'Google 服務帳戶金鑰無效。',
     CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
     CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
     CALENDAR_REMOVE_FAILED: '場次已取消，但 Google 日曆上的行程沒刪成功，請按「重試刪除」。',
@@ -196,7 +196,7 @@
     const zh = { open: '已成團', confirmed: '已成團', completed: '已結束', cancelled: '已取消' };
     const count = st => r.sessions.filter(x => st.includes(x.status)).length;
     const attended = r.sessions.reduce((n, x) => n + x.attended, 0);
-    const upcoming = r.sessions.filter(x => Date.parse(x.startsAt) > Date.now()).length;
+    const upcoming = r.sessions.filter(x => Date.parse(x.startsAt) > Date.now() && x.status !== 'cancelled').length;
     render(`<h2>店家後台</h2>
       <div class="card"><div class="muted">最近 30 天到未來 60 天</div>
         <div class="big">${r.sessions.length} 場</div>
