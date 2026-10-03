@@ -696,6 +696,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const games = await fetchCatalog(settings, (settings.catalogCommitUrl ?? CATALOG_COMMIT_URL).replace('{commit}', commit));
     return [200, camel(await rpc(settings, 'system_sync_games', { p_games: games, p_commit: commit }))];
   }
+  if (req.method === 'GET' && path === '/groups/public') {
+    await requireSession(req, settings);
+    return [200, { groups: camel(await rpc(settings, 'list_public_groups', {})) }];
+  }
   if (req.method === 'GET' && path === '/me/groups') {
     const { session } = await requireSession(req, settings);
     return [200, { groups: camel(await rpc(settings, 'list_my_groups', { p_actor: session.user_id })) }];
@@ -706,7 +710,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const name = path === '/invites/preview' ? 'preview_invite' : 'claim_invite';
     return [200, camel(await rpc(settings, name, { p_actor: session.user_id, p_token_hash: hash }))];
   }
-  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel))?$/.exec(path);
+  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel|visibility))?$/.exec(path);
   if (groupRoute && UUID.test(groupRoute[1])) {
     const { session } = await requireSession(req, settings);
     const [, groupId, action] = groupRoute;
@@ -728,6 +732,11 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     }
     if (req.method === 'POST' && action === 'join') return [200, camel(await rpc(settings, 'join_group', actor))];
     if (req.method === 'POST' && action === 'cancel') return [200, camel(await rpc(settings, 'cancel_group', actor))];
+    if (req.method === 'POST' && action === 'visibility') {
+      const { visibility } = await readJson(req);
+      if (visibility !== 'public' && visibility !== 'private') throw new ApiError(400, 'INVALID_VISIBILITY');
+      return [200, camel(await rpc(settings, 'set_group_visibility', { ...actor, p_visibility: visibility }))];
+    }
   }
   const seatRoute = /^\/seats\/([0-9a-f-]{36})\/leave$/.exec(path);
   if (req.method === 'POST' && seatRoute && UUID.test(seatRoute[1])) {

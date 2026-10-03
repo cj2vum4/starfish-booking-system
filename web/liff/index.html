@@ -139,12 +139,13 @@
   async function showHome() {
     render(`<div class="card stack"><div class="big">你好，${esc(me.displayName || 'LINE 玩家')}</div>
       <p class="muted">選好時間就能開團，再把邀請連結分享給朋友。</p>
-      <button id="new">我要開團</button></div>
+      <button id="new">我要開團</button><button class="secondary" id="openList">看缺人場次</button></div>
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
         <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
         <h3>店家：近期揪團</h3><div id="adminGroups" class="muted">讀取中…</div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
+    document.getElementById('openList').onclick = () => go('#/open');
     if (me.isAdmin) api('/admin/groups').then(({ groups }) => {
       const box = document.getElementById('adminGroups');
       box.innerHTML = groups.length ? groups.map(g => `
@@ -170,6 +171,24 @@
         : '<div class="card muted">目前沒有揪團。</div>';
       document.querySelectorAll('[data-id]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.id));
     } catch (e) { if (e.message !== 'reauth') document.getElementById('mine').textContent = message(e.code); }
+  }
+
+  // ---- 缺人場次: public groups that still have open seats ---------------------------------
+  async function showOpen() {
+    render(`<h2>缺人場次</h2><div class="card">讀取中…</div>`);
+    let groups;
+    try { ({ groups } = await api('/groups/public')); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>缺人場次</h2><div class="card error">${esc(message(e.code))}</div>
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
+    render(`<h2>缺人場次</h2><p class="muted">以下揪團還有空位，點進去就能直接加入。</p>
+      ${groups.length ? groups.map(g => `<button class="card group-row" data-open="${esc(g.groupId)}">
+        <div><b>${esc(fmtRange(g.startsAt, g.endsAt))}</b> <span class="tag ok">還缺 ${g.capacity - g.filled} 人</span></div>
+        <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}・${g.filled}/${g.capacity} 人・主揪 ${esc(g.organizerName)}</div>
+        ${g.preferences?.length ? `<div class="muted">喜歡：${esc(g.preferences.join('、'))}</div>` : ''}</button>`).join('')
+        : '<div class="card muted">目前沒有缺人的公開揪團。想玩的話，可以自己開一團！</div>'}
+      <div class="stack"><button id="openNew">我要開團</button><button class="secondary" onclick="location.hash='#/'">回首頁</button></div>`);
+    document.querySelectorAll('[data-open]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.open));
+    document.getElementById('openNew').onclick = () => go('#/create');
   }
 
   // ---- Create a group ---------------------------------------------------------------
@@ -315,7 +334,7 @@
         ${g.event?.status === 'cancelled' ? `<div class="error">店家已取消這場${g.event.cancelReason ? '：' + esc(g.event.cancelReason) : '。'}</div>` : ''}
         ${g.event && g.event.status !== 'cancelled' ? `<div class="muted">場地：${esc(g.event.venue)}・DM：${esc(g.event.dmName)}・每人 NT$${Math.round(g.event.priceCents / 100)}</div>` : ''}</div>
       <div id="store"></div>
-      <div class="card"><h3 style="margin-top:0">座位</h3><ul class="seats">${(g.seats || []).map(s => `<li>
+      <div class="card"><h3 style="margin-top:0">座位</h3>${g.seats ? '' : '<p class="muted">加入後可以看到其他成員。</p>'}<ul class="seats">${(g.seats || []).map(s => `<li>
         <span>${s.seatNumber}. ${s.status === 'open' ? '<span class="muted">空位</span>' : esc(s.name)}${s.isMe ? '（我）' : ''}</span>
         <span>${s.status === 'reserved' ? '<span class="tag">保留中・待認領</span>' : s.status === 'joined' ? '<span class="tag ok">已加入</span>' : ''}
         ${(g.isOrganizer && s.status === 'reserved') || (s.isMe && !g.isOrganizer) ? `<button class="chip" data-leave="${esc(s.seatId)}">${s.isMe ? '退出' : '取消保留'}</button>` : ''}</span></li>`).join('')}</ul></div>
@@ -323,9 +342,27 @@
     const actions = document.getElementById('actions');
     if (me.isAdmin) renderStorePanel(g, id);
     const err = text => { const el = document.getElementById('err'); el.textContent = text; el.hidden = false; };
+    // Anyone may join a public recruiting group straight from its page (e.g. from 缺人場次).
+    if (!g.isOrganizer && !g.isMember && g.visibility === 'public' && g.status === 'recruiting' && open > 0) {
+      actions.innerHTML = '<button id="joinPublic">加入這團</button>';
+      document.getElementById('joinPublic').onclick = async e => {
+        busy(e.target, true);
+        try { await api(`/groups/${id}/join`, { method: 'POST' }); showGroup(id); }
+        catch (x) { if (x.message !== 'reauth') { err(message(x.code)); busy(e.target, false); } }
+      };
+    }
     if (g.isOrganizer && g.status === 'recruiting') {
+      const toPublic = g.visibility !== 'public';
       actions.innerHTML = `${open > 0 ? '<button id="invite">分享邀請連結到 LINE</button><button class="secondary" id="reserve">幫朋友保留位子</button>' : ''}
+        <button class="secondary" id="visibility">${toPublic ? '改為公開招募（出現在缺人場次）' : '改為只限收到連結的人'}</button>
         <button class="danger" id="cancel">解散揪團</button>`;
+      document.getElementById('visibility').onclick = async e => {
+        if (!confirm(toPublic ? '公開後，所有人都能在「缺人場次」看到這團並直接加入。確定嗎？'
+          : '改回後，只有拿到邀請連結的人能加入，這團也會從「缺人場次」消失。確定嗎？')) return;
+        busy(e.target, true);
+        try { await api(`/groups/${id}/visibility`, { method: 'POST', body: { visibility: toPublic ? 'public' : 'private' } }); showGroup(id); }
+        catch (x) { if (x.message !== 'reauth') { err(message(x.code)); busy(e.target, false); } }
+      };
       document.getElementById('invite')?.addEventListener('click', async e => {
         busy(e.target, true);
         try { const { token } = await api(`/groups/${id}/share-link`, { method: 'POST' });
@@ -476,6 +513,7 @@
     const h = location.hash;
     let m;
     if (h === '#/create') return showCreate();
+    if (h === '#/open') return showOpen();
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
     return showHome();
@@ -486,6 +524,9 @@
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
       // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
+      // Rich Menu links: ?view=open (缺人場次), ?view=create (我要開團), ?view=mine (首頁／我的揪團).
+      const view = new URLSearchParams(location.search).get('view');
+      if (view === 'open' || view === 'create') history.replaceState(null, '', location.pathname + '#/' + view);
       const invite = new URLSearchParams(location.search).get('invite');
       if (invite && /^[A-Za-z0-9_-]{43}$/.test(invite)) history.replaceState(null, '', location.pathname + '#/invite/' + invite);
       // Notification links arrive as ?group=<id>.

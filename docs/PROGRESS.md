@@ -169,7 +169,15 @@
 - API：成功的 POST 之後於背景送出（EdgeRuntime.waitUntil），LINE push 帶 X-Line-Retry-Key 防重複；
   封鎖者不送、4xx 放棄、429/5xx 重試。通知連結 ?group=<id> 直接開啟揪團頁。
 - npm test 55 passed；0011 已上雲，雲端 notifications、booking_rpc 測試 PASS；api 重新部署（commit 63cd244）。
-- 待辦：店家發行 Messaging API Channel access token 並設定 LINE_CHANNEL_ACCESS_TOKEN；之後做「缺人場次」頁與主揪切換公開／私人。
+- 店家已設定 LINE_CHANNEL_ACCESS_TOKEN；實際收訊待店家稍後實測。
+
+## 缺人場次與公開／私人切換（程式完成）
+
+- 202610030012_public_groups.sql：set_group_visibility（僅主揪、僅招募中）、list_public_groups（公開、招募中、有空位、未開始；不含成員名字）。
+- API：GET /groups/public、POST /groups/:id/visibility。
+- LIFF：首頁「看缺人場次」、缺人場次列表、非成員看公開團可「加入這團」、主揪「改為公開招募／改為只限收到連結的人」。
+- 圖文選單連結：?view=open（缺人場次）、?view=create（我要開團）、無參數（首頁／我的揪團）。
+- npm test 57 passed。
 
 ## 未完成，不能宣稱可供營運
 

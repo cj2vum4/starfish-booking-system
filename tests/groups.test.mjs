@@ -91,3 +91,14 @@ test('routes require a session and reject malformed ids', async () => {
   assert.equal((await handleApi(req(`/groups/${groupId}/delete`, 'POST'), settings)).status, 404);
   assert.ok(!calls.some(c => c.name === 'get_group'));
 });
+
+test('public listing and visibility toggle are session-scoped and validated', async () => {
+  const { calls, settings } = backend();
+  assert.equal((await handleApi(req('/groups/public'), settings)).status, 200);
+  assert.ok(calls.some(c => c.name === 'list_public_groups'));
+  const ok = await handleApi(req(`/groups/${groupId}/visibility`, 'POST', { visibility: 'public' }), settings);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(last(calls).args, { p_actor: 'user-1', p_group_id: groupId, p_visibility: 'public' });
+  assert.equal((await handleApi(req(`/groups/${groupId}/visibility`, 'POST', { visibility: 'everyone' }), settings)).status, 400);
+  assert.equal((await handleApi(new Request(`${base}/groups/public`), settings)).status, 401);
+});
