@@ -178,15 +178,15 @@
 - LIFF：首頁「看缺人場次」、缺人場次列表、非成員看公開團可「加入這團」、主揪「改為公開招募／改為只限收到連結的人」。
 - 圖文選單連結：?view=open（缺人場次）、?view=create（我要開團）、無參數（首頁／我的揪團）。
 - npm test 57 passed；0012 已上雲，雲端 public_groups 測試 PASS；LIFF 頁已發布。
-- 待辦：api 需重新部署 commit b056cf4（瀏覽器面板隱藏時 Dashboard 編輯器無法載入，尚未部署）。
 
-## 圖文選單（程式完成）
+## 圖文選單（已上線）
 
 - web/liff/richmenu.jpg（2500×843，依 starfishlarp 深色主視覺：金 #c8a056／#ecd08a、深褐底、海星徽章浮水印），
   產生器 scripts/richmenu_image.py。
 - API POST /hooks/richmenu-setup（X-Sync-Secret 保護）：建立選單、上傳圖片、設為預設、移除舊版同名選單。
   三格連結：?view=create、?view=open、首頁。
-- npm test 59 passed。
+- npm test 59 passed；api 重新部署（commit d62883a，含缺人場次與公開切換）。
+- 2026-10-03 執行 /hooks/richmenu-setup：建立 richmenu-7f69f3fa71fcb0eaba33c63e83034c0f 並設為預設（取代 0 個舊版）。
 
 ## 未完成，不能宣稱可供營運
 
