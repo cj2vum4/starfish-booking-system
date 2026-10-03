@@ -46,8 +46,8 @@
       "evidence": "店家後台（場次、出席、玩家統計）已上線；Google Sheets 單向匯出程式完成，待店家共用試算表後實測。"
     },
     "P11": {
-      "status": "未開始",
-      "evidence": "局部 webhook 安全測試已通過，完整系統安全與壓力測試尚未完成。"
+      "status": "已完成",
+      "evidence": "RLS 與權限稽核、Security Advisor、webhook 與 token 處理、外部資料 fail closed、公開 repo 秘密掃描、正式資料庫 20 路同時搶位壓測；見 docs/SECURITY.md。"
     },
     "P12": {
       "status": "未開始",

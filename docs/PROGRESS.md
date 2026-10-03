@@ -224,6 +224,13 @@
 - npm test 67 passed；0017 已上雲且雲端 report 測試 PASS；api 重新部署（commit 35dc7b1）。
 - 待辦：店家啟用 Google Sheets API、建立試算表並共用給服務帳戶（編輯者），設定 GOOGLE_SHEET_ID。
 
+## P11 安全檢查（完成）
+
+- 詳見 docs/SECURITY.md。正式資料庫：20 張表全開 RLS、API 角色無任何表／序列權限、無對外可執行函式（0018 收回內建
+  rls_auto_enable，event trigger 自動開 RLS 仍正常）；Security Advisor 0 errors，警告已處理。
+- 公開 repo 與完整歷史掃描無秘密與真實 LINE userId。
+- 列時段沿用 60 秒內涵蓋相同區間的日曆同步，避免灌請求耗盡 Google 配額；開團一律即時查詢。npm test 68 passed。
+
 ## 未完成，不能宣稱可供營運
 
 
