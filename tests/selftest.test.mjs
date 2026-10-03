@@ -18,6 +18,9 @@ test('live race self-test scripts: setup leaves one seat, guard accepts only syn
   const row = setup.at(-1).rows[0];
   assert.equal(row.seats_taken, 1);
   assert.equal(row.racers.length, 20);
+  const targets = (await db.query('select public.selftest_targets() as t')).rows[0].t;
+  assert.deepEqual([targets.game_id, targets.event_id, targets.user_ids.length], [row.game_id, row.event_id, 20],
+    'auto targets: the 20 racers, not the player who took the first seat');
   const ok = await db.query('select public.selftest_targets_ok($1::uuid[],$2,$3) as ok', [row.racers, row.game_id, row.event_id]);
   assert.equal(ok.rows[0].ok, true);
   const real = await db.query(`select (select id from public.users where line_user_id=$1) as u, (select id from public.games where slug='real-game') as g`, ['U' + 'a'.repeat(32)]);

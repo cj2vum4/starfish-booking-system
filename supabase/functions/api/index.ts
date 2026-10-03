@@ -748,6 +748,11 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       throw new ApiError(401, 'INVALID_SECRET');
     }
     const body = await readJson(req);
+    if (body.auto === true) {  // use the synthetic targets prepared by race_setup.sql
+      const t = await rpc<Record<string, any> | null>(settings, 'selftest_targets', {});
+      if (!t) throw new ApiError(404, 'SELFTEST_NOT_PREPARED');
+      Object.assign(body, { gameId: t.game_id, eventId: t.event_id, userIds: t.user_ids });
+    }
     const userIds = Array.isArray(body.userIds) ? body.userIds.filter((u: unknown) => typeof u === 'string' && UUID.test(u)) : [];
     const gameId = typeof body.gameId === 'string' && UUID.test(body.gameId) ? body.gameId : null;
     const eventId = typeof body.eventId === 'string' && UUID.test(body.eventId) ? body.eventId : null;
