@@ -206,14 +206,14 @@
 - 0015 已上雲、雲端 notifications 測試 PASS；api 重新部署（commit 2000a2b）。
 - 建議店家把 LIFF Add friend option 改為 On (Aggressive)，新玩家首次登入即被引導加好友。
 
-## P9 玩家遊戲紀錄（程式完成）
+## P9 玩家遊戲紀錄（已上線）
 
 - 0016：admin_event_participants、admin_complete_event（開始後才能結束、預設全員出席、缺席者不入紀錄、可重複呼叫）、
   list_my_history、my_played_games、group_played_games（僅店家與主揪）；待記錄出席的場次在店家列表保留 14 天。
 - API：GET /me/history、/groups/:id/played、/admin/events/:id/participants；POST /admin/events/:id/complete；/games 附 playedGameIds。
 - LIFF：首頁「我的遊戲紀錄」；開團時自己玩過的劇本標「你玩過」並排到最後；店家確認成團的選項標「團內 N 人玩過」、未玩過的排前面；
   場次開始後店家頁出現「場次結束：記錄出席」。
-- npm test 63 passed；模擬環境操作含出席記錄。
+- npm test 63 passed；模擬環境操作含出席記錄；0016 已上雲且雲端 history 測試 PASS；api 重新部署（commit f967726）。
 
 ## 未完成，不能宣稱可供營運
 
