@@ -50,5 +50,7 @@
 ## 已知限制與建議
 
 - 沒有每位使用者的請求頻率限制；目前以 Google 同步快取降低影響。若日後流量大，可在 Supabase 前加 rate limit。
-- 通知只送得到已加海星 OA 好友的玩家（LINE 規定）。
+- 通知只送得到已加海星 OA 好友的玩家（LINE 規定）。因此開團、加入、認領位子必須是好友：
+  前端先問 `liff.getFriendship()`；後端也擋，資料庫沒有好友紀錄時即時呼叫 LINE profile API 確認（404 → `NOT_FRIEND`）。
+  LINE 暫時連不上時放行，不讓 LINE 故障擋住預約。
 - 正式營運前建議：Supabase 專案開啟 Point-in-Time Recovery 或定期備份；Supabase 帳號與 GitHub 帳號啟用兩步驟驗證。

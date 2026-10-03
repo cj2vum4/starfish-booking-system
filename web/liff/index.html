@@ -60,6 +60,8 @@
   .poster { width:56px; height:78px; flex:0 0 56px; border-radius:8px; object-fit:cover; background:var(--chip); }
   .poster.none { display:grid; place-items:center; color:var(--muted); font-size:13px; }
   .link { display:inline-block; margin-top:4px; color:var(--accent); font-size:14px; text-decoration:underline; }
+  .gate { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-end; justify-content:center; z-index:10; }
+  .gate .card { width:100%; max-width:560px; margin:0; border-radius:18px 18px 0 0; padding:20px 16px calc(20px + env(safe-area-inset-bottom)); }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -70,6 +72,17 @@
     <div><b>加入「海星劇本殺」好友，才收得到通知</b></div>
     <div class="muted">成團、滿團、取消等消息都會用 LINE 傳給你。沒加好友的話，LINE 不允許我們傳訊息。</div>
     <button id="addFriend">加入好友</button>
+  </div>
+  <div id="friendGate" class="gate" hidden role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+    <div class="card stack">
+      <div class="big" id="gateTitle">先加入「海星劇本殺」好友</div>
+      <div class="muted">開團、加入或認領位子前，要先加好友。成團、滿團、取消的通知都會用 LINE 傳給你，沒加好友 LINE 不讓我們傳。</div>
+      <div class="muted">加完好友回到這裡，會自動繼續剛才的動作。</div>
+      <button id="gateAdd">加入好友</button>
+      <button class="secondary" id="gateDone">我加好了，繼續</button>
+      <div id="gateHint" class="error" hidden>還沒偵測到你加好友，請先按「加入好友」。</div>
+      <button class="secondary" id="gateClose">先不要</button>
+    </div>
   </div>
   <div id="view" aria-live="polite"><div class="card">載入中…</div></div>
 </main>
@@ -99,6 +112,7 @@
     CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
     CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
     CALENDAR_REMOVE_FAILED: '場次已取消，但 Google 日曆上的行程沒刪成功，請按「重試刪除」。',
+    NOT_FRIEND: '要先加入「海星劇本殺」好友，才能開團或加入。',
     EVENT_COMPLETED: '這場已經結束，不能取消。', INVALID_REASON: '取消原因最多 500 字。',
   };
   const view = document.getElementById('view');
@@ -372,7 +386,7 @@
     $('plus').onclick = () => { state.capacity++; paintGames(); };
     document.querySelectorAll('[data-vis]').forEach(b => b.onclick = () => { state.visibility = b.dataset.vis;
       document.querySelectorAll('[data-vis]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
-    $('submit').onclick = async () => {
+    gated($('submit'), async () => {
       busy($('submit'), true); $('err').hidden = true;
       try {
         const group = await api('/groups', { method: 'POST', body: { requestId, startsAt: state.start, capacity: state.capacity,
@@ -382,10 +396,12 @@
         go('#/group/' + group.groupId);
       } catch (e) {
         if (e.message === 'reauth') return;
-        busy($('submit'), false); $('err').textContent = message(e.code); $('err').hidden = false;
+        busy($('submit'), false);
+        if (e.code === 'NOT_FRIEND') return showFriendGate(() => $('submit').click());
+        $('err').textContent = message(e.code); $('err').hidden = false;
         if (e.code === 'SLOT_UNAVAILABLE') { store.set('starfish.createRequest', null); delete slotCache[minutes()]; state.start = null; paintWhen(); }
       }
-    };
+    });
     paintGames();
   }
 
@@ -426,11 +442,13 @@
     // Anyone may join a public recruiting group straight from its page (e.g. from 缺人場次).
     if (!g.isOrganizer && !g.isMember && g.visibility === 'public' && g.status === 'recruiting' && open > 0) {
       actions.innerHTML = '<button id="joinPublic">加入這團</button>';
-      document.getElementById('joinPublic').onclick = async e => {
-        busy(e.target, true);
+      const joinBtn = document.getElementById('joinPublic');
+      gated(joinBtn, async () => {
+        busy(joinBtn, true);
         try { await api(`/groups/${id}/join`, { method: 'POST' }); showGroup(id); }
-        catch (x) { if (x.message !== 'reauth') { err(message(x.code)); busy(e.target, false); } }
-      };
+        catch (x) { if (x.message === 'reauth') return; busy(joinBtn, false);
+          if (x.code === 'NOT_FRIEND') return showFriendGate(() => joinBtn.click()); err(message(x.code)); }
+      });
     }
     if (g.isOrganizer && g.status === 'recruiting') {
       const toPublic = g.visibility !== 'public';
@@ -607,22 +625,56 @@
         : `<div class="card error">${esc(message(inv.status === 'cancelled' ? 'INVITE_INVALID' : seat ? 'INVITE_USED' : 'GROUP_CLOSED'))}</div>`}
         <div id="err" class="error" hidden></div><button class="secondary" id="home">回首頁</button></div>`);
     document.getElementById('home').onclick = () => go('#/');
-    document.getElementById('join')?.addEventListener('click', async e => {
-      busy(e.target, true);
+    const claimBtn = document.getElementById('join');
+    if (claimBtn) gated(claimBtn, async () => {
+      busy(claimBtn, true);
       try { await api('/invites/claim', { method: 'POST', body: { token } }); go('#/group/' + inv.groupId); }
       catch (x) { if (x.message === 'reauth') return; if (x.code === 'ALREADY_MEMBER') { go('#/group/' + inv.groupId); return; }
-        const el = document.getElementById('err'); el.textContent = message(x.code); el.hidden = false; busy(e.target, false); }
+        busy(claimBtn, false); if (x.code === 'NOT_FRIEND') return showFriendGate(() => claimBtn.click());
+        const el = document.getElementById('err'); el.textContent = message(x.code); el.hidden = false; }
     });
   }
 
   // ---- Friendship: LINE only delivers notifications to friends of the OA ----------------
   const OA_ADD_FRIEND = 'https://line.me/R/ti/p/@825gdzws';
-  async function checkFriendship() {
-    const bar = document.getElementById('friendBar');
-    try { bar.hidden = (await liff.getFriendship()).friendFlag; }
-    catch { bar.hidden = true; }  // unavailable outside a linked LIFF context: say nothing
+  // Opening, joining and claiming need friendship (the server enforces it too). The action that
+  // was stopped is kept and runs by itself once the player comes back as a friend.
+  // true/false from LINE; null when LINE cannot tell (then the server decides).
+  async function isFriend() {
+    try { return (await liff.getFriendship()).friendFlag; } catch { return null; }
   }
-  document.getElementById('addFriend').onclick = () => liff.openWindow({ url: OA_ADD_FRIEND, external: false });
+  async function checkFriendship() {
+    const friend = await isFriend();
+    document.getElementById('friendBar').hidden = friend !== false;
+    if (friend !== false && pendingAction) resumeAction();
+  }
+  let pendingAction = null;
+  const gate = document.getElementById('friendGate');
+  function showFriendGate(action) {
+    pendingAction = action;
+    document.getElementById('gateHint').hidden = true;
+    gate.hidden = false;
+  }
+  function resumeAction() {
+    const action = pendingAction;
+    pendingAction = null; gate.hidden = true;
+    action?.();
+  }
+  function gated(button, action) {
+    button.onclick = async () => {
+      if (button.disabled) return;
+      if (await isFriend() === false) return showFriendGate(() => button.click());
+      action();
+    };
+  }
+  const openAddFriend = () => liff.openWindow({ url: OA_ADD_FRIEND, external: false });
+  document.getElementById('addFriend').onclick = openAddFriend;
+  document.getElementById('gateAdd').onclick = openAddFriend;
+  document.getElementById('gateDone').onclick = async () => {
+    if (await isFriend() === false) { document.getElementById('gateHint').hidden = false; return; }
+    resumeAction();
+  };
+  document.getElementById('gateClose').onclick = () => { pendingAction = null; gate.hidden = true; };
 
   // ---- Router -----------------------------------------------------------------------
   function route() {

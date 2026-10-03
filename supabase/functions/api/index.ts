@@ -36,7 +36,7 @@ const CONFLICT = new Set(['SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_M
 export function statusForCode(code: string) {
   if (NOT_FOUND.test(code)) return 404;
   if (CONFLICT.has(code)) return 409;
-  if (code === 'NOT_ADMIN') return 403;
+  if (code === 'NOT_ADMIN' || code === 'NOT_FRIEND') return 403;
   return 400;
 }
 
@@ -84,6 +84,25 @@ async function rpc<T>(settings: Settings, name: string, args: Record<string, unk
     throw new ApiError(statusForCode(data.message), data.message);
   }
   throw new ApiError(500, 'DATABASE_ERROR');
+}
+
+// Opening, joining or claiming a seat requires OA friendship so the player can be notified.
+// The stored status comes from webhooks; when it is not active we ask LINE directly, because
+// players who added the OA before the webhook existed were never recorded. If LINE itself is
+// unreachable we let the action through: notifications are a convenience, not a safety rule.
+async function requireFriend(settings: Settings, userId: string) {
+  if (!settings.lineAccessToken) return;
+  const me = await rpc<{ line_user_id: string; oa_friend_status: string } | null>(settings, 'user_line_identity',
+    { p_user_id: userId });
+  if (!me || me.oa_friend_status === 'active') return;
+  let response: Response;
+  try {
+    response = await (settings.fetcher ?? fetch)(
+      `https://api.line.me/v2/bot/profile/${encodeURIComponent(me.line_user_id)}`, {
+        signal: AbortSignal.timeout(5000), headers: { Authorization: `Bearer ${settings.lineAccessToken}` } });
+  } catch { return; }
+  if (response.ok) { await rpc(settings, 'mark_user_followed', { p_user_id: userId }); return; }
+  if (response.status === 404) throw new ApiError(403, 'NOT_FRIEND');
 }
 
 // LINE verifies signature, audience and expiry; we re-check the claims we rely on.
@@ -738,6 +757,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   if (req.method === 'POST' && path === '/groups') {
     const { session } = await requireSession(req, settings);
     const body = await readJson(req);
+    await requireFriend(settings, session.user_id);
     const startsAt = typeof body.startsAt === 'string' ? new Date(body.startsAt) : null;
     if (typeof body.requestId !== 'string' || !UUID.test(body.requestId)) throw new ApiError(400, 'INVALID_REQUEST');
     if (!startsAt || Number.isNaN(startsAt.getTime())) throw new ApiError(400, 'SLOT_UNAVAILABLE');
@@ -904,6 +924,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     const hash = await sha256Hex(inviteToken(await readJson(req)));
     const name = path === '/invites/preview' ? 'preview_invite' : 'claim_invite';
+    if (name === 'claim_invite') await requireFriend(settings, session.user_id);
     return [200, camel(await rpc(settings, name, { p_actor: session.user_id, p_token_hash: hash }))];
   }
   const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel|visibility|played))?$/.exec(path);
@@ -928,7 +949,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
         p_display_name: displayName, p_token_hash: await sha256Hex(token), p_expires_at: inviteExpiry(settings) });
       return [201, { token, seatNumber: seat.seat_number }];
     }
-    if (req.method === 'POST' && action === 'join') return [200, camel(await rpc(settings, 'join_group', actor))];
+    if (req.method === 'POST' && action === 'join') {
+      await requireFriend(settings, session.user_id);
+      return [200, camel(await rpc(settings, 'join_group', actor))];
+    }
     if (req.method === 'POST' && action === 'cancel') return [200, camel(await rpc(settings, 'cancel_group', actor))];
     if (req.method === 'POST' && action === 'visibility') {
       const { visibility } = await readJson(req);
