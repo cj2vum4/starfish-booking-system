@@ -91,6 +91,9 @@
     INVALID_CATALOG: '劇本資料有欄位不正確，已整批取消同步。',
     INVALID_PRICE: '請輸入每人價格（整數元）。', PRICE_REQUIRED: '請輸入每人價格。', INVALID_VENUE: '請輸入場地。',
     INVALID_DM: '請輸入 DM 名字。', NOT_ADMIN: '只有店家可以操作。', GAME_NOT_FOUND: '請選擇劇本。',
+    SHEETS_NOT_CONFIGURED: '還沒設定要匯出的 Google 試算表（GOOGLE_SHEET_ID）。',
+    SHEET_NOT_SHARED: '試算表沒有共用給系統的服務帳戶，或 Google Sheets API 尚未啟用。',
+    SHEETS_FAILED: 'Google Sheets 暫時寫入失敗，請稍後再試。', GOOGLE_KEY_INVALID: 'Google 服務帳戶金鑰無效。',
     CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
     CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
     CALENDAR_REMOVE_FAILED: '場次已取消，但 Google 日曆上的行程沒刪成功，請按「重試刪除」。',
@@ -149,6 +152,7 @@
       <button class="secondary" id="historyBtn">我的遊戲紀錄</button></div>
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
+        <button id="adminBtn">店家後台：場次總覽與匯出</button>
         <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
         <h3>店家：近期揪團</h3><div id="adminGroups" class="muted">讀取中…</div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
@@ -163,6 +167,7 @@
         : '<div class="card muted">目前沒有揪團。</div>';
       box.querySelectorAll('[data-admin-group]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.adminGroup));
     }).catch(e => { if (e.message !== 'reauth') document.getElementById('adminGroups').textContent = message(e.code); });
+    document.getElementById('adminBtn')?.addEventListener('click', () => go('#/admin'));
     document.getElementById('sync')?.addEventListener('click', async e => {
       busy(e.target, true);
       try { const r = await api('/admin/games/sync', { method: 'POST' });
@@ -179,6 +184,44 @@
         : '<div class="card muted">目前沒有揪團。</div>';
       document.querySelectorAll('[data-id]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.id));
     } catch (e) { if (e.message !== 'reauth') document.getElementById('mine').textContent = message(e.code); }
+  }
+
+  // ---- 店家後台: sessions from 30 days ago to 60 days ahead, plus Sheets export ---------
+  async function showAdmin() {
+    render(`<h2>店家後台</h2><div class="card">讀取中…</div>`);
+    let r;
+    try { r = await api('/admin/report'); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>店家後台</h2><div class="card error">${esc(message(e.code))}</div>
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
+    const zh = { open: '已成團', confirmed: '已成團', completed: '已結束', cancelled: '已取消' };
+    const count = st => r.sessions.filter(x => st.includes(x.status)).length;
+    const attended = r.sessions.reduce((n, x) => n + x.attended, 0);
+    const upcoming = r.sessions.filter(x => Date.parse(x.startsAt) > Date.now()).length;
+    render(`<h2>店家後台</h2>
+      <div class="card"><div class="muted">最近 30 天到未來 60 天</div>
+        <div class="big">${r.sessions.length} 場</div>
+        <div class="muted">即將進行 ${upcoming}・已結束 ${count(['completed'])}・已取消 ${count(['cancelled'])}・累計出席 ${attended} 人次・玩家 ${r.players.length} 位</div></div>
+      <div class="card stack"><b>匯出到 Google Sheets</b>
+        <div class="muted">把「場次」「出席」「玩家」三個分頁整份更新成最新資料（最近一年到未來 90 天）。</div>
+        <button id="exportBtn">匯出到 Google Sheets</button><div id="exportMsg" class="muted"></div></div>
+      <h3>場次</h3>
+      ${r.sessions.length ? [...r.sessions].reverse().map(x => `<${x.groupId ? 'button' : 'div'} class="card group-row" ${x.groupId ? `data-g="${esc(x.groupId)}"` : ''}>
+        <div><b>${esc(fmtRange(x.startsAt, x.endsAt))}</b> <span class="tag ${x.status === 'completed' ? '' : 'ok'}">${esc(zh[x.status] || x.status)}</span></div>
+        <div class="muted">${esc(x.title)}・${esc(x.source)}${x.organizer ? '・主揪 ' + esc(x.organizer) : ''}</div>
+        <div class="muted">報名 ${x.booked}/${x.capacity}${x.status === 'completed' ? `・出席 ${x.attended}・缺席 ${x.absent}` : ''}・${esc(x.venue)}・DM ${esc(x.dmName)}${x.priceCents == null ? '' : '・NT$' + Math.round(x.priceCents / 100)}</div>
+        </${x.groupId ? 'button' : 'div'}>`).join('') : '<div class="card muted">這段期間沒有場次。</div>'}
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`);
+    document.querySelectorAll('[data-g]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.g));
+    document.getElementById('exportBtn').onclick = async e => {
+      busy(e.target, true);
+      const msg = document.getElementById('exportMsg');
+      try {
+        const x = await api('/admin/sheets/export', { method: 'POST' });
+        msg.innerHTML = `已匯出：場次 ${x.sessions}、出席 ${x.attendance}、玩家 ${x.players} 筆。<span class="link" id="openSheet">打開試算表</span>`;
+        document.getElementById('openSheet').onclick = () => liff.openWindow({ url: x.url, external: true });
+      } catch (x) { if (x.message !== 'reauth') msg.textContent = message(x.code); }
+      busy(e.target, false);
+    };
   }
 
   // ---- 我的遊戲紀錄 ---------------------------------------------------------------------
@@ -575,6 +618,7 @@
     if (h === '#/create') return showCreate();
     if (h === '#/open') return showOpen();
     if (h === '#/history') return showHistory();
+    if (h === '#/admin' && me.isAdmin) return showAdmin();
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
     return showHome();

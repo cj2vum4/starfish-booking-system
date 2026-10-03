@@ -6,7 +6,7 @@ type Settings = {
   allowedOrigins?: string[];
   // Google service account: "See only free/busy" on the owner's calendar (calendarId) and
   // "Make changes to events" on a dedicated store calendar (eventsCalendarId).
-  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string };
+  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string; sheetId?: string };
   icsUrls?: string[];  // published busy calendars, e.g. the owner's Outlook (capability URLs: keep secret)
   catalogUrl?: string;  // raw scripts.js in the Starfish site repo
   catalogSiteBase?: string;  // where that repo's pages are published
@@ -328,7 +328,8 @@ async function googleAccessToken(settings: Settings) {
   const key = await crypto.subtle.importKey('pkcs8', Uint8Array.from(atob(pem), c => c.charCodeAt(0)),
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
   const unsigned = `${b64urlJson({ alg: 'RS256', typ: 'JWT' })}.${b64urlJson({ iss: google.clientEmail,
-    scope: 'https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events',
+    scope: 'https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events'
+      + ' https://www.googleapis.com/auth/spreadsheets',
     aud: 'https://oauth2.googleapis.com/token',
     iat: now, exp: now + 3600 })}`;
   const signature = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned)));
@@ -556,6 +557,57 @@ async function setupRichMenu(settings: Settings) {
   return { richMenuId, replaced: old.length };
 }
 
+// --- Google Sheets export (one-way, whole sheets rewritten each time) ------------------
+const SHEET_TABS = ['場次', '出席', '玩家'];
+const taipeiStamp = (iso?: string | null) => iso
+  ? new Date(new Date(iso).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ') : '';
+const yesNo = (v: unknown) => v ? '是' : '否';
+const STATUS_ZH: Record<string, string> = { open: '已成團', confirmed: '已成團', completed: '已結束', cancelled: '已取消' };
+const ATTEND_ZH: Record<string, string> = { attended: '出席', absent: '缺席', unknown: '' };
+
+export function reportToSheets(r: Record<string, any>) {
+  const sessions = [['日期時間', '結束', '劇本', '來源', '主揪', '狀態', '人數上限', '報名', '出席', '缺席', '場地', 'DM', '每人(元)', '取消原因'],
+    ...r.sessions.map((x: any) => [taipeiStamp(x.starts_at), taipeiStamp(x.ends_at), x.title, x.source, x.organizer ?? '',
+      STATUS_ZH[x.status] ?? x.status, x.capacity, x.booked, x.attended, x.absent, x.venue, x.dm_name,
+      x.price_cents == null ? '' : Math.round(x.price_cents / 100), x.cancel_reason ?? ''])];
+  const attendance = [['日期時間', '劇本', '玩家', '有 LINE', '報名狀態', '出席'],
+    ...r.attendance.map((x: any) => [taipeiStamp(x.starts_at), x.title, x.player, yesNo(x.has_line), x.status, ATTEND_ZH[x.attendance] ?? ''])];
+  const players = [['玩家', '有 LINE', 'OA 好友', '累積場次', '最後一場', '建立時間'],
+    ...r.players.map((x: any) => [x.player, yesNo(x.has_line), x.oa_friend === 'active' ? '是' : x.oa_friend === 'blocked' ? '已封鎖' : '否',
+      x.played, taipeiStamp(x.last_played), taipeiStamp(x.joined_at)])];
+  return { 場次: sessions, 出席: attendance, 玩家: players } as Record<string, (string | number)[][]>;
+}
+
+async function exportToSheets(settings: Settings, actor: string) {
+  const sheetId = settings.google?.sheetId;
+  if (!settings.google || !sheetId) throw new ApiError(503, 'SHEETS_NOT_CONFIGURED');
+  const now = (settings.now ?? Date.now)();
+  const report = await rpc<Record<string, any>>(settings, 'admin_report', { p_actor: actor,
+    p_from: new Date(now - 365 * 86400000).toISOString(), p_to: new Date(now + 90 * 86400000).toISOString() });
+  const tables = reportToSheets(report);
+  let token: string;
+  try { token = await googleAccessToken(settings); } catch { throw new ApiError(503, 'GOOGLE_KEY_INVALID'); }
+  const f = settings.fetcher ?? fetch;
+  const base = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}`;
+  const call = async (url: string, method: string, body?: unknown) => {
+    const response = await f(url, { method, signal: AbortSignal.timeout(15000),
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    if (response.status === 403 || response.status === 404) throw new ApiError(503, 'SHEET_NOT_SHARED');
+    if (!response.ok) throw new ApiError(502, 'SHEETS_FAILED');
+    return response.json().catch(() => null);
+  };
+  const meta = await call(`${base}?fields=sheets.properties.title`, 'GET');
+  const existing = new Set((meta?.sheets ?? []).map((x: any) => x.properties.title));
+  const missing = SHEET_TABS.filter(t => !existing.has(t));
+  if (missing.length) await call(`${base}:batchUpdate`, 'POST', { requests: missing.map(title => ({ addSheet: { properties: { title } } })) });
+  await call(`${base}/values:batchClear`, 'POST', { ranges: SHEET_TABS.map(t => `'${t}'`) });
+  // RAW: names like "=1+1" stay text, never formulas.
+  await call(`${base}/values:batchUpdate`, 'POST', { valueInputOption: 'RAW',
+    data: SHEET_TABS.map(t => ({ range: `'${t}'!A1`, values: tables[t] })) });
+  return { sessions: tables['場次'].length - 1, attendance: tables['出席'].length - 1, players: tables['玩家'].length - 1,
+    url: `https://docs.google.com/spreadsheets/d/${sheetId}` };
+}
+
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
 function taipeiDayStart(date: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
@@ -749,6 +801,19 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
     return [200, await writeCalendarEvent(settings, calendarRoute[1])];
   }
+  if (req.method === 'GET' && path === '/admin/report') {
+    const { session } = await requireSession(req, settings);
+    const params = new URL(req.url).searchParams;
+    const nowMs = (settings.now ?? Date.now)();
+    const from = params.get('from') ? taipeiDayStart(params.get('from')!) : new Date(nowMs - 30 * 86400000);
+    const to = params.get('to') ? new Date(taipeiDayStart(params.get('to')!).getTime() + 86400000) : new Date(nowMs + 60 * 86400000);
+    return [200, camel(await rpc(settings, 'admin_report', { p_actor: session.user_id, p_from: from.toISOString(), p_to: to.toISOString() }))];
+  }
+  if (req.method === 'POST' && path === '/admin/sheets/export') {
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    return [200, await exportToSheets(settings, session.user_id)];
+  }
   if (req.method === 'POST' && path === '/admin/games/sync') {
     const { session } = await requireSession(req, settings);
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
@@ -911,6 +976,7 @@ function googleFromEnv() {
     const calendarId = Deno.env.get('GOOGLE_CALENDAR_ID');
     if (!account.client_email || !account.private_key || !calendarId) return undefined;
     return { clientEmail: account.client_email, privateKey: account.private_key, calendarId,
-      eventsCalendarId: Deno.env.get('GOOGLE_EVENTS_CALENDAR_ID') || undefined };
+      eventsCalendarId: Deno.env.get('GOOGLE_EVENTS_CALENDAR_ID') || undefined,
+      sheetId: Deno.env.get('GOOGLE_SHEET_ID') || undefined };
   } catch { return undefined; }
 }

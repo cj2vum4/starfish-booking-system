@@ -215,6 +215,14 @@
   場次開始後店家頁出現「場次結束：記錄出席」。
 - npm test 63 passed；模擬環境操作含出席記錄；0016 已上雲且雲端 history 測試 PASS；api 重新部署（commit f967726）。
 
+## P10 店家後台與 Google Sheets 匯出（程式完成）
+
+- 0017：admin_report（場次、出席、玩家累計；排除自測資料；僅店家）。
+- API：GET /admin/report（預設最近 30 天到未來 60 天）、POST /admin/sheets/export（單向整份覆寫「場次／出席／玩家」，
+  缺分頁自動建立，RAW 寫入避免公式注入；未共用回 SHEET_NOT_SHARED）。
+- LIFF：店家管理區「店家後台：場次總覽與匯出」頁。
+- npm test 67 passed。
+
 ## 未完成，不能宣稱可供營運
 
 
