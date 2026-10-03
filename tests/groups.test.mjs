@@ -102,3 +102,18 @@ test('public listing and visibility toggle are session-scoped and validated', as
   assert.equal((await handleApi(req(`/groups/${groupId}/visibility`, 'POST', { visibility: 'everyone' }), settings)).status, 400);
   assert.equal((await handleApi(new Request(`${base}/groups/public`), settings)).status, 401);
 });
+
+test('history, played sets and attendance routes are session-scoped and validated', async () => {
+  const { calls, settings } = backend();
+  const games = await (await handleApi(req('/games'), settings)).json();
+  assert.ok('playedGameIds' in games);
+  assert.ok(calls.some(c => c.name === 'my_played_games' && c.args.p_actor === 'user-1'));
+  assert.equal((await handleApi(req('/me/history'), settings)).status, 200);
+  assert.equal((await handleApi(req(`/groups/${groupId}/played`), settings)).status, 200);
+  const eventId = '77777777-7777-4777-8777-777777777777';
+  assert.equal((await handleApi(req(`/admin/events/${eventId}/participants`), settings)).status, 200);
+  const done = await handleApi(req(`/admin/events/${eventId}/complete`, 'POST', { absent: [seatId] }), settings);
+  assert.equal(done.status, 200);
+  assert.deepEqual(last(calls).args, { p_actor: 'user-1', p_event_id: eventId, p_absent: [seatId] });
+  assert.equal((await handleApi(req(`/admin/events/${eventId}/complete`, 'POST', { absent: ['nope'] }), settings)).status, 400);
+});

@@ -689,8 +689,14 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     return [result.created ? 201 : 200, { groupId: result.group_id, startsAt: result.starts_at, endsAt: result.ends_at }];
   }
   if (req.method === 'GET' && path === '/games') {
-    await requireSession(req, settings);
-    return [200, { games: camel(await rpc(settings, 'list_active_games', {})) }];
+    const { session } = await requireSession(req, settings);
+    const [games, played] = await Promise.all([rpc(settings, 'list_active_games', {}),
+      rpc(settings, 'my_played_games', { p_actor: session.user_id })]);
+    return [200, { games: camel(games), playedGameIds: played }];
+  }
+  if (req.method === 'GET' && path === '/me/history') {
+    const { session } = await requireSession(req, settings);
+    return [200, { history: camel(await rpc(settings, 'list_my_history', { p_actor: session.user_id })) }];
   }
   if (req.method === 'GET' && path === '/admin/groups') {
     const { session } = await requireSession(req, settings);
@@ -722,6 +728,20 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       p_actor: session.user_id, p_event_id: cancelRoute[1], p_reason: reason ?? null });
     return [200, { cancelled: result.cancelled, refundRequired: !!result.refund_required,
       ...(await writeCalendarEvent(settings, cancelRoute[1])) }];
+  }
+  const eventAdmin = /^\/admin\/events\/([0-9a-f-]{36})\/(participants|complete)$/.exec(path);
+  if (eventAdmin && UUID.test(eventAdmin[1])) {
+    const { session } = await requireSession(req, settings);
+    const actor = { p_actor: session.user_id, p_event_id: eventAdmin[1] };
+    if (req.method === 'GET' && eventAdmin[2] === 'participants') {
+      return [200, { participants: camel(await rpc(settings, 'admin_event_participants', actor)) }];
+    }
+    if (req.method === 'POST' && eventAdmin[2] === 'complete') {
+      const { absent } = await readJson(req);
+      const ids = Array.isArray(absent) ? absent : [];
+      if (ids.length > 50 || ids.some(id => typeof id !== 'string' || !UUID.test(id))) throw new ApiError(400, 'INVALID_PARTICIPANTS');
+      return [200, camel(await rpc(settings, 'admin_complete_event', { ...actor, p_absent: ids }))];
+    }
   }
   const calendarRoute = /^\/admin\/events\/([0-9a-f-]{36})\/calendar$/.exec(path);
   if (req.method === 'POST' && calendarRoute && UUID.test(calendarRoute[1])) {
@@ -799,12 +819,14 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const name = path === '/invites/preview' ? 'preview_invite' : 'claim_invite';
     return [200, camel(await rpc(settings, name, { p_actor: session.user_id, p_token_hash: hash }))];
   }
-  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel|visibility))?$/.exec(path);
+  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel|visibility|played))?$/.exec(path);
   if (groupRoute && UUID.test(groupRoute[1])) {
     const { session } = await requireSession(req, settings);
     const [, groupId, action] = groupRoute;
     const actor = { p_actor: session.user_id, p_group_id: groupId };
     if (req.method === 'GET' && !action) return [200, camel(await rpc(settings, 'get_group', actor))];
+    // Keys are game IDs, so this map is returned as-is rather than camelCased.
+    if (req.method === 'GET' && action === 'played') return [200, { played: await rpc(settings, 'group_played_games', actor) }];
     if (req.method === 'POST' && action === 'share-link') {
       const token = newToken();
       await rpc(settings, 'create_group_invite', { ...actor, p_token_hash: await sha256Hex(token),

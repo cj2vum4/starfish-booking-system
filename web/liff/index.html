@@ -145,13 +145,15 @@
   async function showHome() {
     render(`<div class="card stack"><div class="big">你好，${esc(me.displayName || 'LINE 玩家')}</div>
       <p class="muted">選好時間就能開團，再把邀請連結分享給朋友。</p>
-      <button id="new">我要開團</button><button class="secondary" id="openList">看缺人場次</button></div>
+      <button id="new">我要開團</button><button class="secondary" id="openList">看缺人場次</button>
+      <button class="secondary" id="historyBtn">我的遊戲紀錄</button></div>
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
         <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
         <h3>店家：近期揪團</h3><div id="adminGroups" class="muted">讀取中…</div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
     document.getElementById('openList').onclick = () => go('#/open');
+    document.getElementById('historyBtn').onclick = () => go('#/history');
     if (me.isAdmin) api('/admin/groups').then(({ groups }) => {
       const box = document.getElementById('adminGroups');
       box.innerHTML = groups.length ? groups.map(g => `
@@ -177,6 +179,21 @@
         : '<div class="card muted">目前沒有揪團。</div>';
       document.querySelectorAll('[data-id]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.id));
     } catch (e) { if (e.message !== 'reauth') document.getElementById('mine').textContent = message(e.code); }
+  }
+
+  // ---- 我的遊戲紀錄 ---------------------------------------------------------------------
+  async function showHistory() {
+    render(`<h2>我的遊戲紀錄</h2><div class="card">讀取中…</div>`);
+    let history;
+    try { ({ history } = await api('/me/history')); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>我的遊戲紀錄</h2><div class="card error">${esc(message(e.code))}</div>
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
+    render(`<h2>我的遊戲紀錄</h2><p class="muted">在海星玩過 ${history.length} 場。</p>
+      ${history.length ? history.map(h => `<div class="card game-card" style="cursor:default">
+        ${h.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(h.imageUrl)}">` : '<div class="poster none">海星</div>'}
+        <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div></div></div>`).join('')
+        : '<div class="card muted">還沒有紀錄。玩完第一場後，店家記錄出席就會出現在這裡。</div>'}
+      <button class="secondary" onclick="location.hash='#/'">回首頁</button>`);
   }
 
   // ---- 缺人場次: public groups that still have open seats ---------------------------------
@@ -207,8 +224,8 @@
 
   async function showCreate() {
     render(`<h2>我要開團</h2><div class="card">讀取劇本中…</div>`);
-    let games = [];
-    try { ({ games } = await api('/games')); }
+    let games = [], played = new Set();
+    try { const r = await api('/games'); games = r.games; played = new Set(r.playedGameIds || []); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>我要開團</h2><div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="history.back()">返回</button>`); return; }
 
@@ -244,14 +261,16 @@
       $('minus').disabled = state.capacity <= 2; $('plus').disabled = state.capacity >= 12;
       $('tags').innerHTML = [['', '全部'], ...TAG_FILTERS.map(([t]) => [t, t])].map(([v, label]) =>
         `<button class="chip" aria-pressed="${state.tag === v}" data-tag="${esc(v)}">${esc(label)}</button>`).join('');
-      const list = games.filter(g => fits(g) && tagMatch(g));
+      // Scripts the organizer has already played go to the end of the list.
+      const list = games.filter(g => fits(g) && tagMatch(g))
+        .sort((a, b) => Number(played.has(a.gameId)) - Number(played.has(b.gameId)));
       if (state.gameId && !list.some(g => g.gameId === state.gameId)) { state.gameId = ''; state.day = state.start = null; }
       $('gameCount').textContent = `${state.capacity} 人可玩${state.tag ? '・' + state.tag : ''}：${list.length} 本`;
       $('games').innerHTML = `<button class="game-card" aria-pressed="${!state.gameId}" data-game="">
           <div class="poster none">?</div><div><b>請店家推薦</b><div class="muted">依人數${state.tag ? '與「' + esc(state.tag) + '」' : ''}幫你挑，先保留 4 小時</div></div></button>`
         + list.map(g => `<button class="game-card" aria-pressed="${g.gameId === state.gameId}" data-game="${esc(g.gameId)}">
           ${g.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(g.imageUrl)}">` : '<div class="poster none">海星</div>'}
-          <div><b>${esc(g.title)}</b><div class="muted">${esc(g.playersLabel || g.minPlayers + ' 人')}・${hours(g.durationMinutes)}${esc(stars(g.difficulty))}</div>
+          <div><b>${esc(g.title)}</b>${played.has(g.gameId) ? ' <span class="tag">你玩過</span>' : ''}<div class="muted">${esc(g.playersLabel || g.minPlayers + ' 人')}・${hours(g.durationMinutes)}${esc(stars(g.difficulty))}</div>
           <div class="muted">${esc((g.genres || []).slice(0, 4).join('、'))}</div>
           ${g.sourceUrl ? `<span class="link" data-intro="${esc(g.sourceUrl)}">看劇本介紹</span>` : ''}</div></button>`).join('');
       document.querySelectorAll('[data-tag]').forEach(b => b.onclick = () => { state.tag = b.dataset.tag; paintGames(); });
@@ -330,7 +349,7 @@
     catch (e) { if (e.message !== 'reauth') render(`<div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
     const open = g.capacity - g.filled;
-    const statusText = g.status === 'cancelled' && g.event ? '場次已取消'
+    const statusText = g.event?.status === 'completed' ? '已結束' : g.status === 'cancelled' && g.event ? '場次已取消'
       : { recruiting: '招募中', pending_confirmation: '等待店家確認', confirmed: '已成團', cancelled: '已解散' }[g.status] || g.status;
     render(`<div class="card stack"><div class="big">${esc(fmtRange(g.startsAt, g.endsAt))}</div>
         <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}${g.preferences?.length ? '・' + esc(g.preferences.join('、')) : ''}</div>
@@ -419,6 +438,28 @@
       });
       return;
     }
+    if (g.status === 'confirmed' && g.event?.status === 'completed') {
+      box.innerHTML = '<div class="card stack"><h3 style="margin-top:0">店家</h3><div>✅ 場次已結束，出席已記錄。</div></div>';
+      return;
+    }
+    // After the session starts: record who came; attendees get it in their play history.
+    if (g.status === 'confirmed' && g.event && Date.parse(g.startsAt) <= Date.now()) {
+      let participants = [];
+      try { ({ participants } = await api(`/admin/events/${g.event.eventId}/participants`)); }
+      catch (e) { if (e.message === 'reauth') return; }
+      box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">場次結束：記錄出席</h3>
+        <div class="muted">取消勾選沒來的人。出席的人會記入遊戲紀錄。</div>
+        ${participants.map(p => `<label style="display:block;padding:6px 0"><input type="checkbox" data-pid="${esc(p.participantId)}" checked> ${esc(p.name)}</label>`).join('')}
+        <button id="evDone">記錄出席並結束場次</button><div id="calMsg" class="muted"></div></div>`;
+      document.getElementById('evDone').onclick = async e => {
+        const absent = [...document.querySelectorAll('[data-pid]')].filter(c => !c.checked).map(c => c.dataset.pid);
+        if (!confirm(`出席 ${participants.length - absent.length} 人、缺席 ${absent.length} 人，確定嗎？`)) return;
+        busy(e.target, true);
+        try { await api(`/admin/events/${g.event.eventId}/complete`, { method: 'POST', body: { absent } }); showGroup(id); }
+        catch (x) { if (x.message !== 'reauth') document.getElementById('calMsg').textContent = message(x.code); busy(e.target, false); }
+      };
+      return;
+    }
     if (g.status === 'confirmed' && g.event) {
       box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家</h3>
         <div>${g.event.calendarSynced ? '✅ 已寫入 Google 日曆' : '⚠️ 尚未寫入 Google 日曆'}</div>
@@ -448,13 +489,17 @@
       return;
     }
     if (g.status !== 'recruiting') return;
-    let games = [];
-    try { ({ games } = await api('/games')); } catch (e) { if (e.message === 'reauth') return; }
-    const fitting = games.filter(x => x.minPlayers <= g.capacity && g.capacity <= x.maxPlayers);
+    let games = [], playedBy = {};
+    try { [{ games }, { played: playedBy }] = await Promise.all([api('/games'), api(`/groups/${id}/played`)]); }
+    catch (e) { if (e.message === 'reauth') return; }
+    // Unplayed scripts first; each option says how many members already played it.
+    const fitting = games.filter(x => x.minPlayers <= g.capacity && g.capacity <= x.maxPlayers)
+      .sort((a, b) => (playedBy[a.gameId]?.length ?? 0) - (playedBy[b.gameId]?.length ?? 0));
+    const playedNote = x => playedBy[x.gameId]?.length ? `・團內 ${playedBy[x.gameId].length} 人玩過` : '';
     box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家確認成團</h3>
       ${g.filled < g.capacity ? `<div class="muted">目前 ${g.filled}/${g.capacity} 人。成團後邀請連結就不能再加入新成員。</div>` : ''}
       <label class="muted">劇本</label><select id="cGame"><option value="">請選擇</option>${fitting.map(x =>
-        `<option value="${esc(x.gameId)}" ${x.gameId === g.gameId ? 'selected' : ''}>${esc(x.title)}（${esc(hours(x.durationMinutes))}）</option>`).join('')}</select>
+        `<option value="${esc(x.gameId)}" ${x.gameId === g.gameId ? 'selected' : ''}>${esc(x.title)}（${esc(hours(x.durationMinutes))}${esc(playedNote(x))}）</option>`).join('')}</select>
       <label class="muted">每人價格（元）</label><input type="text" id="cPrice" inputmode="numeric" value="${DEFAULT_PRICE}">
       <label class="muted">場地</label><select id="cVenue">${VENUES.map(v => `<option>${esc(v)}</option>`).join('')}<option value="">自選場地</option></select>
       <input type="text" id="cVenueOther" maxlength="200" placeholder="輸入場地名稱或地址" hidden>
@@ -529,6 +574,7 @@
     let m;
     if (h === '#/create') return showCreate();
     if (h === '#/open') return showOpen();
+    if (h === '#/history') return showHistory();
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
     return showHome();
