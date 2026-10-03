@@ -231,6 +231,11 @@
 - 公開 repo 與完整歷史掃描無秘密與真實 LINE userId。
 - 列時段沿用 60 秒內涵蓋相同區間的日曆同步，避免灌請求耗盡 Google 配額；開團一律即時查詢。npm test 68 passed。
 
+## P12 試營運準備
+
+- docs/PLAYER_GUIDE.md：招募訊息、玩家使用說明（LINE 訊息版）、常見問題、店家試營運須知。
+- 店家已設定 GOOGLE_SHEET_ID；匯出待店家於 LIFF 店家後台實測。
+
 ## 未完成，不能宣稱可供營運
 
 
