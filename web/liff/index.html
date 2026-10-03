@@ -83,6 +83,10 @@
     INVALID_CAPACITY: '人數不符合這個劇本的人數限制。', INVALID_NAME: '請輸入 1–100 字的名字。',
     CATALOG_UNAVAILABLE: '暫時讀不到 GitHub 上的劇本資料。', CATALOG_UNREADABLE: 'GitHub 上的 scripts.js 格式無法辨識。',
     INVALID_CATALOG: '劇本資料有欄位不正確，已整批取消同步。',
+    INVALID_PRICE: '請輸入每人價格（整數元）。', PRICE_REQUIRED: '請輸入每人價格。', INVALID_VENUE: '請輸入場地。',
+    INVALID_DM: '請輸入 DM 名字。', NOT_ADMIN: '只有店家可以操作。', GAME_NOT_FOUND: '請選擇劇本。',
+    CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
+    CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
   };
   const view = document.getElementById('view');
   const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -136,8 +140,18 @@
       <button id="new">我要開團</button></div>
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
-        <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>` : ''}`);
+        <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
+        <h3>店家：近期揪團</h3><div id="adminGroups" class="muted">讀取中…</div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
+    if (me.isAdmin) api('/admin/groups').then(({ groups }) => {
+      const box = document.getElementById('adminGroups');
+      box.innerHTML = groups.length ? groups.map(g => `
+        <button class="card group-row" data-admin-group="${esc(g.groupId)}"><div><b>${esc(fmtRange(g.startsAt, g.endsAt))}</b>
+        <span class="tag ${g.status === 'confirmed' ? 'ok' : ''}">${g.status === 'confirmed' ? '已成團' : '待確認'}</span></div>
+        <div class="muted">${esc(g.organizerName)}・${esc(g.gameTitle || '請店家推薦')}・${g.filled}/${g.capacity} 人</div></button>`).join('')
+        : '<div class="card muted">目前沒有揪團。</div>';
+      box.querySelectorAll('[data-admin-group]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.adminGroup));
+    }).catch(e => { if (e.message !== 'reauth') document.getElementById('adminGroups').textContent = message(e.code); });
     document.getElementById('sync')?.addEventListener('click', async e => {
       busy(e.target, true);
       try { const r = await api('/admin/games/sync', { method: 'POST' });
@@ -291,15 +305,18 @@
     const statusText = { recruiting: '招募中', pending_confirmation: '等待店家確認', confirmed: '已成團', cancelled: '已解散' }[g.status] || g.status;
     render(`<div class="card stack"><div class="big">${esc(fmtRange(g.startsAt, g.endsAt))}</div>
         <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}${g.preferences?.length ? '・' + esc(g.preferences.join('、')) : ''}</div>
-        <div><span class="tag ok">${esc(statusText)}</span> <span class="tag">${g.filled}/${g.capacity} 人${open > 0 ? `・還缺 ${open} 人` : ''}</span>
-        <span class="tag">${g.visibility === 'public' ? '公開招募' : '憑連結加入'}</span></div>
-        ${g.note ? `<div class="muted">備註：${esc(g.note)}</div>` : ''}</div>
+        <div><span class="tag ok">${esc(statusText)}</span> <span class="tag">${g.filled}/${g.capacity} 人${open > 0 && g.status === 'recruiting' ? `・還缺 ${open} 人` : ''}</span>
+        ${g.status === 'recruiting' ? `<span class="tag">${g.visibility === 'public' ? '公開招募' : '憑連結加入'}</span>` : ''}</div>
+        ${g.note ? `<div class="muted">備註：${esc(g.note)}</div>` : ''}
+        ${g.event ? `<div class="muted">場地：${esc(g.event.venue)}・DM：${esc(g.event.dmName)}・每人 NT$${Math.round(g.event.priceCents / 100)}</div>` : ''}</div>
+      <div id="store"></div>
       <div class="card"><h3 style="margin-top:0">座位</h3><ul class="seats">${(g.seats || []).map(s => `<li>
         <span>${s.seatNumber}. ${s.status === 'open' ? '<span class="muted">空位</span>' : esc(s.name)}${s.isMe ? '（我）' : ''}</span>
         <span>${s.status === 'reserved' ? '<span class="tag">保留中・待認領</span>' : s.status === 'joined' ? '<span class="tag ok">已加入</span>' : ''}
         ${(g.isOrganizer && s.status === 'reserved') || (s.isMe && !g.isOrganizer) ? `<button class="chip" data-leave="${esc(s.seatId)}">${s.isMe ? '退出' : '取消保留'}</button>` : ''}</span></li>`).join('')}</ul></div>
       <div class="stack" id="actions"></div><div id="err" class="error" hidden></div>`);
     const actions = document.getElementById('actions');
+    if (me.isAdmin) renderStorePanel(g, id);
     const err = text => { const el = document.getElementById('err'); el.textContent = text; el.hidden = false; };
     if (g.isOrganizer && g.status === 'recruiting') {
       actions.innerHTML = `${open > 0 ? '<button id="invite">分享邀請連結到 LINE</button><button class="secondary" id="reserve">幫朋友保留位子</button>' : ''}
@@ -334,6 +351,60 @@
       try { await api(`/seats/${b.dataset.leave}/leave`, { method: 'POST' }); b.textContent === '退出' ? go('#/') : showGroup(id); }
       catch (x) { if (x.message !== 'reauth') err(message(x.code)); }
     });
+  }
+
+  // ---- Store panel: confirm a group, or retry writing it to Google Calendar ------------
+  async function renderStorePanel(g, id) {
+    const box = document.getElementById('store');
+    if (g.status === 'confirmed' && g.event) {
+      box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家</h3>
+        <div>${g.event.calendarSynced ? '✅ 已寫入 Google 日曆' : '⚠️ 尚未寫入 Google 日曆'}</div>
+        ${g.event.calendarSynced ? '' : '<button class="secondary" id="calRetry">重新寫入 Google 日曆</button>'}<div id="calMsg" class="muted"></div></div>`;
+      document.getElementById('calRetry')?.addEventListener('click', async e => {
+        busy(e.target, true);
+        try { const r = await api(`/admin/events/${g.event.eventId}/calendar`, { method: 'POST' });
+          if (r.calendarSynced) { showGroup(id); return; } document.getElementById('calMsg').textContent = message(r.calendarError); }
+        catch (x) { if (x.message !== 'reauth') document.getElementById('calMsg').textContent = message(x.code); }
+        busy(e.target, false);
+      });
+      return;
+    }
+    if (g.status !== 'recruiting') return;
+    let games = [];
+    try { ({ games } = await api('/games')); } catch (e) { if (e.message === 'reauth') return; }
+    const fitting = games.filter(x => x.minPlayers <= g.capacity && g.capacity <= x.maxPlayers);
+    box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家確認成團</h3>
+      ${g.filled < g.capacity ? `<div class="muted">目前 ${g.filled}/${g.capacity} 人。成團後邀請連結就不能再加入新成員。</div>` : ''}
+      <label class="muted">劇本</label><select id="cGame"><option value="">請選擇</option>${fitting.map(x =>
+        `<option value="${esc(x.gameId)}" ${x.gameId === g.gameId ? 'selected' : ''}>${esc(x.title)}（${esc(hours(x.durationMinutes))}）</option>`).join('')}</select>
+      <label class="muted">每人價格（元）</label><input type="text" id="cPrice" inputmode="numeric" placeholder="例如 650">
+      <label class="muted">場地</label><input type="text" id="cVenue" value="海星劇本殺" maxlength="200">
+      <label class="muted">DM</label><input type="text" id="cDm" value="${esc(me.displayName || '')}" maxlength="100">
+      <div id="cHint" class="muted"></div>
+      <button id="cGo">確認成團並寫入 Google 日曆</button><div id="cErr" class="error" hidden></div></div>`;
+    const $ = x => document.getElementById(x);
+    const hint = () => { const x = fitting.find(y => y.gameId === $('cGame').value);
+      const held = (Date.parse(g.endsAt) - Date.parse(g.startsAt)) / 60000;
+      $('cHint').textContent = !x ? '' : x.durationMinutes > held ? `這本 ${hours(x.durationMinutes)}，比保留的 ${hours(held)} 長，會檢查後面時間是否空著再延長。`
+        : x.durationMinutes < held ? `這本 ${hours(x.durationMinutes)}，多保留的時間會釋出。` : ''; };
+    $('cGame').onchange = hint; hint();
+    $('cGo').onclick = async e => {
+      const err = t => { $('cErr').textContent = t; $('cErr').hidden = false; };
+      const price = $('cPrice').value.trim();
+      if (!$('cGame').value) return err(message('GAME_NOT_FOUND'));
+      if (!/^\d{1,6}$/.test(price)) return err(message('INVALID_PRICE'));
+      busy(e.target, true); $('cErr').hidden = true;
+      try {
+        const r = await api(`/admin/groups/${id}/confirm`, { method: 'POST', body: { gameId: $('cGame').value,
+          priceTwd: Number(price), venue: $('cVenue').value, dmName: $('cDm').value } });
+        if (!r.calendarSynced) alert(message(r.calendarError));
+        showGroup(id);
+      } catch (x) {
+        if (x.message === 'reauth') return;
+        busy(e.target, false);
+        err(x.code === 'SLOT_UNAVAILABLE' ? '這本需要的時間撞到其他場次或你的 Google 日曆行程，請改選較短的劇本。' : message(x.code));
+      }
+    };
   }
 
   // ---- Invite landing ---------------------------------------------------------------

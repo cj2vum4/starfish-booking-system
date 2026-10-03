@@ -21,7 +21,7 @@ function backend({ googleDown = false, calendarError = false, withGoogle = true 
       const [h, c, sig] = assertion.split('.');
       const ok = createVerify('RSA-SHA256').update(`${h}.${c}`).verify(publicKey, Buffer.from(sig, 'base64url'));
       const claims = JSON.parse(Buffer.from(c, 'base64url'));
-      if (!ok || claims.iss !== google.clientEmail || !claims.scope.endsWith('/calendar.freebusy')) {
+      if (!ok || claims.iss !== google.clientEmail || !claims.scope.split(' ').includes('https://www.googleapis.com/auth/calendar.freebusy')) {
         return new Response('{}', { status: 400 });
       }
       return Response.json({ access_token: 'google-access', expires_in: 3600 });

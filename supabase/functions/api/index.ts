@@ -4,8 +4,9 @@ type Settings = {
   supabaseUrl?: string;
   serviceKey?: string;
   allowedOrigins?: string[];
-  // Google service account with "See only free/busy" access to the owner's calendar.
-  google?: { clientEmail: string; privateKey: string; calendarId: string };
+  // Google service account: "See only free/busy" on the owner's calendar (calendarId) and
+  // "Make changes to events" on a dedicated store calendar (eventsCalendarId).
+  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string };
   catalogUrl?: string;  // raw scripts.js in the Starfish site repo
   catalogSiteBase?: string;  // where that repo's pages are published
   catalogCommitUrl?: string;  // raw file URL template with {commit}, for the GitHub hook
@@ -123,7 +124,8 @@ async function googleAccessToken(settings: Settings) {
   const key = await crypto.subtle.importKey('pkcs8', Uint8Array.from(atob(pem), c => c.charCodeAt(0)),
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
   const unsigned = `${b64urlJson({ alg: 'RS256', typ: 'JWT' })}.${b64urlJson({ iss: google.clientEmail,
-    scope: 'https://www.googleapis.com/auth/calendar.freebusy', aud: 'https://oauth2.googleapis.com/token',
+    scope: 'https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events',
+    aud: 'https://oauth2.googleapis.com/token',
     iat: now, exp: now + 3600 })}`;
   const signature = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned)));
   const response = await (settings.fetcher ?? fetch)('https://oauth2.googleapis.com/token', {
@@ -180,6 +182,40 @@ async function checkCalendar(settings: Settings): Promise<[number, unknown]> {
     if (calendar.errors?.length) return [503, { ok: false, error: 'CALENDAR_NOT_SHARED' }];
     return [200, { ok: true }];
   } catch { return [503, { ok: false, error: 'CALENDAR_UNAVAILABLE' }]; }
+}
+
+// Writes a confirmed session to the store calendar. The Google event ID is derived from our
+// event ID, so retries never create duplicates. Returns whether the calendar is up to date.
+async function writeCalendarEvent(settings: Settings, eventId: string) {
+  const calendarId = settings.google?.eventsCalendarId;
+  if (!settings.google || !calendarId) return { calendarSynced: false, calendarError: 'CALENDAR_WRITE_NOT_CONFIGURED' };
+  const e = await rpc<Record<string, any>>(settings, 'event_calendar_payload', { p_event_id: eventId });
+  if (!e) throw new ApiError(404, 'EVENT_NOT_FOUND');
+  if (e.google_event_id) return { calendarSynced: true };
+  const googleId = eventId.replace(/-/g, '');
+  const price = e.price_cents == null ? '未定' : `NT$${Math.round(e.price_cents / 100)}`;
+  const body = {
+    id: googleId,
+    summary: `【海星】${e.title}（${e.capacity}人）`,
+    location: e.venue,
+    description: [`主揪：${e.organizer_name ?? ''}`, `DM：${e.dm_name}`, `每人：${price}`,
+      `玩家：${(e.players ?? []).join('、')}`, '', '由海星劇本殺預約系統建立'].join('\n'),
+    start: { dateTime: e.starts_at, timeZone: 'Asia/Taipei' },
+    end: { dateTime: e.ends_at, timeZone: 'Asia/Taipei' },
+  };
+  try {
+    const token = await googleAccessToken(settings);
+    const response = await (settings.fetcher ?? fetch)(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
+        method: 'POST', signal: AbortSignal.timeout(8000),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
+      });
+    // 409 means an earlier attempt already created this exact event.
+    if (!response.ok && response.status !== 409) throw new Error(String(response.status));
+  } catch { return { calendarSynced: false, calendarError: 'CALENDAR_WRITE_FAILED' }; }
+  await rpc(settings, 'mark_event_calendar_synced', { p_event_id: eventId, p_google_event_id: googleId });
+  return { calendarSynced: true };
 }
 
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
@@ -318,6 +354,33 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     await requireSession(req, settings);
     return [200, { games: camel(await rpc(settings, 'list_active_games', {})) }];
   }
+  if (req.method === 'GET' && path === '/admin/groups') {
+    const { session } = await requireSession(req, settings);
+    return [200, { groups: camel(await rpc(settings, 'admin_list_groups', { p_actor: session.user_id })) }];
+  }
+  const confirmRoute = /^\/admin\/groups\/([0-9a-f-]{36})\/confirm$/.exec(path);
+  if (req.method === 'POST' && confirmRoute && UUID.test(confirmRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    const body = await readJson(req);
+    const price = body.priceTwd;
+    if (typeof price !== 'number' || !Number.isInteger(price) || price < 0 || price > 100000) {
+      throw new ApiError(400, 'INVALID_PRICE');
+    }
+    if (body.gameId != null && (typeof body.gameId !== 'string' || !UUID.test(body.gameId))) {
+      throw new ApiError(400, 'GAME_NOT_FOUND');
+    }
+    const result = await rpc<Record<string, any>>(settings, 'admin_confirm_group_event', {
+      p_actor: session.user_id, p_group_id: confirmRoute[1], p_venue: typeof body.venue === 'string' ? body.venue : '',
+      p_dm_name: typeof body.dmName === 'string' ? body.dmName : '', p_game_id: body.gameId ?? null,
+      p_price_cents: price * 100 });
+    return [result.created ? 201 : 200, { eventId: result.event_id, ...(await writeCalendarEvent(settings, result.event_id)) }];
+  }
+  const calendarRoute = /^\/admin\/events\/([0-9a-f-]{36})\/calendar$/.exec(path);
+  if (req.method === 'POST' && calendarRoute && UUID.test(calendarRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    return [200, await writeCalendarEvent(settings, calendarRoute[1])];
+  }
   if (req.method === 'POST' && path === '/admin/games/sync') {
     const { session } = await requireSession(req, settings);
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
@@ -419,6 +482,7 @@ function googleFromEnv() {
     const account = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') ?? '');
     const calendarId = Deno.env.get('GOOGLE_CALENDAR_ID');
     if (!account.client_email || !account.private_key || !calendarId) return undefined;
-    return { clientEmail: account.client_email, privateKey: account.private_key, calendarId };
+    return { clientEmail: account.client_email, privateKey: account.private_key, calendarId,
+      eventsCalendarId: Deno.env.get('GOOGLE_EVENTS_CALENDAR_ID') || undefined };
   } catch { return undefined; }
 }

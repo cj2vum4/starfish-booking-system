@@ -1,0 +1,92 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
+import { handleApi, sha256Hex } from '../supabase/functions/api/index.ts';
+
+const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const google = { clientEmail: 'sa@test.iam.gserviceaccount.com', calendarId: 'owner@example.com',
+  eventsCalendarId: 'store-calendar@group.calendar.google.com', privateKey: privateKey.export({ type: 'pkcs8', format: 'pem' }) };
+const session = 'S'.repeat(43);
+const groupId = '44444444-4444-4444-8444-444444444444';
+const eventId = '55555555-5555-4555-8555-555555555555';
+const payload = { event_id: eventId, google_event_id: null, title: '王座', starts_at: '2026-10-10T05:00:00+00:00',
+  ends_at: '2026-10-10T09:30:00+00:00', venue: '海星劇本殺', dm_name: '店長', price_cents: 65000, capacity: 7,
+  organizer_name: '阿明', players: ['阿明', '涵涵'] };
+
+function backend({ isAdmin = true, googleStatus = 200, alreadySynced = false, withEventsCalendar = true } = {}) {
+  const calls = [];
+  const fetcher = async (url, opts = {}) => {
+    calls.push({ url, body: opts.body });
+    if (url === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'g', expires_in: 3600 });
+    if (url.startsWith('https://www.googleapis.com/calendar/v3/calendars/')) {
+      return new Response('{}', { status: googleStatus });
+    }
+    const name = url.split('/rpc/')[1];
+    const args = JSON.parse(opts.body);
+    if (name === 'resolve_session') return Response.json(args.p_session_hash === await sha256Hex(session)
+      ? { user_id: 'owner', display_name: '店長', is_admin: isAdmin, expires_at: 'x' } : null);
+    if (name === 'admin_confirm_group_event') {
+      if (!isAdmin) return Response.json({ code: 'P0001', message: 'NOT_ADMIN' }, { status: 400 });
+      return Response.json({ event_id: eventId, created: true });
+    }
+    if (name === 'event_calendar_payload') return Response.json({ ...payload, google_event_id: alreadySynced ? 'x'.repeat(32) : null });
+    return Response.json({ ok: true });
+  };
+  return { calls, settings: { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k', allowedOrigins: [],
+    google: withEventsCalendar ? google : { ...google, eventsCalendarId: undefined }, fetcher } };
+}
+const post = (path, body) => new Request(`https://x/functions/v1/api${path}`, { method: 'POST',
+  headers: { Authorization: `Bearer ${session}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+const confirmBody = { gameId: null, priceTwd: 650, venue: '海星劇本殺', dmName: '店長' };
+
+test('confirming writes one calendar event with a stable ID and marks it synced', async () => {
+  const { calls, settings } = backend();
+  const response = await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), settings);
+  assert.equal(response.status, 201);
+  assert.deepEqual(await response.json(), { eventId, calendarSynced: true });
+  const confirm = JSON.parse(calls.find(c => c.url.endsWith('/admin_confirm_group_event')).body);
+  assert.equal(confirm.p_price_cents, 65000);
+  assert.equal(confirm.p_actor, 'owner');
+  const write = calls.find(c => c.url.includes('/calendar/v3/calendars/'));
+  assert.ok(write.url.includes(encodeURIComponent(google.eventsCalendarId)), 'writes only to the store calendar');
+  assert.ok(!write.url.includes(encodeURIComponent(google.calendarId)), 'never writes to the owner calendar');
+  const event = JSON.parse(write.body);
+  assert.equal(event.id, eventId.replace(/-/g, ''));
+  assert.match(event.id, /^[a-v0-9]{5,}$/);
+  assert.equal(event.summary, '【海星】王座（7人）');
+  assert.deepEqual(event.start, { dateTime: payload.starts_at, timeZone: 'Asia/Taipei' });
+  assert.ok(event.description.includes('每人：NT$650') && event.description.includes('阿明、涵涵'));
+  const mark = JSON.parse(calls.find(c => c.url.endsWith('/mark_event_calendar_synced')).body);
+  assert.equal(mark.p_google_event_id, event.id);
+});
+
+test('a retry after a partial failure is idempotent; Google 409 counts as already written', async () => {
+  const dup = backend({ googleStatus: 409 });
+  const res = await handleApi(post(`/admin/events/${eventId}/calendar`), dup.settings);
+  assert.deepEqual(await res.json(), { calendarSynced: true });
+  const synced = backend({ alreadySynced: true });
+  assert.deepEqual(await (await handleApi(post(`/admin/events/${eventId}/calendar`), synced.settings)).json(), { calendarSynced: true });
+  assert.ok(!synced.calls.some(c => c.url.includes('/calendar/v3/')), 'no second write when already synced');
+});
+
+test('calendar problems never undo the confirmation; they are reported for retry', async () => {
+  const failing = backend({ googleStatus: 403 });
+  const res = await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), failing.settings);
+  assert.equal(res.status, 201);
+  assert.deepEqual(await res.json(), { eventId, calendarSynced: false, calendarError: 'CALENDAR_WRITE_FAILED' });
+  assert.ok(!failing.calls.some(c => c.url.endsWith('/mark_event_calendar_synced')));
+  const unset = backend({ withEventsCalendar: false });
+  assert.deepEqual(await (await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), unset.settings)).json(),
+    { eventId, calendarSynced: false, calendarError: 'CALENDAR_WRITE_NOT_CONFIGURED' });
+});
+
+test('only admins confirm or retry; price must be a whole amount', async () => {
+  const player = backend({ isAdmin: false });
+  assert.equal((await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), player.settings)).status, 403);
+  assert.equal((await handleApi(post(`/admin/events/${eventId}/calendar`), player.settings)).status, 403);
+  assert.ok(!player.calls.some(c => c.url.includes('/calendar/v3/')));
+  const { settings } = backend();
+  for (const priceTwd of [-1, 12.5, 'abc', null, 100001]) {
+    assert.equal((await handleApi(post(`/admin/groups/${groupId}/confirm`, { ...confirmBody, priceTwd }), settings)).status, 400);
+  }
+});

@@ -128,6 +128,16 @@
   稽核紀錄來源 github:35e0aa4…，同步 57 本、停用 0 本。
 - 店家 LINE Login Channel 已 Publish，朋友可開啟邀請連結。
 
+## 店家確認成團與寫入 Google 日曆（程式完成）
+
+- 202610030009_confirm_and_calendar.sql：確認時依劇本時長延長（須不撞場次與日曆）或縮短保留時段；
+  驗證人數、場地、DM、價格；event_calendar_payload、mark_event_calendar_synced、admin_list_groups。
+- API：GET /admin/groups、POST /admin/groups/:id/confirm（價格以元輸入）、POST /admin/events/:id/calendar（重試）。
+- 先在資料庫成團，再寫 Google 日曆；Google 事件 ID 由場次 ID 推導，重試不重複，409 視為已寫入。
+- 只寫入專用店家日曆（GOOGLE_EVENTS_CALENDAR_ID），從不寫入店家主日曆。
+- LIFF：店家首頁「近期揪團」、揪團頁「店家確認成團」表單、成團後顯示場地／DM／價格與日曆狀態。
+- npm test 41 passed；模擬環境操作含日曆寫入失敗後重試。
+
 ## 未完成，不能宣稱可供營運
 
 
