@@ -168,7 +168,8 @@
 - claim_notifications（skip locked、2 分鐘鎖定、超過 1 天視為過期不送）、complete_notification（1/2/4/8 分鐘退避、5 次後放棄）。
 - API：成功的 POST 之後於背景送出（EdgeRuntime.waitUntil），LINE push 帶 X-Line-Retry-Key 防重複；
   封鎖者不送、4xx 放棄、429/5xx 重試。通知連結 ?group=<id> 直接開啟揪團頁。
-- npm test 55 passed。
+- npm test 55 passed；0011 已上雲，雲端 notifications、booking_rpc 測試 PASS；api 重新部署（commit 63cd244）。
+- 待辦：店家發行 Messaging API Channel access token 並設定 LINE_CHANNEL_ACCESS_TOKEN；之後做「缺人場次」頁與主揪切換公開／私人。
 
 ## 未完成，不能宣稱可供營運
 
