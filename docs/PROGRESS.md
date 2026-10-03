@@ -236,6 +236,7 @@
 - docs/PLAYER_GUIDE.md：招募訊息、玩家使用說明（LINE 訊息版）、常見問題、店家試營運須知。
 - 店家首次匯出失敗：匯出範圍 455 天超過 admin_report 原本 400 天上限（INVALID_RANGE）。0019 放寬為 800 天並以實際匯出範圍測試，
   雲端 report 測試 PASS；店家後台「即將進行」不再計入已取消場次。待店家重新匯出確認。
+- 匯出改為區分 SHEETS_API_DISABLED／SHEET_NOT_SHARED／SHEET_NOT_FOUND，失敗時店家頁面顯示服務帳戶、專案與試算表 ID（GET /admin/google-account，僅店家）。
 - 店家已確認 LINE OA 回應設定「聊天」與 Webhook 皆開啟。
 
 ## 未完成，不能宣稱可供營運
