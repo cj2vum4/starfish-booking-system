@@ -264,6 +264,22 @@
   /hooks/richmenu-setup：新玩家 richmenu-cf8b578e…、老玩家 richmenu-8c98d3ab…，取代舊選單 1 個，目前 0 位老玩家。
 - 下一階段：老玩家綁定（LINE ↔ 玩本記錄歸戶名，店家核准）＋回歸禮、會員卡讀取集點系統；之後 LINE 版玩本記錄與補登規則。
 
+## 第 2 階段：老玩家綁定、回歸禮、會員卡（已上線，2026-10-05）
+
+- 0022 player_bindings＋RPC（申請、店家核准／不通過、每個名字只綁一個 LINE、回歸禮結果、通知店家與玩家）；
+  老玩家選單也給已核准綁定者。0023：新表需明確授權 service_role（Supabase 新表不再預設授權；本機測試環境已同步此行為）。
+- API：GET /records/names、GET|POST /me/binding（含會員卡與獎勵，讀網站 Apps Script ?action=summary，快取 60 秒）、
+  GET /admin/bindings、POST /admin/bindings/:id/approve|reject|bonus。回歸禮 50 點：核准時呼叫 Apps Script grant_bonus
+  （PLAY_RECORD_SECRET＝指令碼屬性 BOOKING_SECRET），失敗可由店家重試，玩家下次開會員卡也會自動重試。
+- starfishlarp Apps Script（commit c32d11a）：grant_bonus 驗證密碼、LockService、去重鍵 return-bonus|歸戶名（含作廢也不重發）、
+  資格「加入日期」早於設定「回歸禮資格日」（預設 2026/10/06）、帳本來源 LINE 且日期留空（不算本月排行），寫入後重算。
+  以模擬試算表驗證：密碼、驗證、只發一次、資格日、重算後保留。
+- LIFF：#/veteran（搜尋並選名字、備註其他名字）、#/card（探員編號、餘額、獎勵可兌換標示）、#/bindings（店家審核）；以模擬資料在手機尺寸檢視過。
+- npm test 83 passed；雲端 player_binding、member_menu 測試 PASS；api 部署（commit 4967ac8，SHA-256 f60df3af…069d 與 GitHub 一致）。
+- 店家已更新 Apps Script 並設定兩邊密碼。線上確認：錯誤密碼回 INVALID_SECRET；正確密碼＋不存在名字回 NAME_NOT_FOUND（未寫入）；點數總覽 53 位玩家。
+- 待實測：真人老玩家申請 → 店家核准 → 會員卡多 50 點。
+- 下一階段（第 3 階段）：LINE 版玩本記錄（身分取自 LINE、場次結束後通知填寫、日期劇本帶入）與補登規則（上線前的遊玩日期只記錄不給點、不改首探）。
+
 ## 尚待實測
 
 - P3：外部瀏覽器登入、session 過期自動重新登入。
