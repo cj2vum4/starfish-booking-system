@@ -16,6 +16,9 @@ type Settings = {
   lineAccessToken?: string;  // Messaging API channel access token, for push notifications
   liffId?: string;  // links in notifications open this LIFF app
   richMenuImageUrls?: Record<string, string>;
+  // The website's 玩本記錄 Apps Script: public summary (points) and the secret-protected 回歸禮.
+  playRecordUrl?: string;
+  playRecordSecret?: string;  // shared with the Apps Script property BOOKING_SECRET
   background?: (work: Promise<unknown>) => void;  // run after the response (EdgeRuntime.waitUntil)
   fetcher?: typeof fetch;
   now?: () => number;
@@ -31,7 +34,8 @@ class ApiError extends Error {
 
 // Stable RPC error codes → HTTP status. Unknown database errors stay opaque (500).
 const NOT_FOUND = /_NOT_FOUND$/;
-const CONFLICT = new Set(['SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
+const CONFLICT = new Set(['NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
+  'SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
   'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE']);
 export function statusForCode(code: string) {
   if (NOT_FOUND.test(code)) return 404;
@@ -504,6 +508,12 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
         + (p.cancel_reason ? `\n原因：${p.cancel_reason}` : '') + `\n詳情：${link}`;
     case 'group_dissolved':
       return `【揪團解散】${p.organizer_name} 解散了 ${when} 的揪團\n詳情：${link}`;
+    case 'binding_requested':
+      return `【老玩家綁定申請】${p.display_name || 'LINE 玩家'} 申請綁定玩本記錄名字「${p.record_name}」\n審核：https://liff.line.me/${liffId}?view=bindings`;
+    case 'binding_approved':
+      return `【綁定完成】你的 LINE 已綁定玩本記錄「${p.record_name}」。\n符合資格的老玩家會收到 ${RETURN_BONUS} 點回歸禮，打開會員卡就能看到。\n會員卡：https://liff.line.me/${liffId}?view=card`;
+    case 'binding_rejected':
+      return `【綁定未通過】店家沒有通過「${p.record_name}」的綁定。名字選錯的話可以重新申請，有問題請直接在聊天室留言。\n重新申請：https://liff.line.me/${liffId}?view=veteran`;
     default:
       return null;
   }
@@ -538,6 +548,53 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
   }
   return tally;
 }
+
+// --- 玩本記錄 points (the website's Apps Script) ---------------------------------------
+// Points stay in the website's Google Sheet; this system only reads its public summary and asks
+// it to add the one-time 回歸禮 when the store approves a binding.
+const PLAY_RECORD_URL = 'https://script.google.com/macros/s/AKfycbz2jFZhU9tSm-WvZaC_lLSovG2zy3Up2-HNlK6sO6xyfnFDQu8DxRUIKmhDBg1AHMDsDg/exec';
+const RETURN_BONUS = 50;
+type RecordSummary = { name: string; agent: string; earned: number; redeemed: number; balance: number; plays: number;
+  last: string; title?: string };
+type Reward = { track: string; name: string; cost: number; note: string };
+type Binding = Record<string, any> & { user_id: string; record_name: string; status: string; bonus_status: string };
+let recordCache: { at: number; url: string; data: { summary: RecordSummary[]; rewards: Reward[] } } | null = null;
+
+async function playRecordSummary(settings: Settings, fresh = false) {
+  const url = settings.playRecordUrl ?? PLAY_RECORD_URL;
+  const now = (settings.now ?? Date.now)();
+  if (!fresh && recordCache && recordCache.url === url && now - recordCache.at < 60_000) return recordCache.data;
+  let body: any;
+  try {
+    const response = await (settings.fetcher ?? fetch)(`${url}?action=summary`, { signal: AbortSignal.timeout(15000) });
+    body = response.ok ? await response.json() : null;
+  } catch { body = null; }
+  if (!body?.ok || !Array.isArray(body.summary)) throw new ApiError(503, 'RECORDS_UNAVAILABLE');
+  const data = { summary: body.summary.filter((x: any) => typeof x?.name === 'string' && x.name),
+    rewards: Array.isArray(body.rewards) ? body.rewards : [] };
+  recordCache = { at: now, url, data };
+  return data;
+}
+
+// Asks the Apps Script for the 回歸禮. It is idempotent per 歸戶名 and checks eligibility itself.
+async function grantReturnBonus(settings: Settings, binding: Binding): Promise<Binding> {
+  if (!settings.playRecordSecret) throw new ApiError(503, 'BONUS_NOT_CONFIGURED');
+  let body: any;
+  try {
+    const response = await (settings.fetcher ?? fetch)(settings.playRecordUrl ?? PLAY_RECORD_URL, {
+      method: 'POST', signal: AbortSignal.timeout(30000),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ action: 'grant_bonus', secret: settings.playRecordSecret, name: binding.record_name,
+        points: String(RETURN_BONUS), note: 'LINE 綁定' }).toString() });
+    body = response.ok ? await response.json() : null;
+  } catch { body = null; }
+  if (!body?.ok) throw new ApiError(502, body?.error === 'INVALID_SECRET' ? 'BONUS_SECRET_MISMATCH' : 'BONUS_FAILED');
+  const status = body.granted ? 'granted' : body.reason === 'INELIGIBLE' ? 'ineligible' : 'already';
+  recordCache = null;  // the balance just changed
+  return rpc<Binding>(settings, 'mark_binding_bonus', { p_user_id: binding.user_id, p_status: status });
+}
+
+const publicRecord = (r: RecordSummary) => ({ name: r.name, agent: r.agent, plays: r.plays, last: r.last });
 
 // --- Rich Menu -------------------------------------------------------------------
 // Two 2500x1686 menus of six cells. New players get the default one (getting to know
@@ -826,6 +883,68 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     return [200, { history: camel(await rpc(settings, 'list_my_history', { p_actor: session.user_id })) }];
   }
+  // ---- 老玩家綁定 and 會員卡 ----
+  if (req.method === 'GET' && path === '/records/names') {
+    await requireSession(req, settings);
+    const [{ summary }, bound] = await Promise.all([playRecordSummary(settings), rpc<string[]>(settings, 'bound_record_names', {})]);
+    return [200, { names: summary.map(publicRecord), bound }];
+  }
+  if (path === '/me/binding' && (req.method === 'GET' || req.method === 'POST')) {
+    const { session } = await requireSession(req, settings);
+    if (req.method === 'POST') {
+      const { name, note } = await readJson(req);
+      if (typeof name !== 'string' || (note != null && typeof note !== 'string')) throw new ApiError(400, 'INVALID_NAME');
+      const { summary } = await playRecordSummary(settings, true);
+      if (!summary.some(r => r.name === name.trim())) throw new ApiError(404, 'NAME_NOT_FOUND');
+      return [201, { binding: camel(await rpc(settings, 'request_binding', { p_actor: session.user_id, p_name: name, p_note: note ?? '' })) }];
+    }
+    let binding = await rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id });
+    if (binding?.status === 'approved' && binding.bonus_status === 'none' && settings.playRecordSecret) {
+      const pending = binding;
+      binding = await grantReturnBonus(settings, pending).catch(() => pending);  // retried on the next visit
+    }
+    let card = null, rewards: Reward[] = [];
+    if (binding?.status === 'approved') {
+      const records = await playRecordSummary(settings);
+      const r = records.summary.find(x => x.name === binding!.record_name);
+      card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed,
+        plays: r.plays, last: r.last, title: r.title ?? '' } : null;
+      rewards = records.rewards.map(x => ({ track: x.track, name: x.name, cost: x.cost, note: x.note }));
+    }
+    return [200, { binding: camel(binding), card, rewards }];
+  }
+  if (req.method === 'GET' && path === '/admin/bindings') {
+    const { session } = await requireSession(req, settings);
+    return [200, { bindings: camel(await rpc(settings, 'admin_list_bindings', { p_actor: session.user_id })) }];
+  }
+  const bindingAdmin = /^\/admin\/bindings\/([0-9a-f-]{36})\/(approve|reject|bonus)$/.exec(path);
+  if (req.method === 'POST' && bindingAdmin && UUID.test(bindingAdmin[1])) {
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    const [, userId, action] = bindingAdmin;
+    let binding: Binding;
+    if (action === 'bonus') {
+      const found = (await rpc<Binding[]>(settings, 'admin_list_bindings', { p_actor: session.user_id }))
+        .find(b => b.user_id === userId && b.status === 'approved');
+      if (!found) throw new ApiError(404, 'BINDING_NOT_FOUND');
+      binding = found;
+    } else {
+      binding = await rpc<Binding>(settings, 'admin_decide_binding', { p_actor: session.user_id, p_user_id: userId,
+        p_approve: action === 'approve' });
+    }
+    let bonusError: string | null = null;
+    if (binding.status === 'approved') {
+      if (binding.bonus_status === 'none') {
+        try { binding = await grantReturnBonus(settings, binding); }
+        catch (e) { bonusError = e instanceof ApiError ? e.message : 'BONUS_FAILED'; }
+      }
+      if (settings.lineAccessToken) {
+        const work = syncMemberMenu(settings, lineCaller(settings)).catch(() => undefined);
+        if (settings.background) settings.background(work); else await work;
+      }
+    }
+    return [200, { binding: camel(binding), bonusError }];
+  }
   if (req.method === 'GET' && path === '/admin/groups') {
     const { session } = await requireSession(req, settings);
     return [200, { groups: camel(await rpc(settings, 'admin_list_groups', { p_actor: session.user_id })) }];
@@ -1056,6 +1175,8 @@ if (typeof Deno !== 'undefined') {
     allowedOrigins: (Deno.env.get('ALLOWED_ORIGINS') ?? '').split(',').map(s => s.trim()).filter(Boolean),
     google: googleFromEnv(),
     catalogSyncSecret: Deno.env.get('CATALOG_SYNC_SECRET') || undefined,
+    playRecordUrl: Deno.env.get('PLAY_RECORD_URL') || undefined,
+    playRecordSecret: Deno.env.get('PLAY_RECORD_SECRET') || undefined,
     lineAccessToken: Deno.env.get('LINE_CHANNEL_ACCESS_TOKEN') || undefined,
     liffId: Deno.env.get('LIFF_ID') || undefined,
     // deno-lint-ignore no-explicit-any

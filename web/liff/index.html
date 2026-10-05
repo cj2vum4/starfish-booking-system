@@ -113,7 +113,14 @@
     CALENDAR_WRITE_NOT_CONFIGURED: '已成團；尚未設定店家日曆，所以沒有寫入 Google 日曆。',
     CALENDAR_REMOVE_FAILED: '場次已取消，但 Google 日曆上的行程沒刪成功，請按「重試刪除」。',
     NOT_FRIEND: '要先加入「海星劇本殺」好友，才能開團或加入。',
-    EVENT_COMPLETED: '這場已經結束，不能取消。', INVALID_REASON: '取消原因最多 500 字。',
+    EVENT_COMPLETED: '這場已經結束，不能取消。',
+    NAME_TAKEN: '這個名字已經被別的 LINE 帳號綁定了。如果那是你，請直接在聊天室告訴店家。',
+    ALREADY_BOUND: '你已經綁定過了。', BINDING_DECIDED: '這筆申請已經處理過了。', BINDING_NOT_FOUND: '找不到這筆綁定申請。',
+    NAME_NOT_FOUND: '玩本記錄裡找不到這個名字，請從清單中選擇。', INVALID_NOTE: '備註最多 200 字。',
+    RECORDS_UNAVAILABLE: '暫時讀不到海星網站的玩本記錄，請稍後再試。',
+    BONUS_SECRET_MISMATCH: '已核准，但回歸禮沒發成功：Apps Script 的 BOOKING_SECRET 與 Supabase 的 PLAY_RECORD_SECRET 不一致。',
+    BONUS_NOT_CONFIGURED: '已核准，但還沒設定 PLAY_RECORD_SECRET，回歸禮沒有發。',
+    BONUS_FAILED: '已核准，但回歸禮暫時沒發成功，請稍後按「重試發回歸禮」。', INVALID_REASON: '取消原因最多 500 字。',
   };
   const view = document.getElementById('view');
   const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -171,6 +178,7 @@
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
         <button id="adminBtn">店家後台：場次總覽與匯出</button>
+        <button class="secondary" id="bindingsBtn">老玩家綁定審核</button>
         <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
         <h3>店家：近期揪團</h3><div id="adminGroups" class="muted">讀取中…</div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
@@ -187,6 +195,7 @@
       box.querySelectorAll('[data-admin-group]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.adminGroup));
     }).catch(e => { if (e.message !== 'reauth') document.getElementById('adminGroups').textContent = message(e.code); });
     document.getElementById('adminBtn')?.addEventListener('click', () => go('#/admin'));
+    document.getElementById('bindingsBtn')?.addEventListener('click', () => go('#/bindings'));
     document.getElementById('sync')?.addEventListener('click', async e => {
       busy(e.target, true);
       try { const r = await api('/admin/games/sync', { method: 'POST' });
@@ -301,29 +310,126 @@
     bindSiteLinks();
   }
 
-  // Phase 1: linking a LINE account to earlier 玩本記錄 names is not open yet.
-  function showVeteran() {
+  // ---- 老玩家綁定: claim the 歸戶名 used on the website's 玩本記錄; the store approves ----
+  const BONUS_ZH = { granted: '已發回歸禮', already: '回歸禮之前已發過', ineligible: '不符合回歸禮資格', none: '回歸禮尚未入帳' };
+  async function showVeteran() {
+    render(`<h2>我是老玩家</h2><div class="card">讀取中…</div>`);
+    let binding, names, bound;
+    try { [{ binding }, { names, bound }] = await Promise.all([api('/me/binding'), api('/records/names')]); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>我是老玩家</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    if (binding?.status === 'approved') {
+      render(`<h2>我是老玩家</h2><div class="card stack"><b>已綁定「${esc(binding.recordName)}」</b>
+        <div class="muted">你的 LINE 已和玩本記錄連在一起，點數與兌換請看會員卡。</div></div>
+        <div class="stack"><button id="vCard">打開會員卡</button>${homeBtn}</div>`);
+      document.getElementById('vCard').onclick = () => go('#/card');
+      return;
+    }
+    const taken = new Set(bound);
+    let chosen = binding?.status === 'pending' ? binding.recordName : '';
     render(`<h2>我是老玩家</h2>
-      <div class="card stack"><b>老玩家綁定即將開放</b>
-        <div class="muted">之後你可以把以前填玩本記錄用過的名字綁定到這個 LINE 帳號，點數、紀錄都會整合在一起，綁定完成還有老玩家回歸禮。</div>
-        <div class="muted">在那之前，玩本記錄請繼續用你原本的名字填寫。</div></div>
-      <div class="stack"><button data-site="榮譽牆.html">看榮譽牆與點數</button>
-        <button class="secondary" data-site="新增玩本記錄.html">填寫玩本記錄</button>
-        <button class="secondary" id="vCreate">我要開團</button>${homeBtn}</div>`);
-    document.getElementById('vCreate').onclick = () => go('#/create');
-    bindSiteLinks();
+      ${binding?.status === 'pending' ? `<div class="card stack"><b>審核中：「${esc(binding.recordName)}」</b>
+        <div class="muted">店家確認後會用 LINE 通知你。選錯名字的話，可以在下面改選再送出。</div></div>` : ''}
+      ${binding?.status === 'rejected' ? `<div class="card error">店家沒有通過「${esc(binding.recordName)}」的綁定，可以改選名字重新申請。</div>` : ''}
+      <div class="card stack"><b>以前填玩本記錄用的名字</b>
+        <div class="muted">綁定後，點數、紀錄都會跟著這個 LINE 帳號；老玩家綁定完成還有 50 點回歸禮。每個名字只能綁定一個 LINE。</div>
+        <input id="q" type="text" placeholder="輸入你用過的名字" autocomplete="off">
+        <div id="matches" class="stack"></div>
+        <textarea id="note" maxlength="200" placeholder="以前還用過其他名字的話，寫在這裡（選填）">${esc(binding?.status === 'pending' ? binding.note : '')}</textarea>
+        <button id="vSubmit" disabled>送出綁定申請</button><div id="err" class="error" hidden></div></div>
+      ${homeBtn}`);
+    const $ = id => document.getElementById(id);
+    function paint() {
+      const q = $('q').value.trim().toLowerCase();
+      const list = q ? names.filter(n => n.name.toLowerCase().includes(q)).slice(0, 20) : names.filter(n => n.name === chosen);
+      $('matches').innerHTML = list.length ? list.map(n => `<button class="game-card" data-name="${esc(n.name)}"
+          aria-pressed="${n.name === chosen}" ${taken.has(n.name) ? 'disabled' : ''}>
+          <div><b>${esc(n.name)}</b> <span class="muted">${esc(n.agent)}</span>
+          <div class="muted">玩過 ${n.plays} 場${n.last ? '・最後一次 ' + esc(n.last) : ''}${taken.has(n.name) ? '・已被綁定' : ''}</div></div></button>`).join('')
+        : `<div class="muted">${q ? '找不到這個名字，換個寫法試試（例如去掉表情符號）。' : '輸入名字後，從清單點選你的那一個。'}</div>`;
+      document.querySelectorAll('[data-name]').forEach(b => b.onclick = () => { chosen = b.dataset.name; paint(); });
+      $('vSubmit').disabled = !chosen;
+      $('vSubmit').textContent = chosen ? `綁定「${chosen}」` : '送出綁定申請';
+    }
+    $('q').oninput = paint;
+    paint();
+    $('vSubmit').onclick = async e => {
+      busy(e.target, true); $('err').hidden = true;
+      try { await api('/me/binding', { method: 'POST', body: { name: chosen, note: $('note').value } }); showVeteran(); }
+      catch (x) { if (x.message === 'reauth') return; busy(e.target, false); $('err').textContent = message(x.code); $('err').hidden = false; }
+    };
   }
 
-  // Phase 1: points live on the website until a LINE account is bound to its 歸戶名.
-  function showCard() {
+  // ---- 會員卡: the bound 歸戶名's points from the website, shown to the store to redeem ----
+  async function showCard() {
+    render(`<h2>會員卡・兌換</h2><div class="card">讀取中…</div>`);
+    let data;
+    try { data = await api('/me/binding'); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>會員卡・兌換</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    const { binding, card, rewards } = data;
+    if (binding?.status !== 'approved') {
+      render(`<h2>會員卡・兌換</h2><div class="card stack">
+        <b>${binding?.status === 'pending' ? `「${esc(binding.recordName)}」綁定審核中` : '還沒有會員卡'}</b>
+        <div class="muted">${binding?.status === 'pending' ? '店家確認後就會開通會員卡，並用 LINE 通知你。'
+          : '以前填過玩本記錄的老玩家，先到「我是老玩家」綁定名字，點數就會出現在這裡。'}</div></div>
+        <div class="stack">${binding?.status === 'pending' ? '' : '<button id="cBind">我是老玩家：綁定名字</button>'}
+        <button class="secondary" data-site="榮譽牆.html">看榮譽牆</button>${homeBtn}</div>`);
+      document.getElementById('cBind')?.addEventListener('click', () => go('#/veteran'));
+      bindSiteLinks();
+      return;
+    }
+    if (!card) {
+      render(`<h2>會員卡・兌換</h2><div class="card error">玩本記錄裡暫時找不到「${esc(binding.recordName)}」，請聯絡店家確認。</div>${homeBtn}`);
+      return;
+    }
+    const tracks = [...new Set(rewards.map(r => r.track))];
     render(`<h2>會員卡・兌換</h2>
-      <div class="card stack"><div class="big">${esc(me.displayName || 'LINE 玩家')}</div>
-        <div class="muted">LINE 會員卡即將開放：到時這裡會顯示你的探員編號、點數餘額與可兌換的獎勵，到店出示給店家當面兌換。</div>
-        <div class="muted">目前點數與獎勵清單請看榮譽牆，兌換請到店告訴店家。</div></div>
-      <div class="stack"><button data-site="榮譽牆.html">看榮譽牆與點數</button>
+      <div class="card stack friend-bar">
+        <div class="muted">海星劇本殺・探員 ${esc(card.agent)}</div>
+        <div class="big">${esc(card.name)}${card.title ? ` <span class="tag ok">${esc(card.title)}</span>` : ''}</div>
+        <div><span class="muted">點數餘額</span><div style="font-size:40px;font-weight:700;line-height:1.1">${card.balance}</div></div>
+        <div class="muted">累積 ${card.earned}・已兌換 ${card.redeemed}・玩過 ${card.plays} 場${card.last ? '・最後一次 ' + esc(card.last) : ''}</div>
+        ${binding.bonusStatus === 'granted' ? '<div class="muted">已含老玩家回歸禮 50 點</div>' : ''}
+        ${binding.bonusStatus === 'none' ? '<div class="muted">老玩家回歸禮處理中，稍後再打開就會看到。</div>' : ''}</div>
+      <div class="card muted">要兌換時，到店把這個畫面給店家看，店家會幫你扣點。</div>
+      ${tracks.map(t => `<h3>${esc(t)}</h3>${rewards.filter(r => r.track === t).map(r => `<div class="card group-row" style="cursor:default">
+        <div><b>${esc(r.name)}</b> <span class="tag ${card.balance >= r.cost ? 'ok' : ''}">${r.cost} 點${card.balance >= r.cost ? '・可兌換' : ''}</span></div>
+        ${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}</div>`).join('')}`).join('')}
+      <div class="stack"><button class="secondary" data-site="榮譽牆.html">看榮譽牆</button>
         <button class="secondary" id="cHistory">我的遊戲紀錄</button>${homeBtn}</div>`);
     document.getElementById('cHistory').onclick = () => go('#/history');
     bindSiteLinks();
+  }
+
+  // ---- 店家：老玩家綁定審核 ----
+  async function showBindings() {
+    render(`<h2>老玩家綁定審核</h2><div class="card">讀取中…</div>`);
+    let bindings;
+    try { ({ bindings } = await api('/admin/bindings')); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>老玩家綁定審核</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    const pending = bindings.filter(b => b.status === 'pending'), done = bindings.filter(b => b.status !== 'pending');
+    const row = b => `<div class="card stack"><div><b>${esc(b.displayName || 'LINE 玩家')}</b> → 「${esc(b.recordName)}」</div>
+      <div class="muted">申請時間 ${esc(fmtRange(b.requestedAt))}${b.note ? '・備註：' + esc(b.note) : ''}</div>
+      ${b.status === 'pending' ? `<div class="chips"><button data-approve="${esc(b.userId)}">核准</button>
+        <button class="secondary" data-reject="${esc(b.userId)}">不通過</button></div>`
+        : `<div class="muted">${b.status === 'approved' ? '已核准・' + esc(BONUS_ZH[b.bonusStatus] || '') : '未通過'}</div>
+          ${b.status === 'approved' && b.bonusStatus === 'none' ? `<button class="secondary" data-bonus="${esc(b.userId)}">重試發回歸禮</button>` : ''}`}</div>`;
+    render(`<h2>老玩家綁定審核</h2>
+      <p class="muted">核對申請的 LINE 名字與玩本記錄名字是同一人再核准。核准後玩家改用老玩家選單；「加入日期」早於設定頁「回歸禮資格日」的老玩家自動加 50 點。</p>
+      <div id="msg" class="card" hidden></div>
+      <h3>待審核（${pending.length}）</h3>${pending.length ? pending.map(row).join('') : '<div class="card muted">目前沒有待審核的申請。</div>'}
+      ${done.length ? `<h3>最近 30 天已處理</h3>${done.map(row).join('')}` : ''}${homeBtn}`);
+    const act = (attr, action, confirmText) => document.querySelectorAll(`[data-${attr}]`).forEach(btn => btn.onclick = async () => {
+      if (confirmText && !confirm(confirmText)) return;
+      busy(btn, true);
+      try {
+        const r = await api(`/admin/bindings/${btn.dataset[attr]}/${action}`, { method: 'POST' });
+        await showBindings();
+        if (r.bonusError) { const m = document.getElementById('msg'); m.className = 'card error'; m.textContent = message(r.bonusError); m.hidden = false; }
+      } catch (x) { if (x.message !== 'reauth') { busy(btn, false); alert(message(x.code)); } }
+    });
+    act('approve', 'approve', '確定核准這筆綁定？');
+    act('reject', 'reject', '確定不通過？玩家可以改選名字重新申請。');
+    act('bonus', 'bonus');
   }
 
   // ---- 缺人場次: public groups that still have open seats ---------------------------------
@@ -754,6 +860,7 @@
     if (h === '#/veteran') return showVeteran();
     if (h === '#/card') return showCard();
     if (h === '#/admin' && me.isAdmin) return showAdmin();
+    if (h === '#/bindings' && me.isAdmin) return showBindings();
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
     return showHome();
@@ -764,11 +871,12 @@
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
       // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
-      // Rich Menu and website links: ?view=open|create|history|guide|veteran|card; none = 首頁（劇本預約＋我的揪團）.
+      // Rich Menu, website and notification links: ?view=open|create|history|guide|veteran|card|bindings
+      // (bindings: store only); none = 首頁（劇本預約＋我的揪團）.
       // ?game=<scripts.js id> preselects a script in the create flow ("預約這本" on the website).
       const params = new URLSearchParams(location.search);
       const view = params.get('view');
-      if (['open', 'create', 'history', 'guide', 'veteran', 'card'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
+      if (['open', 'create', 'history', 'guide', 'veteran', 'card', 'bindings'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
       const gameParam = params.get('game');
       if (view === 'create' && gameParam && /^[A-Za-z0-9_-]{1,64}$/.test(gameParam)) pendingGame = gameParam;
       const invite = new URLSearchParams(location.search).get('invite');

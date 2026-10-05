@@ -1,0 +1,126 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { handleApi, notificationText } from '../supabase/functions/api/index.ts';
+
+const base = 'https://example.invalid/functions/v1/api';
+const SCRIPT = 'https://script.example/exec';
+const userId = '44444444-4444-4444-8444-444444444444';
+const summary = [{ name: '阿明', agent: '#007', earned: 120, redeemed: 20, balance: 100, plays: 9, last: '2026/9/20', title: '' },
+  { name: '小華', agent: '#012', earned: 30, redeemed: 0, balance: 30, plays: 2, last: '2026/8/1' }];
+const rewards = [{ track: '保底', name: '折抵 50 元', cost: 50, note: '直接折抵當場費用', active: true }];
+
+// Fake PostgREST + Apps Script + LINE. `script` decides the grant_bonus answer.
+function backend({ admin = false, binding = null, script = { ok: true, granted: true }, scriptDown = false, now = 0 } = {}) {
+  const calls = [];
+  let current = binding;
+  const fetcher = async (url, opts = {}) => {
+    calls.push({ url, method: opts.method ?? 'GET', body: opts.body });
+    if (url === `${SCRIPT}?action=summary`) return Response.json({ ok: true, summary, rewards });
+    if (url === SCRIPT) {
+      if (scriptDown) throw new TypeError('network');
+      return Response.json(script);
+    }
+    if (url.includes('line.me')) {
+      if (url.endsWith('/richmenu/list')) return Response.json({ richmenus: [{ richMenuId: 'member-id', name: '海星選單・老玩家' }] });
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    }
+    const name = url.split('/rpc/')[1];
+    const args = opts.body ? JSON.parse(opts.body) : {};
+    switch (name) {
+      case 'resolve_session': return Response.json({ user_id: userId, display_name: 'QA', is_admin: admin });
+      case 'bound_record_names': return Response.json(['小華']);
+      case 'my_binding': return Response.json(current);
+      case 'request_binding':
+        current = { user_id: userId, record_name: args.p_name.trim(), status: 'pending', bonus_status: 'none' };
+        return Response.json(current);
+      case 'admin_decide_binding':
+        if (!admin) return Response.json({ code: 'P0001', message: 'NOT_ADMIN' }, { status: 400 });
+        current = { ...current, status: args.p_approve ? 'approved' : 'rejected' };
+        return Response.json(current);
+      case 'admin_list_bindings': return Response.json(current ? [current] : []);
+      case 'mark_binding_bonus':
+        current = { ...current, bonus_status: args.p_status };
+        return Response.json(current);
+      case 'member_menu_line_ids': return Response.json(['U' + 'a'.repeat(32)]);
+      case 'claim_notifications': return Response.json([]);
+      default: return new Response('{}', { status: 404 });
+    }
+  };
+  return { calls, settings: { supabaseUrl: 'https://db.invalid', serviceKey: 'k', loginChannelId: '1', allowedOrigins: [],
+    playRecordUrl: SCRIPT, playRecordSecret: 'bonus-secret', lineAccessToken: 'line-token', fetcher, now: () => now } };
+}
+const call = (settings, path, method = 'GET', body) => handleApi(new Request(`${base}${path}`, { method,
+  headers: { Authorization: 'Bearer ' + 'S'.repeat(43), 'Content-Type': 'application/json' },
+  body: body ? JSON.stringify(body) : undefined }), settings);
+const scriptPosts = calls => calls.filter(c => c.url === SCRIPT && c.method === 'POST');
+
+test('names come from the website summary; only names that exist there can be claimed', async () => {
+  const { settings } = backend({ now: 1 });
+  const res = await call(settings, '/records/names');
+  const data = await res.json();
+  assert.deepEqual(data.names[0], { name: '阿明', agent: '#007', plays: 9, last: '2026/9/20' });
+  assert.ok(!('balance' in data.names[0]), 'balances are not listed for everyone');
+  assert.deepEqual(data.bound, ['小華']);
+  const unknown = await call(settings, '/me/binding', 'POST', { name: '不存在的人' });
+  assert.deepEqual([unknown.status, (await unknown.json()).error], [404, 'NAME_NOT_FOUND']);
+  const ok = await call(settings, '/me/binding', 'POST', { name: ' 阿明 ', note: '也用過明明' });
+  assert.equal(ok.status, 201);
+  assert.equal((await ok.json()).binding.status, 'pending');
+});
+
+test('only the store can approve; approval grants the bonus once and switches the menu', async () => {
+  const pending = { user_id: userId, record_name: '阿明', status: 'pending', bonus_status: 'none' };
+  const player = backend({ binding: pending, now: 2 });
+  const denied = await call(player.settings, `/admin/bindings/${userId}/approve`, 'POST');
+  assert.equal(denied.status, 403);
+  assert.equal(scriptPosts(player.calls).length, 0);
+
+  const store = backend({ admin: true, binding: pending, now: 3 });
+  const res = await call(store.settings, `/admin/bindings/${userId}/approve`, 'POST');
+  const data = await res.json();
+  assert.equal(res.status, 200);
+  assert.deepEqual([data.binding.status, data.binding.bonusStatus, data.bonusError], ['approved', 'granted', null]);
+  const [post] = scriptPosts(store.calls);
+  const form = new URLSearchParams(post.body);
+  assert.deepEqual([form.get('action'), form.get('name'), form.get('points'), form.get('secret')],
+    ['grant_bonus', '阿明', '50', 'bonus-secret']);
+  assert.ok(store.calls.some(c => c.url.endsWith('/richmenu/bulk/link')), 'member menu linked');
+  assert.ok(!JSON.stringify(data).includes('bonus-secret'), 'secret never returned');
+});
+
+test('bonus outcomes: ineligible and already are recorded; failures leave it to retry', async () => {
+  const pending = { user_id: userId, record_name: '阿明', status: 'pending', bonus_status: 'none' };
+  for (const [script, expected] of [[{ ok: true, granted: false, reason: 'INELIGIBLE' }, 'ineligible'],
+    [{ ok: true, granted: false, reason: 'ALREADY' }, 'already']]) {
+    const { settings } = backend({ admin: true, binding: pending, script, now: 4 });
+    const data = await (await call(settings, `/admin/bindings/${userId}/approve`, 'POST')).json();
+    assert.equal(data.binding.bonusStatus, expected);
+  }
+  const wrongSecret = backend({ admin: true, binding: pending, script: { ok: false, error: 'INVALID_SECRET' }, now: 5 });
+  const data = await (await call(wrongSecret.settings, `/admin/bindings/${userId}/approve`, 'POST')).json();
+  assert.deepEqual([data.binding.status, data.binding.bonusStatus, data.bonusError], ['approved', 'none', 'BONUS_SECRET_MISMATCH']);
+
+  // The store can retry; so does the player's next visit to the member card.
+  const retry = backend({ admin: true, binding: { ...pending, status: 'approved' }, now: 6 });
+  assert.equal((await (await call(retry.settings, `/admin/bindings/${userId}/bonus`, 'POST')).json()).binding.bonusStatus, 'granted');
+  const visit = backend({ binding: { ...pending, status: 'approved' }, scriptDown: true, now: 7 });
+  const card = await (await call(visit.settings, '/me/binding')).json();
+  assert.equal(card.binding.bonusStatus, 'none', 'Apps Script down: still shows the card, bonus retried later');
+  assert.equal(card.card.balance, 100);
+});
+
+test('member card shows the bound name only, with rewards; unbound players get no card', async () => {
+  const bound = backend({ binding: { user_id: userId, record_name: '阿明', status: 'approved', bonus_status: 'granted' }, now: 8 });
+  const data = await (await call(bound.settings, '/me/binding')).json();
+  assert.deepEqual(data.card, { name: '阿明', agent: '#007', balance: 100, earned: 120, redeemed: 20, plays: 9, last: '2026/9/20', title: '' });
+  assert.deepEqual(data.rewards, [{ track: '保底', name: '折抵 50 元', cost: 50, note: '直接折抵當場費用' }]);
+  assert.equal(scriptPosts(bound.calls).length, 0, 'no grant call once granted');
+  const pending = backend({ binding: { user_id: userId, record_name: '阿明', status: 'pending', bonus_status: 'none' }, now: 9 });
+  assert.equal((await (await call(pending.settings, '/me/binding')).json()).card, null);
+});
+
+test('binding notifications link to the right pages', () => {
+  assert.match(notificationText({ kind: 'binding_requested', display_name: '小明', record_name: '阿明' }, 'L'), /阿明[\s\S]*view=bindings/);
+  assert.match(notificationText({ kind: 'binding_approved', record_name: '阿明' }, 'L'), /50 點[\s\S]*view=card/);
+  assert.match(notificationText({ kind: 'binding_rejected', record_name: '阿明' }, 'L'), /view=veteran/);
+});

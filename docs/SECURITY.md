@@ -37,6 +37,13 @@
 - Google Sheets：以 RAW 寫入，玩家名字不會被當成公式執行。
 - Outlook 已發布行事曆網址等同讀取權限，只存放在 Supabase Secrets（`BUSY_ICS_URLS`）。
 
+## 老玩家綁定與點數
+
+- 綁定只能選網站點數總覽裡已存在的名字；每個名字只能綁一個 LINE（資料庫唯一索引），須由店家核准。
+- 回歸禮由網站 Apps Script 發放：預約系統以 `PLAY_RECORD_SECRET`（= Apps Script 指令碼屬性 `BOOKING_SECRET`）呼叫，
+  Apps Script 以鎖避免同時重算、以去重鍵確保每個名字只發一次，並檢查「回歸禮資格日」。密碼只存在兩邊的 Secrets，不經前端。
+- 會員卡只顯示自己已核准綁定的名字；名字清單只回傳網站榮譽牆本來就公開的名字、探員編號與場次，不回傳別人的點數。
+
 ## 前端
 
 - 所有使用者輸入與 LINE 暱稱以 `esc()` 輸出，不以 HTML 解讀；`tests/liff.test.mjs` 檢查頁面程式可解析且只載入 LINE SDK 與自身設定。
