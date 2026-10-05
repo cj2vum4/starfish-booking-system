@@ -112,7 +112,10 @@ test('bonus outcomes: ineligible and already are recorded; failures leave it to 
 test('member card shows the bound name only, with rewards; unbound players get no card', async () => {
   const bound = backend({ binding: { user_id: userId, record_name: '阿明', status: 'approved', bonus_status: 'granted' }, now: 8 });
   const data = await (await call(bound.settings, '/me/binding')).json();
-  assert.deepEqual(data.card, { name: '阿明', agent: '#007', balance: 100, earned: 120, redeemed: 20, plays: 9, last: '2026/9/20', title: '' });
+  const { updatedAt, stale, ...card } = data.card;
+  assert.deepEqual(card, { name: '阿明', agent: '#007', balance: 100, earned: 120, redeemed: 20, plays: 9, last: '2026/9/20', title: '' });
+  assert.equal(stale, false);
+  assert.ok(updatedAt);
   assert.deepEqual(data.rewards, [{ track: '保底', name: '折抵 50 元', cost: 50, note: '直接折抵當場費用' }]);
   assert.equal(scriptPosts(bound.calls).length, 0, 'no grant call once granted');
   const pending = backend({ binding: { user_id: userId, record_name: '阿明', status: 'pending', bonus_status: 'none' }, now: 9 });
@@ -134,4 +137,31 @@ test('records health check reports only a reason code', async () => {
   assert.deepEqual([bad.status, await bad.json()], [503, { ok: false, error: 'NOT_JSON:text/html' }]);
   const down = { ...ok.settings, fetcher: async () => { throw new TypeError('x'); } };
   assert.equal((await (await handleApi(new Request(`${base}/health/records`), down)).json()).error, 'NETWORK');
+});
+
+test('slow or failing Apps Script: one retry, then the saved copy (marked stale); fresh copies skip the script', async () => {
+  let scriptCalls = 0, saved = null, failures = 0;
+  const settings = { supabaseUrl: 'https://db.invalid', serviceKey: 'k', loginChannelId: '1', allowedOrigins: [],
+    playRecordUrl: SCRIPT, now: () => 1_000_000_000 + scriptCalls * 1000 + (saved ? 1 : 0),
+    fetcher: async (url, opts = {}) => {
+      if (url === `${SCRIPT}?action=summary`) {
+        scriptCalls++;
+        if (failures-- > 0) return new Response('not found', { status: 404 });
+        return Response.json({ ok: true, summary, rewards });
+      }
+      const name = url.split('/rpc/')[1];
+      if (name === 'get_record_snapshot') return Response.json(saved);
+      if (name === 'put_record_snapshot') {
+        saved = { payload: JSON.parse(opts.body).p_payload, fetched_at: new Date(1_000_000_000).toISOString() };
+        return Response.json({ ok: true });
+      }
+      return new Response('{}', { status: 404 });
+    } };
+  failures = 1;  // first try 404, retry succeeds
+  let res = await handleApi(new Request(`${base}/health/records`), settings);
+  assert.deepEqual([res.status, scriptCalls], [200, 2]);
+  assert.ok(saved, 'good copy saved');
+  failures = 2;  // both tries fail: served from the saved copy, reported as stale
+  res = await handleApi(new Request(`${base}/health/records`), settings);
+  assert.deepEqual([res.status, (await res.json()).error, scriptCalls], [503, 'HTTP_404', 4]);
 });

@@ -388,6 +388,7 @@
         <div class="big">${esc(card.name)}${card.title ? ` <span class="tag ok">${esc(card.title)}</span>` : ''}</div>
         <div><span class="muted">點數餘額</span><div style="font-size:40px;font-weight:700;line-height:1.1">${card.balance}</div></div>
         <div class="muted">累積 ${card.earned}・已兌換 ${card.redeemed}・玩過 ${card.plays} 場${card.last ? '・最後一次 ' + esc(card.last) : ''}</div>
+        <div class="muted">點數更新於 ${esc(fmtRange(card.updatedAt))}${card.stale ? '（網站暫時讀不到，顯示上次的資料）' : ''}</div>
         ${binding.bonusStatus === 'granted' ? '<div class="muted">已含老玩家回歸禮 50 點</div>' : ''}
         ${binding.bonusStatus === 'none' ? '<div class="muted">老玩家回歸禮處理中，稍後再打開就會看到。</div>' : ''}</div>
       <div class="card muted">要兌換時，到店把這個畫面給店家看，店家會幫你扣點。</div>

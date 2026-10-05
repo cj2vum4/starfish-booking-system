@@ -558,30 +558,52 @@ type RecordSummary = { name: string; agent: string; earned: number; redeemed: nu
   last: string; title?: string };
 type Reward = { track: string; name: string; cost: number; note: string };
 type Binding = Record<string, any> & { user_id: string; record_name: string; status: string; bonus_status: string };
-let recordCache: { at: number; url: string; data: { summary: RecordSummary[]; rewards: Reward[] } } | null = null;
+type RecordData = { summary: RecordSummary[]; rewards: Reward[]; fetchedAt: string; stale: boolean };
+let recordCache: { at: number; url: string; data: RecordData } | null = null;
 let lastRecordError = '';  // why the last summary fetch failed (a code only, no content)
 
-async function playRecordSummary(settings: Settings, fresh = false) {
-  const url = settings.playRecordUrl ?? PLAY_RECORD_URL;
-  const now = (settings.now ?? Date.now)();
-  if (!fresh && recordCache && recordCache.url === url && now - recordCache.at < 60_000) return recordCache.data;
-  let body: any, reason = '';
+// One read of the Apps Script summary; returns a reason code instead of throwing.
+async function fetchRecordSummary(settings: Settings, url: string): Promise<{ body?: any; reason?: string }> {
   try {
     const response = await (settings.fetcher ?? fetch)(`${url}?action=summary`, { signal: AbortSignal.timeout(25000) });
     const text = await response.text();
-    if (!response.ok) reason = `HTTP_${response.status}`;
-    else try { body = JSON.parse(text); } catch { reason = `NOT_JSON:${(response.headers.get('content-type') ?? '').split(';')[0]}`; }
-  } catch (e) { reason = (e as Error)?.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK'; }
-  if (!reason && (!body?.ok || !Array.isArray(body.summary))) reason = 'BAD_PAYLOAD';
-  if (reason) {
-    lastRecordError = reason;
-    console.error('play record summary failed:', reason);
-    throw new ApiError(503, 'RECORDS_UNAVAILABLE');
+    if (!response.ok) return { reason: `HTTP_${response.status}` };
+    let body: any;
+    try { body = JSON.parse(text); } catch { return { reason: `NOT_JSON:${(response.headers.get('content-type') ?? '').split(';')[0]}` }; }
+    return body?.ok && Array.isArray(body.summary) ? { body } : { reason: 'BAD_PAYLOAD' };
+  } catch (e) { return { reason: (e as Error)?.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK' }; }
+}
+
+// The Apps Script is slow (5-25 s) and sometimes answers 404, so the last good copy is kept in
+// the database. A page asks for data no older than maxAgeMs; when the script fails (after one
+// retry) the older copy is used instead and marked stale.
+async function playRecordSummary(settings: Settings, maxAgeMs = 60_000): Promise<RecordData> {
+  const url = settings.playRecordUrl ?? PLAY_RECORD_URL;
+  const now = (settings.now ?? Date.now)();
+  if (recordCache && recordCache.url === url && now - recordCache.at < Math.min(maxAgeMs, 60_000)) return recordCache.data;
+  const shape = (payload: any, fetchedAt: string, stale: boolean): RecordData => ({
+    summary: (payload.summary ?? []).filter((x: any) => typeof x?.name === 'string' && x.name),
+    rewards: Array.isArray(payload.rewards) ? payload.rewards : [], fetchedAt, stale });
+  const saved = await rpc<{ payload: any; fetched_at: string } | null>(settings, 'get_record_snapshot', {}).catch(() => null);
+  const savedAt = saved ? Date.parse(saved.fetched_at) : NaN;  // '-infinity' (expired) parses as NaN
+  if (saved && Number.isFinite(savedAt) && now - savedAt < maxAgeMs) {
+    const data = shape(saved.payload, saved.fetched_at, false);
+    recordCache = { at: savedAt, url, data };
+    return data;
   }
-  const data = { summary: body.summary.filter((x: any) => typeof x?.name === 'string' && x.name),
-    rewards: Array.isArray(body.rewards) ? body.rewards : [] };
-  recordCache = { at: now, url, data };
-  return data;
+  let result = await fetchRecordSummary(settings, url);
+  if (result.reason) result = await fetchRecordSummary(settings, url);
+  if (result.body) {
+    const payload = { summary: result.body.summary, rewards: result.body.rewards ?? [] };
+    await rpc(settings, 'put_record_snapshot', { p_payload: payload }).catch(() => undefined);
+    const data = shape(payload, new Date(now).toISOString(), false);
+    recordCache = { at: now, url, data };
+    return data;
+  }
+  lastRecordError = result.reason ?? 'RECORDS_UNAVAILABLE';
+  console.error('play record summary failed:', lastRecordError);
+  if (saved) return shape(saved.payload, saved.fetched_at, true);
+  throw new ApiError(503, 'RECORDS_UNAVAILABLE');
 }
 
 // Asks the Apps Script for the 回歸禮. It is idempotent per 歸戶名 and checks eligibility itself.
@@ -599,6 +621,7 @@ async function grantReturnBonus(settings: Settings, binding: Binding): Promise<B
   if (!body?.ok) throw new ApiError(502, body?.error === 'INVALID_SECRET' ? 'BONUS_SECRET_MISMATCH' : 'BONUS_FAILED');
   const status = body.granted ? 'granted' : body.reason === 'INELIGIBLE' ? 'ineligible' : 'already';
   recordCache = null;  // the balance just changed
+  await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
   return rpc<Binding>(settings, 'mark_binding_bonus', { p_user_id: binding.user_id, p_status: status });
 }
 
@@ -894,7 +917,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   // ---- 老玩家綁定 and 會員卡 ----
   if (req.method === 'GET' && path === '/records/names') {
     await requireSession(req, settings);
-    const [{ summary }, bound] = await Promise.all([playRecordSummary(settings), rpc<string[]>(settings, 'bound_record_names', {})]);
+    const [{ summary }, bound] = await Promise.all([playRecordSummary(settings, 600_000), rpc<string[]>(settings, 'bound_record_names', {})]);
     return [200, { names: summary.map(publicRecord), bound }];
   }
   if (path === '/me/binding' && (req.method === 'GET' || req.method === 'POST')) {
@@ -902,8 +925,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (req.method === 'POST') {
       const { name, note } = await readJson(req);
       if (typeof name !== 'string' || (note != null && typeof note !== 'string')) throw new ApiError(400, 'INVALID_NAME');
-      const { summary } = await playRecordSummary(settings, true);
-      if (!summary.some(r => r.name === name.trim())) throw new ApiError(404, 'NAME_NOT_FOUND');
+      const listed = (records: RecordData) => records.summary.some(r => r.name === name.trim());
+      if (!listed(await playRecordSummary(settings, 600_000)) && !listed(await playRecordSummary(settings, 0))) {
+        throw new ApiError(404, 'NAME_NOT_FOUND');
+      }
       return [201, { binding: camel(await rpc(settings, 'request_binding', { p_actor: session.user_id, p_name: name, p_note: note ?? '' })) }];
     }
     let binding = await rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id });
@@ -916,7 +941,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       const records = await playRecordSummary(settings);
       const r = records.summary.find(x => x.name === binding!.record_name);
       card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed,
-        plays: r.plays, last: r.last, title: r.title ?? '' } : null;
+        plays: r.plays, last: r.last, title: r.title ?? '', updatedAt: records.fetchedAt, stale: records.stale } : null;
       rewards = records.rewards.map(x => ({ track: x.track, name: x.name, cost: x.cost, note: x.note }));
     }
     return [200, { binding: camel(binding), card, rewards }];
@@ -1157,7 +1182,8 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   if (req.method === 'GET' && path === '/health/records') {
     // Public like /health/calendar: says whether the website's 玩本記錄 summary is readable, never its content.
     try {
-      const { summary, rewards } = await playRecordSummary(settings, true);
+      const { summary, rewards, stale } = await playRecordSummary(settings, 0);
+      if (stale) return reply(503, { ok: false, error: lastRecordError, players: summary.length, servedFromCopy: true });
       return reply(200, { ok: true, players: summary.length, rewards: rewards.length });
     } catch { return reply(503, { ok: false, error: lastRecordError || 'RECORDS_UNAVAILABLE' }); }
   }
