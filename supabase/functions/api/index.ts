@@ -15,7 +15,7 @@ type Settings = {
   catalogSyncSecret?: string;  // shared with the starfishlarp GitHub Action
   lineAccessToken?: string;  // Messaging API channel access token, for push notifications
   liffId?: string;  // links in notifications open this LIFF app
-  richMenuImageUrl?: string;
+  richMenuImageUrls?: Record<string, string>;
   background?: (work: Promise<unknown>) => void;  // run after the response (EdgeRuntime.waitUntil)
   fetcher?: typeof fetch;
   now?: () => number;
@@ -540,49 +540,90 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
 }
 
 // --- Rich Menu -------------------------------------------------------------------
-// Three tap areas over the 2500x843 image published with the LIFF pages.
-const RICH_MENU_NAME = '海星預約選單';
-const RICH_MENU_IMAGE = 'https://cj2vum4.github.io/starfish-booking-system/richmenu.jpg';
-export function richMenuDefinition(liffId = DEFAULT_LIFF_ID) {
-  const base = `https://liff.line.me/${liffId}`;
-  const links = [`${base}?view=create`, `${base}?view=open`, base];
+// Two 2500x1686 menus of six cells. New players get the default one (getting to know
+// Starfish, then booking); players with a recorded play are linked to the member one.
+const RICH_MENU_NEW = '海星選單・新玩家';
+const RICH_MENU_MEMBER = '海星選單・老玩家';
+const RICH_MENU_OLD_NAMES = ['海星預約選單'];  // earlier single menu, removed on setup
+const RICH_MENU_IMAGES: Record<string, string> = {
+  new: 'https://cj2vum4.github.io/starfish-booking-system/richmenu-new.jpg',
+  member: 'https://cj2vum4.github.io/starfish-booking-system/richmenu-member.jpg',
+};
+const SITE = 'https://cj2vum4.github.io/starfishlarp/';
+const sitePage = (file: string) => SITE + encodeURIComponent(file);
+export function richMenuDefinition(kind: 'new' | 'member', liffId = DEFAULT_LIFF_ID) {
+  const liff = (view?: string) => `https://liff.line.me/${liffId}${view ? '?view=' + view : ''}`;
+  const links = kind === 'new'
+    ? [sitePage('主持人資訊.html'), SITE, liff(), liff('open'), liff('guide'), liff('veteran')]
+    : [liff(), liff('open'), liff('history'), liff('card'), SITE, sitePage('榮譽牆.html')];
   const widths = [833, 834, 833];
-  let x = 0;
   return {
-    size: { width: 2500, height: 843 }, selected: true, name: RICH_MENU_NAME, chatBarText: '開團・缺人場次',
+    size: { width: 2500, height: 1686 }, selected: true,
+    name: kind === 'new' ? RICH_MENU_NEW : RICH_MENU_MEMBER, chatBarText: '海星選單',
     areas: links.map((uri, i) => {
-      const area = { bounds: { x, y: 0, width: widths[i], height: 843 }, action: { type: 'uri', uri } };
-      x += widths[i];
-      return area;
+      const col = i % 3, row = Math.floor(i / 3);
+      return { bounds: { x: col === 0 ? 0 : col === 1 ? 833 : 1667, y: row * 843, width: widths[col], height: 843 },
+        action: { type: 'uri', uri } };
     }),
   };
 }
 
-// Creates the menu, uploads its image, makes it the default, then removes older copies of it.
-async function setupRichMenu(settings: Settings) {
+type LineCall = (url: string, init?: RequestInit) => Promise<any>;
+function lineCaller(settings: Settings): LineCall {
   const token = settings.lineAccessToken;
   if (!token) throw new ApiError(503, 'LINE_NOT_CONFIGURED');
   const f = settings.fetcher ?? fetch;
-  const auth = { Authorization: `Bearer ${token}` };
-  const call = async (url: string, init: RequestInit = {}) => {
-    const response = await f(url, { signal: AbortSignal.timeout(15000), ...init, headers: { ...auth, ...(init.headers ?? {}) } });
+  return async (url, init = {}) => {
+    const response = await f(url, { signal: AbortSignal.timeout(15000), ...init,
+      headers: { Authorization: `Bearer ${token}`, ...(init.headers ?? {}) } });
     if (!response.ok) throw new ApiError(502, `LINE_${response.status}`);
     return response.headers.get('content-type')?.includes('json') ? response.json() : null;
   };
-  const image = await f(settings.richMenuImageUrl ?? RICH_MENU_IMAGE, { signal: AbortSignal.timeout(15000) });
-  if (!image.ok) throw new ApiError(502, 'RICH_MENU_IMAGE_UNAVAILABLE');
-  const bytes = new Uint8Array(await image.arrayBuffer());
-  if (bytes.length > 1024 * 1024) throw new ApiError(502, 'RICH_MENU_IMAGE_TOO_LARGE');
+}
+
+// Links every player with a recorded play to the member menu. Idempotent; bulk link takes 500 IDs.
+async function syncMemberMenu(settings: Settings, call: LineCall, memberMenuId?: string) {
+  if (!memberMenuId) {
+    const list = await call('https://api.line.me/v2/bot/richmenu/list');
+    memberMenuId = (list?.richmenus ?? []).find((m: { name: string }) => m.name === RICH_MENU_MEMBER)?.richMenuId;
+    if (!memberMenuId) return { linked: 0 };
+  }
+  const ids = await rpc<string[]>(settings, 'member_menu_line_ids', {});
+  for (let i = 0; i < ids.length; i += 500) {
+    await call('https://api.line.me/v2/bot/richmenu/bulk/link', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ richMenuId: memberMenuId, userIds: ids.slice(i, i + 500) }) });
+  }
+  return { linked: ids.length };
+}
+
+// Creates both menus and uploads their images, makes the new-player menu the default,
+// links members, then removes older copies.
+async function setupRichMenu(settings: Settings) {
+  const call = lineCaller(settings);
+  const f = settings.fetcher ?? fetch;
+  const images: Record<string, Uint8Array> = {};
+  for (const kind of ['new', 'member']) {
+    const image = await f(settings.richMenuImageUrls?.[kind] ?? RICH_MENU_IMAGES[kind], { signal: AbortSignal.timeout(15000) });
+    if (!image.ok) throw new ApiError(502, 'RICH_MENU_IMAGE_UNAVAILABLE');
+    images[kind] = new Uint8Array(await image.arrayBuffer());
+    if (images[kind].length > 1024 * 1024) throw new ApiError(502, 'RICH_MENU_IMAGE_TOO_LARGE');
+  }
   const before = await call('https://api.line.me/v2/bot/richmenu/list');
-  const { richMenuId } = await call('https://api.line.me/v2/bot/richmenu', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(richMenuDefinition(settings.liffId)) });
-  await call(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, { method: 'POST',
-    headers: { 'Content-Type': 'image/jpeg' }, body: bytes });
-  await call(`https://api.line.me/v2/bot/user/all/richmenu/${richMenuId}`, { method: 'POST' });
+  const ids: Record<string, string> = {};
+  for (const kind of ['new', 'member'] as const) {
+    ({ richMenuId: ids[kind] } = await call('https://api.line.me/v2/bot/richmenu', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(richMenuDefinition(kind, settings.liffId)) }));
+    await call(`https://api-data.line.me/v2/bot/richmenu/${ids[kind]}/content`, { method: 'POST',
+      headers: { 'Content-Type': 'image/jpeg' }, body: images[kind] });
+  }
+  await call(`https://api.line.me/v2/bot/user/all/richmenu/${ids.new}`, { method: 'POST' });
+  const { linked } = await syncMemberMenu(settings, call, ids.member);
+  const ours = [RICH_MENU_NEW, RICH_MENU_MEMBER, ...RICH_MENU_OLD_NAMES];
   const old = (before?.richmenus ?? []).filter((m: { name: string; richMenuId: string }) =>
-    m.name === RICH_MENU_NAME && m.richMenuId !== richMenuId);
+    ours.includes(m.name) && m.richMenuId !== ids.new && m.richMenuId !== ids.member);
   for (const m of old) await call(`https://api.line.me/v2/bot/richmenu/${m.richMenuId}`, { method: 'DELETE' });
-  return { richMenuId, replaced: old.length };
+  return { newMenuId: ids.new, memberMenuId: ids.member, membersLinked: linked, replaced: old.length };
 }
 
 // --- Google Sheets export (one-way, whole sheets rewritten each time) ------------------
@@ -827,7 +868,13 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       const { absent } = await readJson(req);
       const ids = Array.isArray(absent) ? absent : [];
       if (ids.length > 50 || ids.some(id => typeof id !== 'string' || !UUID.test(id))) throw new ApiError(400, 'INVALID_PARTICIPANTS');
-      return [200, camel(await rpc(settings, 'admin_complete_event', { ...actor, p_absent: ids }))];
+      const result = await rpc(settings, 'admin_complete_event', { ...actor, p_absent: ids });
+      // Players who just played their first recorded session switch to the member menu.
+      if (settings.lineAccessToken) {
+        const work = syncMemberMenu(settings, lineCaller(settings)).catch(() => undefined);
+        if (settings.background) settings.background(work); else await work;
+      }
+      return [200, camel(result)];
     }
   }
   const calendarRoute = /^\/admin\/events\/([0-9a-f-]{36})\/calendar$/.exec(path);

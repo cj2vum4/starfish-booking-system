@@ -126,6 +126,7 @@
   const fmtTime = iso => new Intl.DateTimeFormat('zh-TW', { ...tz, hour:'2-digit', minute:'2-digit', hourCycle:'h23' }).format(new Date(iso));
   const fmtRange = (a, b) => `${fmtDay(a)} ${fmtTime(a)}${b ? '–' + fmtTime(b) : ''}`;
   let me = null;
+  let pendingGame = null;  // scripts.js id to preselect when the create page opens
 
   // An expired session signs in again once and retries; 'reauth' means LINE login is redirecting.
   async function api(path, { method = 'GET', body, retried = false } = {}) {
@@ -163,9 +164,10 @@
   // ---- Home -------------------------------------------------------------------------
   async function showHome() {
     render(`<div class="card stack"><div class="big">你好，${esc(me.displayName || 'LINE 玩家')}</div>
-      <p class="muted">選好時間就能開團，再把邀請連結分享給朋友。</p>
+      <p class="muted">劇本預約：選人數、挑劇本、約時間，再把邀請連結分享給朋友。</p>
       <button id="new">我要開團</button><button class="secondary" id="openList">看缺人場次</button>
-      <button class="secondary" id="historyBtn">我的遊戲紀錄</button></div>
+      <button class="secondary" id="historyBtn">我的遊戲紀錄</button>
+      <button class="secondary" id="guideBtn">新手指南</button></div>
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
         <button id="adminBtn">店家後台：場次總覽與匯出</button>
@@ -174,6 +176,7 @@
     document.getElementById('new').onclick = () => go('#/create');
     document.getElementById('openList').onclick = () => go('#/open');
     document.getElementById('historyBtn').onclick = () => go('#/history');
+    document.getElementById('guideBtn').onclick = () => go('#/guide');
     if (me.isAdmin) api('/admin/groups').then(({ groups }) => {
       const box = document.getElementById('adminGroups');
       box.innerHTML = groups.length ? groups.map(g => `
@@ -263,7 +266,64 @@
         ${h.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(h.imageUrl)}">` : '<div class="poster none">海星</div>'}
         <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div></div></div>`).join('')
         : '<div class="card muted">還沒有紀錄。玩完第一場後，店家記錄出席就會出現在這裡。</div>'}
+      <div class="card stack"><b>填玩本記錄拿點數</b>
+        <div class="muted">心得、角色與點數記在海星網站的玩本記錄，每次請用同一個名字填寫。</div>
+        <button data-site="新增玩本記錄.html">填寫玩本記錄</button>
+        <button class="secondary" data-site="榮譽牆.html">看榮譽牆與點數</button></div>
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`);
+    bindSiteLinks();
+  }
+
+  // ---- Website pages and the phase-1 pages behind the Rich Menu ------------------------
+  const SITE = 'https://cj2vum4.github.io/starfishlarp/';
+  function bindSiteLinks() {
+    document.querySelectorAll('[data-site]').forEach(b => b.onclick = () =>
+      liff.openWindow({ url: SITE + encodeURIComponent(b.dataset.site), external: false }));
+  }
+  const homeBtn = `<button class="secondary" onclick="location.hash='#/'">回首頁</button>`;
+
+  function showGuide() {
+    render(`<h2>新手指南</h2>
+      <div class="card stack"><b>1. 加入好友</b><div class="muted">開團、加入揪團都要先加「海星劇本殺」好友，成團、滿團、取消也會用 LINE 通知你。</div></div>
+      <div class="card stack"><b>2. 劇本預約</b><div class="muted">選幾個人玩 → 挑劇本（可依推理、情感、歡樂、驚悚篩選，不知道玩什麼就選「請店家推薦」）→ 選時間。畫面上的時間都是店家真的有空的時段。</div>
+        <button id="gCreate">我要開團</button></div>
+      <div class="card stack"><b>3. 揪朋友</b><div class="muted">開團後按「分享邀請連結到 LINE」傳給朋友；想先幫朋友佔位，按「幫朋友保留位子」再把專屬連結傳給他。</div></div>
+      <div class="card stack"><b>4. 人不夠？</b><div class="muted">把揪團改成「公開招募」，就會出現在「缺人場次」讓其他玩家加入；你也可以去缺人場次找團。</div>
+        <button class="secondary" id="gOpen">看缺人場次</button></div>
+      <div class="card stack"><b>5. 店家確認成團</b><div class="muted">店家確認後會通知劇本、時間、場地、DM 與每人費用，現場付款。</div></div>
+      <div class="card stack"><b>先認識海星</b>
+        <button class="secondary" data-site="主持人資訊.html">主持人介紹</button>
+        <button class="secondary" data-site="">劇本總覽</button>
+        <button class="secondary" data-site="劇本介紹.html">什麼是劇本殺</button></div>
+      <p class="muted">有任何問題，直接在官方帳號聊天室留言。</p>${homeBtn}`);
+    document.getElementById('gCreate').onclick = () => go('#/create');
+    document.getElementById('gOpen').onclick = () => go('#/open');
+    bindSiteLinks();
+  }
+
+  // Phase 1: linking a LINE account to earlier 玩本記錄 names is not open yet.
+  function showVeteran() {
+    render(`<h2>我是老玩家</h2>
+      <div class="card stack"><b>老玩家綁定即將開放</b>
+        <div class="muted">之後你可以把以前填玩本記錄用過的名字綁定到這個 LINE 帳號，點數、紀錄都會整合在一起，綁定完成還有老玩家回歸禮。</div>
+        <div class="muted">在那之前，玩本記錄請繼續用你原本的名字填寫。</div></div>
+      <div class="stack"><button data-site="榮譽牆.html">看榮譽牆與點數</button>
+        <button class="secondary" data-site="新增玩本記錄.html">填寫玩本記錄</button>
+        <button class="secondary" id="vCreate">我要開團</button>${homeBtn}</div>`);
+    document.getElementById('vCreate').onclick = () => go('#/create');
+    bindSiteLinks();
+  }
+
+  // Phase 1: points live on the website until a LINE account is bound to its 歸戶名.
+  function showCard() {
+    render(`<h2>會員卡・兌換</h2>
+      <div class="card stack"><div class="big">${esc(me.displayName || 'LINE 玩家')}</div>
+        <div class="muted">LINE 會員卡即將開放：到時這裡會顯示你的探員編號、點數餘額與可兌換的獎勵，到店出示給店家當面兌換。</div>
+        <div class="muted">目前點數與獎勵清單請看榮譽牆，兌換請到店告訴店家。</div></div>
+      <div class="stack"><button data-site="榮譽牆.html">看榮譽牆與點數</button>
+        <button class="secondary" id="cHistory">我的遊戲紀錄</button>${homeBtn}</div>`);
+    document.getElementById('cHistory').onclick = () => go('#/history');
+    bindSiteLinks();
   }
 
   // ---- 缺人場次: public groups that still have open seats ---------------------------------
@@ -300,6 +360,12 @@
       <button class="secondary" onclick="history.back()">返回</button>`); return; }
 
     const state = { capacity: 6, tag: '', gameId: '', day: null, start: null, visibility: 'private' };
+    const wanted = games.find(g => g.slug === pendingGame);
+    pendingGame = null;
+    if (wanted) {
+      state.gameId = wanted.gameId;
+      state.capacity = Math.min(Math.max(state.capacity, wanted.minPlayers), wanted.maxPlayers);
+    }
     const slotCache = {};  // minutes -> slots (or {error})
     // One request ID per form keeps double taps and retries from opening two groups.
     const requestId = store.get('starfish.createRequest') || crypto.randomUUID();
@@ -311,7 +377,7 @@
         <output id="cap">6</output><button class="secondary" id="plus" aria-label="增加">＋</button></div></div>
       <div class="card"><h3 style="margin-top:0">2. 選劇本</h3>
         <div class="chips" id="tags"></div><p class="muted" id="gameCount"></p><div id="games" class="stack"></div></div>
-      <div class="card"><h3 style="margin-top:0">3. 選時間</h3><div id="when"></div></div>
+      <div class="card" id="whenCard"><h3 style="margin-top:0">3. 選時間</h3><div id="when"></div></div>
       <div class="card"><h3 style="margin-top:0">4. 備註</h3>
         <textarea id="note" maxlength="2000" placeholder="例如：有人第一次玩、想要不恐怖的"></textarea>
         <h3>誰可以加入</h3><div class="chips">
@@ -403,6 +469,7 @@
       }
     });
     paintGames();
+    if (wanted) $('whenCard').scrollIntoView({ block: 'start' });
   }
 
   // ---- Group page -------------------------------------------------------------------
@@ -683,6 +750,9 @@
     if (h === '#/create') return showCreate();
     if (h === '#/open') return showOpen();
     if (h === '#/history') return showHistory();
+    if (h === '#/guide') return showGuide();
+    if (h === '#/veteran') return showVeteran();
+    if (h === '#/card') return showCard();
     if (h === '#/admin' && me.isAdmin) return showAdmin();
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
@@ -694,9 +764,13 @@
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
       // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
-      // Rich Menu links: ?view=open (缺人場次), ?view=create (我要開團), ?view=mine (首頁／我的揪團).
-      const view = new URLSearchParams(location.search).get('view');
-      if (view === 'open' || view === 'create') history.replaceState(null, '', location.pathname + '#/' + view);
+      // Rich Menu and website links: ?view=open|create|history|guide|veteran|card; none = 首頁（劇本預約＋我的揪團）.
+      // ?game=<scripts.js id> preselects a script in the create flow ("預約這本" on the website).
+      const params = new URLSearchParams(location.search);
+      const view = params.get('view');
+      if (['open', 'create', 'history', 'guide', 'veteran', 'card'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
+      const gameParam = params.get('game');
+      if (view === 'create' && gameParam && /^[A-Za-z0-9_-]{1,64}$/.test(gameParam)) pendingGame = gameParam;
       const invite = new URLSearchParams(location.search).get('invite');
       if (invite && /^[A-Za-z0-9_-]{43}$/.test(invite)) history.replaceState(null, '', location.pathname + '#/invite/' + invite);
       // Notification links arrive as ?group=<id>.
