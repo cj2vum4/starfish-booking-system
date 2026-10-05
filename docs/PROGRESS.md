@@ -235,19 +235,26 @@
 
 - docs/PLAYER_GUIDE.md：招募訊息、玩家使用說明（LINE 訊息版）、常見問題、店家試營運須知。
 - 店家首次匯出失敗：匯出範圍 455 天超過 admin_report 原本 400 天上限（INVALID_RANGE）。0019 放寬為 800 天並以實際匯出範圍測試，
-  雲端 report 測試 PASS；店家後台「即將進行」不再計入已取消場次。待店家重新匯出確認。
+  雲端 report 測試 PASS；店家後台「即將進行」不再計入已取消場次。店家啟用 Sheets API 後匯出成功。
 - 匯出改為區分 SHEETS_API_DISABLED／SHEET_NOT_SHARED／SHEET_NOT_FOUND，失敗時店家頁面顯示服務帳戶、專案與試算表 ID（GET /admin/google-account，僅店家）。
 - 店家已確認 LINE OA 回應設定「聊天」與 Webhook 皆開啟。
 
-## 未完成，不能宣稱可供營運
+## 開團／加入／認領須先加 OA 好友（已上線）
 
+- 0020：user_line_identity、mark_user_followed（僅 service_role；不改 friendship_event_at，之後的封鎖 webhook 仍會生效）。
+- API：POST /groups、/groups/:id/join、/invites/claim 先檢查好友；資料庫沒有 active 紀錄時即時呼叫 LINE profile API，
+  200 補記為好友並放行，404 回 403 NOT_FRIEND；LINE 連不上時放行。瀏覽與預覽邀請不受限。
+- LIFF：按「確認開團」「加入這團」「認領這個位子」前先問 liff.getFriendship()；未加好友跳出加好友面板，
+  加完回到頁面自動繼續原本的動作（或按「我加好了，繼續」）；後端回 NOT_FRIEND 時也跳同一面板。
+- npm test 74 passed；0020 已上雲且雲端 friend_gate 測試 PASS；api 重新部署（commit 064c4e9，SHA-256 77d24053…f356 與 GitHub 一致）；
+  LIFF 頁已上線。
+- 待店家：LINE Login channel 的 LIFF「Add friend option」改為 On (Aggressive)，並確認 Linked OA 為 @825gdzws。
 
-- 20 個 concurrent request 搶最後 1 席的多連線實測（P6）。
+## 尚待實測
 
-- HTTP API（P3 session 後包裝上述 RPC）與 LIFF 畫面。
-
-- 新 GitHub remote、CI 與 migration history 同步。
-- LINE Login / LIFF、其餘 P2–P12 功能。
+- P3：外部瀏覽器登入、session 過期自動重新登入。
+- P7：店家與玩家實際收到各類通知。
+- P12：20–50 位真人玩家、10 個揪團、5 場成團。
 
 ## 已留存證據
 
