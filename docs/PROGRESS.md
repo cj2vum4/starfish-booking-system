@@ -181,7 +181,7 @@
 
 ## 圖文選單（已上線）
 
-- web/liff/richmenu.jpg（2500×843，依 starfishlarp 深色主視覺：金 #c8a056／#ecd08a、深褐底、海星徽章浮水印），
+- （v1，已由 v2 取代）web/liff/richmenu.jpg（2500×843，依 starfishlarp 深色主視覺：金 #c8a056／#ecd08a、深褐底、海星徽章浮水印），
   產生器 scripts/richmenu_image.py。
 - API POST /hooks/richmenu-setup（X-Sync-Secret 保護）：建立選單、上傳圖片、設為預設、移除舊版同名選單。
   三格連結：?view=create、?view=open、首頁。
@@ -249,6 +249,20 @@
 - npm test 74 passed；0020 已上雲且雲端 friend_gate 測試 PASS；api 重新部署（commit 064c4e9，SHA-256 77d24053…f356 與 GitHub 一致）；
   LIFF 頁已上線。
 - 待店家：LINE Login channel 的 LIFF「Add friend option」改為 On (Aggressive)，並確認 Linked OA 為 @825gdzws。
+
+## 圖文選單 v2：新玩家／老玩家兩組六格（已上線，2026-10-05）
+
+- 與店家討論後定案：劇本預約與我的揪團合併；身分以 LINE 為準；補登只記錄不給點、改發老玩家回歸禮（綁定時發）；兌換當面；新舊玩家看不同選單。
+- 新玩家（預設）：認識海星（主持人資訊）、劇本介紹（網站劇本總覽）、劇本預約（LIFF 首頁＝開團＋我的揪團）、缺人場次、新手指南、我是老玩家。
+- 老玩家：劇本預約、缺人場次、玩本記錄（我的遊戲紀錄＋網站填寫）、會員卡・兌換、劇本介紹、榮譽牆。
+- 0021 member_menu_line_ids：有出席紀錄的玩家（排除自測）。選單設定時與店家「記錄出席」後，以 bulk link 換成老玩家選單。
+- LIFF：新增 #/guide、#/veteran、#/card（後兩者為第 1 階段說明頁，第 2 階段做綁定與會員卡時換成正式功能，選單網址不變）；
+  ?view=create&game=<scripts.js id> 預選劇本。
+- starfishlarp：booking.js 在 57 個劇本頁加「📅 預約這本」（commit 4d4be16）。
+- 圖片 scripts/richmenu_image.py → web/liff/richmenu-new.jpg、richmenu-member.jpg（2500×1686）。
+- npm test 77 passed；0021 已上雲且雲端 member_menu 測試 PASS；api 重新部署（commit c2d1323，SHA-256 fa106330…8179 與 GitHub 一致）；
+  /hooks/richmenu-setup：新玩家 richmenu-cf8b578e…、老玩家 richmenu-8c98d3ab…，取代舊選單 1 個，目前 0 位老玩家。
+- 下一階段：老玩家綁定（LINE ↔ 玩本記錄歸戶名，店家核准）＋回歸禮、會員卡讀取集點系統；之後 LINE 版玩本記錄與補登規則。
 
 ## 尚待實測
 
