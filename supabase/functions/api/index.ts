@@ -559,17 +559,25 @@ type RecordSummary = { name: string; agent: string; earned: number; redeemed: nu
 type Reward = { track: string; name: string; cost: number; note: string };
 type Binding = Record<string, any> & { user_id: string; record_name: string; status: string; bonus_status: string };
 let recordCache: { at: number; url: string; data: { summary: RecordSummary[]; rewards: Reward[] } } | null = null;
+let lastRecordError = '';  // why the last summary fetch failed (a code only, no content)
 
 async function playRecordSummary(settings: Settings, fresh = false) {
   const url = settings.playRecordUrl ?? PLAY_RECORD_URL;
   const now = (settings.now ?? Date.now)();
   if (!fresh && recordCache && recordCache.url === url && now - recordCache.at < 60_000) return recordCache.data;
-  let body: any;
+  let body: any, reason = '';
   try {
-    const response = await (settings.fetcher ?? fetch)(`${url}?action=summary`, { signal: AbortSignal.timeout(15000) });
-    body = response.ok ? await response.json() : null;
-  } catch { body = null; }
-  if (!body?.ok || !Array.isArray(body.summary)) throw new ApiError(503, 'RECORDS_UNAVAILABLE');
+    const response = await (settings.fetcher ?? fetch)(`${url}?action=summary`, { signal: AbortSignal.timeout(25000) });
+    const text = await response.text();
+    if (!response.ok) reason = `HTTP_${response.status}`;
+    else try { body = JSON.parse(text); } catch { reason = `NOT_JSON:${(response.headers.get('content-type') ?? '').split(';')[0]}`; }
+  } catch (e) { reason = (e as Error)?.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK'; }
+  if (!reason && (!body?.ok || !Array.isArray(body.summary))) reason = 'BAD_PAYLOAD';
+  if (reason) {
+    lastRecordError = reason;
+    console.error('play record summary failed:', reason);
+    throw new ApiError(503, 'RECORDS_UNAVAILABLE');
+  }
   const data = { summary: body.summary.filter((x: any) => typeof x?.name === 'string' && x.name),
     rewards: Array.isArray(body.rewards) ? body.rewards : [] };
   recordCache = { at: now, url, data };
@@ -1146,6 +1154,13 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   if (req.method === 'OPTIONS') return new Response(null, { status: cors['Access-Control-Allow-Origin'] ? 204 : 403, headers: cors });
   // Supabase serves this function at /functions/v1/api/...; strip everything up to "/api".
   const path = new URL(req.url).pathname.replace(/^.*?\/api(?=\/|$)/, '') || '/';
+  if (req.method === 'GET' && path === '/health/records') {
+    // Public like /health/calendar: says whether the website's 玩本記錄 summary is readable, never its content.
+    try {
+      const { summary, rewards } = await playRecordSummary(settings, true);
+      return reply(200, { ok: true, players: summary.length, rewards: rewards.length });
+    } catch { return reply(503, { ok: false, error: lastRecordError || 'RECORDS_UNAVAILABLE' }); }
+  }
   if (req.method === 'GET' && path === '/health/calendar') {
     const [status, data] = await checkCalendar(settings);
     return reply(status, data);

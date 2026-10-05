@@ -124,3 +124,14 @@ test('binding notifications link to the right pages', () => {
   assert.match(notificationText({ kind: 'binding_approved', record_name: '阿明' }, 'L'), /50 點[\s\S]*view=card/);
   assert.match(notificationText({ kind: 'binding_rejected', record_name: '阿明' }, 'L'), /view=veteran/);
 });
+
+test('records health check reports only a reason code', async () => {
+  const ok = backend({ now: 20 });
+  const res = await handleApi(new Request(`${base}/health/records`), ok.settings);
+  assert.deepEqual(await res.json(), { ok: true, players: 2, rewards: 1 });
+  const html = { ...ok.settings, fetcher: async () => new Response('<html>sign in</html>', { headers: { 'content-type': 'text/html' } }) };
+  const bad = await handleApi(new Request(`${base}/health/records`), html);
+  assert.deepEqual([bad.status, await bad.json()], [503, { ok: false, error: 'NOT_JSON:text/html' }]);
+  const down = { ...ok.settings, fetcher: async () => { throw new TypeError('x'); } };
+  assert.equal((await (await handleApi(new Request(`${base}/health/records`), down)).json()).error, 'NETWORK');
+});
