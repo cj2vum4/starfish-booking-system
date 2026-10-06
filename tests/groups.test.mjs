@@ -117,3 +117,14 @@ test('history, played sets and attendance routes are session-scoped and validate
   assert.deepEqual(last(calls).args, { p_actor: 'user-1', p_event_id: eventId, p_absent: [seatId] });
   assert.equal((await handleApi(req(`/admin/events/${eventId}/complete`, 'POST', { absent: ['nope'] }), settings)).status, 400);
 });
+
+test('expired unconfirmed groups are cancelled before group pages and actions, not on other routes', async () => {
+  const called = [];
+  const settings = { supabaseUrl: 'https://db.invalid', serviceKey: 'k', loginChannelId: '1', allowedOrigins: [],
+    fetcher: async url => { called.push(url.split('/rpc/')[1]); return Response.json(null, { status: 401 }); } };
+  for (const path of ['/groups/public', '/me/groups', '/admin/groups', '/invites/preview', '/me/history', '/slots']) {
+    called.length = 0;
+    await handleApi(new Request(`https://api.invalid${path}`, { headers: { Authorization: 'Bearer ' + 'S'.repeat(43) } }), settings);
+    assert.equal(called[0] === 'expire_stale_groups', /groups|invites/.test(path), path);
+  }
+});

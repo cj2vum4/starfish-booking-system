@@ -336,6 +336,13 @@
 - 雲端：0027、0028 已套用（店家在 SQL Editor 確認執行）；review_reminder 觸發器 0、tests/review_context.sql PASS、users 6。
 - 店家已部署新版 Apps Script：line_record 不再存在（送出被當一般問卷、缺名字擋下未寫入），點數總覽正常。
 
+## 過期揪團自動取消（2026-10-06）
+
+- 店家決定：開場時間到了還沒成團就直接取消。0029 expire_stale_groups()：招募中／待確認且 desired_start_at 已過 → 取消、
+  釋出座位與時段、撤銷邀請、寫稽核；以交易內旗標讓狀態觸發器不發「揪團解散」通知（主揪自己解散仍照舊通知）。
+- api 在 /groups、/me/groups、/admin/groups、/invites 路由前先呼叫（失敗不擋請求），不需 pg_cron。
+- npm test 93 passed（含 tests/expire_groups.sql）。
+
 ## 尚待實測
 
 - P3：外部瀏覽器登入、session 過期自動重新登入。

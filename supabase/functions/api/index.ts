@@ -854,7 +854,11 @@ const inviteExpiry = (settings: Settings) =>
 const publicUser = (s: { user_id: string; display_name: string | null; is_admin: boolean }) =>
   ({ id: s.user_id, displayName: s.display_name, isAdmin: s.is_admin });
 
+// Groups past their start without being confirmed are cancelled before anyone reads or joins them.
+const GROUP_PATHS = /^\/(groups|me\/groups|admin\/groups|invites)(\/|$)/;
+
 async function route(req: Request, path: string, settings: Settings): Promise<[number, unknown]> {
+  if (GROUP_PATHS.test(path)) await rpc(settings, 'expire_stale_groups', {}).catch(() => undefined);
   if (req.method === 'POST' && path === '/auth/line') {
     const { idToken } = await readJson(req);
     if (typeof idToken !== 'string' || idToken.length < 20 || idToken.length > 4096) {

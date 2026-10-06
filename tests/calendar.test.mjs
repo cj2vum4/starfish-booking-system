@@ -73,7 +73,7 @@ test('creating a group re-checks the calendar first and uses the session user, n
   const { calls, settings } = backend();
   const response = await handleApi(post('/groups', { ...group, actor: 'someone-else', p_actor: 'x' }), settings);
   assert.equal(response.status, 201);
-  assert.deepEqual(rpcNames(calls), ['resolve_session', 'sync_calendar_busy', 'create_group']);
+  assert.deepEqual(rpcNames(calls), ['expire_stale_groups', 'resolve_session', 'sync_calendar_busy', 'create_group']);
   const args = JSON.parse(calls.find(c => c.url.endsWith('/create_group')).body);
   assert.equal(args.p_actor, 'user-1');
   assert.equal(args.p_starts_at, '2026-10-05T12:00:00.000Z');
