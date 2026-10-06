@@ -110,7 +110,7 @@
    - 實際收到「滿團」「成團」「取消」通知（P7）。
    - LINE 外的一般瀏覽器登入、session 過期自動重登（P3）。
 2. **過期揪團處理**（店家尚未決定）：開場時間到仍未成團 → 自動結束招募＋通知主揪？開場前一天提醒「還缺 N 人」？兩者都做？**先問店家再做**。
-3. **第 3 階段（程式完成、本機測試通過，尚未上雲；2026-10-06）**：migration 0025、api `/me/reviews/:id`、`/me/records`、LIFF `#/review/<id>`、`#/record`，以及 Apps Script `line_record`、`LINE上線日` 補登規則都已寫好。
+3. **第 3 階段（2026-10-06 已上線：0025、api、Apps Script、LIFF；LINE上線日＝2026/10/06；待真人實測）**：migration 0025、api `/me/reviews/:id`、`/me/records`、LIFF `#/review/<id>`、`#/record`，以及 Apps Script `line_record`、`LINE上線日` 補登規則都已寫好。
    上線順序：雲端套用 0025 並跑 `tests/review_context.sql` → 部署 api → 店家部署新版 Apps Script，並在「設定」填 `LINE上線日` → 最後 push 這個 repo 發布 LIFF 頁。
    **注意**：`LINE上線日` 留空時補登規則不生效，補登會照常給點。原始需求如下：
    - LINE 版玩本記錄：身分取自 LINE（綁定的歸戶名；新玩家以 LINE 名稱建立），不再手打名字；店家記錄出席後推播「填心得拿點數」，日期與劇本預先帶入。
@@ -126,7 +126,7 @@
 
 ### 資料庫 migration
 - **一律新增檔案**（`supabase/migrations/YYYYMMDDNNNN_name.sql`，以 `begin; … commit;` 包住），不改已套用的檔案。
-- 目前已套用的 24 個 migration（0025 尚未套用） 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
+- 目前全部 25 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）

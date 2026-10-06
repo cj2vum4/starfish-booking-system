@@ -289,7 +289,7 @@
 - 後續重點：補齊真人通知／登入驗收、決定過期揪團處理、確認第 3 階段上線日與回歸禮資格日、更新玩家說明，再進行 20–50 人／10 團／5 場成團的試營運。
 - 本次僅盤點並更新文件，未重新查詢正式資料庫、執行測試或部署；既有使用者與綁定數量是先前查詢快照，不代表本次綁定後的即時數字。
 
-## 第 3 階段：LINE 版玩本記錄與補登規則（程式完成，待上雲，2026-10-06）
+## 第 3 階段：LINE 版玩本記錄與補登規則（已上線，2026-10-06）
 
 - 0025 review_context：games.review_key（對應網站劇本名）、line_record_accounts（LINE 帳號 ↔ 玩本歸戶名，一名一帳號）、
   my_review_context（以出席紀錄為準，日期、劇本、身分不由前端提供）、my_manual_review_context（補登，不可填未來日期）、
@@ -298,8 +298,13 @@
 - LIFF：遊戲紀錄每場有「填寫心得」，另有「補登玩本記錄」；通知連結 ?review=<eventId>。
 - starfishlarp Apps Script：submitLineRecord_（密碼、LockService、「LINE身分」分頁、同名新玩家加識別碼不繼承老玩家點數）、
   設定「LINE上線日」：遊玩日在上線日前、上線後才填 → 0 點、不佔首探／新手好運／介紹人／互動點數。
-- npm test 92 passed；starfishlarp tests/run.sh 172 passed。尚未套用雲端、未部署 api／Apps Script、未 push。
-- 待店家決定：LINE上線日（留空＝補登規則不生效）、回歸禮資格日是否維持 2026/10/06。
+- npm test 92 passed；starfishlarp tests/run.sh 172 passed（commit 2bc1179 已推）。
+- 雲端：SQL Editor 套用 0025（SHA-256 5cdb54e3…a404 與本機一致）Success；tests/review_context.sql、tests/player_binding.sql 皆 PASS；
+  事後核對 users 6、player_bindings 1、測試殘留 0、calendar_busy 30（真實資料未變）。
+- api 部署 commit 8bc4531（SHA-256 bb5c784f…dbd5，重新載入後雲端與 GitHub 一致）；/health/records ok（52 位玩家）、未登入呼叫 /me/reviews 回 401。
+- 店家已部署新版 Apps Script，並在「設定」新增 LINE上線日＝2026/10/06；線上以錯誤密碼呼叫 line_record 回 INVALID_SECRET（未寫入）。
+- LIFF 頁已發布（push main，Pages 上可見補登按鈕）。
+- 待真人實測：補登一筆（上線日前的場次應 0 點）、店家記錄出席後收到「填寫玩本心得」通知並送出、會員卡點數更新。
 
 ## 尚待實測
 
