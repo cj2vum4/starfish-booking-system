@@ -345,6 +345,16 @@
 - 雲端：0029（SHA-256 1e8ab0ab…8b44）Success、tests/expire_groups.sql PASS；api 部署 commit 273682e（SHA-256 209ba61d…59e3，雲端一致）。
   上線後第一次呼叫即取消 10/4 16:00 那團（audit group.expire 1 筆）；之後的招募中揪團未受影響。
 
+## 點數總覽改由 Supabase 提供讀取（2026-10-06）
+
+- 實測：Apps Script ?action=summary 有快取 1.1 秒、快取過期約 10 秒（每 10 分鐘一次）；榮譽牆的玩本記錄走 Google 發布 CSV（約 1 秒，不經 Apps Script）。
+- api：GET /public/records（任何來源、Cache-Control public max-age=30）回傳 play_record_snapshot 裡完整的公開總覽；
+  副本超過 5 分鐘就先回副本、背景向 Apps Script 更新。POST /hooks/records-changed（X-Play-Record-Secret＝PLAY_RECORD_SECRET）由 Apps Script 重算後呼叫，背景更新副本。
+  副本改存完整 payload（含 quests、rules、interactions 等）；會員卡副本可用 5 分鐘。
+- starfishlarp：play-record-config.js 新增 starfishFetchSummary（4 秒逾時），points.js、reviews.js、play-record.js 先讀副本、失敗再走 JSONP；
+  Apps Script 重算後 notifyBookingSystem_()（需店家授權「連線到外部服務」，失敗不影響記點）。
+- npm test 97 passed；starfishlarp tests/run.sh 174 passed。
+
 ## 尚待實測
 
 - P3：外部瀏覽器登入、session 過期自動重新登入。

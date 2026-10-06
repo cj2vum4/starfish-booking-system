@@ -600,7 +600,7 @@ async function playRecordSummary(settings: Settings, maxAgeMs = 60_000, preferCo
   let result = await fetchRecordSummary(settings, url);
   if (result.reason) result = await fetchRecordSummary(settings, url);
   if (result.body) {
-    const payload = { summary: result.body.summary, rewards: result.body.rewards ?? [] };
+    const payload = result.body;  // the whole public summary: the website reads this copy too
     await rpc(settings, 'put_record_snapshot', { p_payload: payload }).catch(() => undefined);
     const data = shape(payload, new Date(now).toISOString(), false);
     recordCache = { at: now, url, data };
@@ -629,6 +629,32 @@ async function grantReturnBonus(settings: Settings, binding: Binding): Promise<B
   recordCache = null;  // the balance just changed
   await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
   return rpc<Binding>(settings, 'mark_binding_bonus', { p_user_id: binding.user_id, p_status: status });
+}
+
+// The website reads the 玩本記錄 summary from this copy (about 0.2 s) instead of the Apps Script
+// (1 s cached, ~10 s when its cache has expired). The Apps Script pings /hooks/records-changed
+// after each recalculation; copies older than 5 minutes are refreshed after the response.
+const PUBLIC_RECORDS_FRESH_MS = 5 * 60_000;
+let refreshingRecords: Promise<unknown> | null = null;
+function refreshRecordCopy(settings: Settings) {
+  refreshingRecords ??= playRecordSummary(settings, 0).catch(() => undefined).finally(() => { refreshingRecords = null; });
+  return refreshingRecords;
+}
+async function publicRecordsPayload(settings: Settings): Promise<Record<string, unknown>> {
+  const saved = await rpc<{ payload: any; fetched_at: string } | null>(settings, 'get_record_snapshot', {}).catch(() => null);
+  const savedAt = saved ? Date.parse(saved.fetched_at) : NaN;
+  // Copies saved before the whole payload was kept have no updatedAt; read the script for those.
+  if (saved?.payload?.ok && typeof saved.payload.updatedAt === 'string') {
+    if (!(((settings.now ?? Date.now)() - savedAt) < PUBLIC_RECORDS_FRESH_MS)) {
+      const work = refreshRecordCopy(settings);
+      if (settings.background) settings.background(work); else await work;
+    }
+    return saved.payload;
+  }
+  await refreshRecordCopy(settings);
+  const fresh = await rpc<{ payload: any } | null>(settings, 'get_record_snapshot', {}).catch(() => null);
+  if (fresh?.payload?.ok) return fresh.payload;
+  throw new ApiError(503, 'RECORDS_UNAVAILABLE');
 }
 
 const publicRecord = (r: RecordSummary) => ({ name: r.name, agent: r.agent, plays: r.plays, last: r.last });
@@ -952,7 +978,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const recordName = binding?.status === 'approved' ? binding.record_name :
       await rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id }).catch(() => null);
     if (recordName) {
-      const records = await playRecordSummary(settings, 60_000, true);
+      const records = await playRecordSummary(settings, 300_000, true);
       const r = records.summary.find(x => x.name === recordName);
       card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed,
         plays: r.plays, last: r.last, title: r.title ?? '', updatedAt: records.fetchedAt, stale: records.stale,
@@ -1201,6 +1227,29 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
       if (stale) return reply(503, { ok: false, error: lastRecordError, players: summary.length, servedFromCopy: true });
       return reply(200, { ok: true, players: summary.length, rewards: rewards.length });
     } catch { return reply(503, { ok: false, error: lastRecordError || 'RECORDS_UNAVAILABLE' }); }
+  }
+  if (path === '/public/records' && (req.method === 'GET' || req.method === 'OPTIONS')) {
+    const open = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET', Vary: 'Origin' };
+    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: open });
+    if (!settings.supabaseUrl || !settings.serviceKey) return reply(503, { ok: false, error: 'API_NOT_CONFIGURED' });
+    try {
+      return new Response(JSON.stringify(await publicRecordsPayload(settings)), { status: 200, headers: { ...open,
+        'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' } });
+    } catch {
+      return new Response(JSON.stringify({ ok: false, error: 'RECORDS_UNAVAILABLE' }), { status: 503,
+        headers: { ...open, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+    }
+  }
+  if (req.method === 'POST' && path === '/hooks/records-changed') {
+    // Sent by the Apps Script after it recalculates points; it holds BOOKING_SECRET = PLAY_RECORD_SECRET.
+    if (!settings.playRecordSecret || !settings.supabaseUrl || !settings.serviceKey ||
+        !(await sameSecret(req.headers.get('x-play-record-secret') ?? '', settings.playRecordSecret))) {
+      return reply(401, { error: 'INVALID_SECRET' });
+    }
+    recordCache = null;
+    const work = refreshRecordCopy(settings);
+    if (settings.background) settings.background(work); else await work;
+    return reply(202, { ok: true });
   }
   if (req.method === 'GET' && path === '/health/calendar') {
     const [status, data] = await checkCalendar(settings);
