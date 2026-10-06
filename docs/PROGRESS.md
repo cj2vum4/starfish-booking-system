@@ -354,6 +354,7 @@
 - starfishlarp：play-record-config.js 新增 starfishFetchSummary（4 秒逾時），points.js、reviews.js、play-record.js 先讀副本、失敗再走 JSONP；
   Apps Script 重算後 notifyBookingSystem_()（需店家授權「連線到外部服務」，失敗不影響記點）。
 - npm test 97 passed；starfishlarp tests/run.sh 174 passed。
+- api 部署 commit ba79a29（SHA-256 2bc7eac4…c2d0，雲端一致）；/public/records 首次 5.7 秒（補完整副本）、之後約 0.3 秒；/hooks/records-changed 無密碼回 401。
 
 ## 尚待實測
 
