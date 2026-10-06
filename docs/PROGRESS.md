@@ -355,6 +355,8 @@
   Apps Script 重算後 notifyBookingSystem_()（需店家授權「連線到外部服務」，失敗不影響記點）。
 - npm test 97 passed；starfishlarp tests/run.sh 174 passed。
 - api 部署 commit ba79a29（SHA-256 2bc7eac4…c2d0，雲端一致）；/public/records 首次 5.7 秒（補完整副本）、之後約 0.3 秒；/hooks/records-changed 無密碼回 401。
+- 店家已更新 Apps Script 並授權「連線到外部服務」、執行 setupAll：副本 updatedAt 變為 10:41:46Z（與 Apps Script 相同），期間沒有網站讀取觸發背景更新，判定為重算後的通知生效。
+  網站榮譽牆實測：public/records 312 ms，未呼叫 Apps Script。
 
 ## 尚待實測
 

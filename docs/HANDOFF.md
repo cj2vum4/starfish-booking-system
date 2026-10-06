@@ -25,6 +25,8 @@
   ├─ scripts.js（劇本資料唯一來源）──push──► GitHub Action ──► api /hooks/catalog-sync
   ├─ 劇本頁最下方 CTA → LINE OA（2026-10-06 起 booking.js 已移除，不再直接帶劇本進 LIFF）
   └─ GoogleAppsScript_玩本記錄.gs（手動部署到 Apps Script）：玩本記錄、集點、榮譽牆資料、回歸禮
+       └─ 每次重算 → POST api /hooks/records-changed → api 更新 play_record_snapshot
+          網站（points.js／reviews.js／play-record.js）與 LINE 會員卡讀 api GET /public/records（約 0.3 秒），讀不到才走 Apps Script
 ```
 
 ### 兩個 repo
@@ -173,6 +175,8 @@
 維護（`X-Sync-Secret`）：`POST /hooks/catalog-sync`、`/hooks/richmenu-setup`、`/hooks/selftest-race`。
 
 公開健康檢查（只回狀態與代碼）：`GET /health/calendar`、`GET /health/records`。
+
+公開資料：`GET /public/records`（點數總覽副本，任何來源可讀，快取 30 秒）。Apps Script 專用：`POST /hooks/records-changed`（`X-Play-Record-Secret`）。
 
 ---
 
