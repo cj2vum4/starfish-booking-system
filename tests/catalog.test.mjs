@@ -7,12 +7,12 @@ const source = `/* 劇本資料 */
 window.SCRIPTS = [
   {"id":"wangzuo","name":"王座","file":"7人/王座.html","players":7,"playersLabel":"4男3女","time":4.5,"difficulty":2,"types":["神話","陣營"],"poster":"https://i.postimg.cc/x.jpg","youtube":"javascript:alert(1)"},
   {"id":"gaoqian","name":"搞錢","file":"8人以上/搞錢.html","players":10,"playersLabel":"7-10人（可反串）","time":5,"difficulty":1,"types":["歡樂"],"poster":"http://insecure.example/x.jpg","youtube":"https://youtu.be/abc"},
-  {"id":"wuhuang","name":"吾皇在上","file":"8人以上/吾皇在上.html","players":8,"playersLabel":"8-9人","time":6,"difficulty":0,"types":[]}
+  {"id":"wuhuang","name":"吾皇在上","file":"8人以上/吾皇在上.html","players":8,"playersLabel":"8-9人","time":6,"difficulty":0,"types":[],"poster":"img/劇本/吾皇在上/海報 1.webp"}
 ];
 
 (function syncInitialScriptCount() { document.getElementById('filteredCount'); })();`;
 
-test('catalog is parsed as data: ranges, durations, https-only images and videos, page links', () => {
+test('catalog is parsed as data: ranges, durations, https-only or site-relative images, https-only videos, page links', () => {
   const games = parseStarfishCatalog(source, 'https://site.example/');
   assert.equal(games.length, 3);
   assert.deepEqual(games[0], { slug: 'wangzuo', title: '王座', review_key: '王座', min_players: 7, max_players: 7, duration_minutes: 270,
@@ -20,6 +20,12 @@ test('catalog is parsed as data: ranges, durations, https-only images and videos
     source_url: 'https://site.example/7%E4%BA%BA/%E7%8E%8B%E5%BA%A7.html', video_url: null });
   assert.deepEqual([games[1].min_players, games[1].max_players, games[1].image_url, games[1].video_url], [7, 10, null, 'https://youtu.be/abc']);
   assert.deepEqual([games[2].min_players, games[2].max_players, games[2].duration_minutes], [8, 9, 360]);
+  assert.equal(games[2].image_url, 'https://site.example/img/%E5%8A%87%E6%9C%AC/%E5%90%BE%E7%9A%87%E5%9C%A8%E4%B8%8A/%E6%B5%B7%E5%A0%B1%201.webp',
+    'site-relative posters are served from the site');
+  for (const bad of ['../secret.png', '/abs.png', 'javascript:alert(1)', '//evil.example/x.png', 'img/../../x.png']) {
+    const [g] = parseStarfishCatalog(source.replace('img/劇本/吾皇在上/海報 1.webp', bad), 'https://site.example/').slice(2);
+    assert.equal(g.image_url, null, bad);
+  }
 });
 
 test('anything that is not the expected JSON array is refused, never executed', () => {

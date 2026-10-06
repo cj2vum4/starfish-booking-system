@@ -845,6 +845,9 @@ export function parseStarfishCatalog(source: string, siteBase = CATALOG_SITE) {
   try { entries = JSON.parse(match[1]); } catch { throw new ApiError(502, 'CATALOG_UNREADABLE'); }
   if (!Array.isArray(entries) || !entries.length) throw new ApiError(502, 'CATALOG_UNREADABLE');
   const https = (v: unknown) => typeof v === 'string' && /^https:\/\//.test(v) ? v : null;
+  // The site now keeps posters as its own relative paths (img/劇本/...); those are served from siteBase.
+  const sitePath = (v: unknown) => typeof v === 'string' && /^[^/:?#\\][^:?#\\]*$/.test(v) && !v.split('/').includes('..')
+    ? siteBase + v.split('/').map(encodeURIComponent).join('/') : null;
   return entries.map(e => {
     const players = Number(e.players);
     const label = typeof e.playersLabel === 'string' ? e.playersLabel : '';
@@ -857,7 +860,7 @@ export function parseStarfishCatalog(source: string, siteBase = CATALOG_SITE) {
       genres: Array.isArray(e.types) ? e.types.filter(t => typeof t === 'string').slice(0, 20) : [],
       difficulty: e.difficulty == null ? null : String(e.difficulty), players_label: label || null,
       review_key: typeof e.reviewKey === 'string' && e.reviewKey.trim() ? e.reviewKey.trim() : e.name.trim(),
-      image_url: https(e.poster),
+      image_url: https(e.poster) ?? sitePath(e.poster),
       video_url: https(e.youtube),
       source_url: typeof e.file === 'string' ? siteBase + e.file.split('/').map(encodeURIComponent).join('/') : null,
     };
