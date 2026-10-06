@@ -15,7 +15,7 @@ window.SCRIPTS = [
 test('catalog is parsed as data: ranges, durations, https-only images, page links', () => {
   const games = parseStarfishCatalog(source, 'https://site.example/');
   assert.equal(games.length, 3);
-  assert.deepEqual(games[0], { slug: 'wangzuo', title: '王座', min_players: 7, max_players: 7, duration_minutes: 270,
+  assert.deepEqual(games[0], { slug: 'wangzuo', title: '王座', review_key: '王座', min_players: 7, max_players: 7, duration_minutes: 270,
     genres: ['神話', '陣營'], difficulty: '2', players_label: '4男3女', image_url: 'https://i.postimg.cc/x.jpg',
     source_url: 'https://site.example/7%E4%BA%BA/%E7%8E%8B%E5%BA%A7.html' });
   assert.deepEqual([games[1].min_players, games[1].max_players, games[1].image_url], [7, 10, null]);

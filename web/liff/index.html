@@ -39,7 +39,7 @@
   .stepper { display:flex; align-items:center; gap:12px; }
   .stepper button { width:44px; padding:8px; }
   .stepper output { min-width:56px; text-align:center; font-size:20px; font-weight:700; }
-  select, textarea, input[type=text] { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line);
+  select, textarea, input[type=text], input[type=date] { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line);
     background:var(--card); color:var(--fg); font:inherit; }
   textarea { min-height:72px; resize:vertical; }
   .seats { list-style:none; padding:0; margin:0; }
@@ -93,6 +93,12 @@
   const { LIFF_ID, API_BASE } = window.STARFISH_CONFIG;
   const KEY = 'starfish.session';
   const ERRORS = {
+    REVIEW_NOT_FOUND: '找不到你的出席紀錄，請聯絡店家確認。',
+    INVALID_REVIEW: '請填角色、1～5 星評價與 50 字以內心得。',
+    INVALID_RECORD_DATE: '請選有效的遊玩日期，不能填未來日期。',
+    RECORDS_NOT_CONFIGURED: '心得功能尚未啟用，請稍後再試。',
+    RECORD_SUBMIT_FAILED: '未確認寫入成功，請按原按鈕重試；同場不會重複新增。',
+    IDENTITY_MERGE_REQUIRED: '你的新舊玩本名字需要由店家合併，請聯絡海星。',
     SLOT_UNAVAILABLE: '這個時段剛被預約，或店家剛好有事，請改選其他時間。',
     CALENDAR_UNAVAILABLE: '暫時無法確認店家行事曆，請稍後再試。',
     GROUP_FULL: '這團已經滿了。', SOLD_OUT: '這團已經滿了。',
@@ -273,14 +279,57 @@
     render(`<h2>我的遊戲紀錄</h2><p class="muted">在海星玩過 ${history.length} 場。</p>
       ${history.length ? history.map(h => `<div class="card game-card" style="cursor:default">
         ${h.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(h.imageUrl)}">` : '<div class="poster none">海星</div>'}
-        <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div></div></div>`).join('')
+        <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div>
+        ${h.eventId ? `<button data-review="${esc(h.eventId)}">填寫心得</button>` : ''}</div></div>`).join('')
         : '<div class="card muted">還沒有紀錄。玩完第一場後，店家記錄出席就會出現在這裡。</div>'}
       <div class="card stack"><b>填玩本記錄拿點數</b>
-        <div class="muted">心得、角色與點數記在海星網站的玩本記錄，每次請用同一個名字填寫。</div>
-        <button data-site="新增玩本記錄.html">填寫玩本記錄</button>
+        <div class="muted">點場次的「填寫心得」，自動帶入 LINE 身分、日期與劇本。老玩家請先完成綁定。舊場次可用下方按鈕補登。</div>
+        <button id="manualRecord">補登玩本記錄</button>
         <button class="secondary" data-site="榮譽牆.html">看榮譽牆與點數</button></div>
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`);
     bindSiteLinks();
+    document.querySelectorAll('[data-review]').forEach(el => el.onclick = () => go('#/review/' + el.dataset.review));
+    document.getElementById('manualRecord').onclick = () => go('#/record');
+  }
+
+  async function showReview(id) {
+    render('<h2>填寫玩本心得</h2><div class="card">讀取出席紀錄…</div>');
+    let r, games = [];
+    try {
+      if (id) r = (await api('/me/reviews/' + id)).review;
+      else {
+        const [catalog, account] = await Promise.all([api('/games'), api('/me/binding')]);
+        games = catalog.games;
+        r = { title: '補登玩本記錄', date: '', recordName: account.binding?.status === 'approved' ? account.binding.recordName : account.card?.name,
+          displayName: me.displayName };
+      }
+    }
+    catch (e) { if (e.message !== 'reauth') render(`<div class="card error">${esc(message(e.code))}</div>`); return; }
+    render(`<h2>填寫玩本心得</h2><div class="card stack"><b>${esc(r.title)}</b><div>${esc(r.date)}</div>
+      ${!id ? `<label style="display:block">劇本<select id="recordGame">${games.map(g => `<option value="${esc(g.gameId)}">${esc(g.title)}</option>`).join('')}</select></label>
+      <label style="display:block">遊玩日期<input type="date" id="recordDate" required></label>
+      <p class="muted">上線日前遊玩、上線後補填的舊場次，只記錄不給點，也不影響別人的首探；分界日以店家公布為準。</p>` : ''}
+      <div>玩家：${esc(r.recordName || r.displayName || 'LINE 玩家')}</div>
+      ${!r.recordName ? '<p class="muted">第一次玩會用 LINE 名稱建立記錄；同名時會加識別碼。曾填過記錄的老玩家，請先完成綁定再送出。</p><button class="secondary" id="bindFirst">我是老玩家，先綁定</button>' : ''}
+      <label style="display:block">角色<input type="text" id="reviewRole" maxlength="100" autocomplete="off"></label>
+      <label style="display:block">評價<select id="reviewRating"><option value="5">5 星</option><option value="4">4 星</option><option value="3">3 星</option><option value="2">2 星</option><option value="1">1 星</option></select></label>
+      <label style="display:block">心得推薦（50 字以內）<textarea id="reviewComment" maxlength="50"></textarea></label>
+      <div class="muted">請避免劇透。每場只收一份；更正請聯絡店家。點數依集點規則計算。</div>
+      <div id="reviewMsg" role="status"></div><button id="sendReview">送出心得</button></div>
+      <button class="secondary" onclick="location.hash='#/history'">回遊戲紀錄</button>`);
+    const bind = document.getElementById('bindFirst');
+    if (bind) bind.onclick = () => go('#/veteran');
+    document.getElementById('sendReview').onclick = async function () {
+      this.disabled = true;
+      const msg = document.getElementById('reviewMsg');
+      msg.textContent = '送出中，請稍候…';
+      try {
+        const result = await api(id ? '/me/reviews/' + id : '/me/records', { method: 'POST', body: { character: document.getElementById('reviewRole').value,
+          rating: document.getElementById('reviewRating').value, comment: document.getElementById('reviewComment').value,
+          ...(!id ? { gameId: document.getElementById('recordGame').value, date: document.getElementById('recordDate').value } : {}) } });
+        msg.textContent = result.duplicate ? '這場已填寫過，沒有重複新增。' : '心得已儲存，點數已依規則重算。';
+      } catch (e) { msg.textContent = message(e.code); this.disabled = false; }
+    };
   }
 
   // ---- Website pages and the phase-1 pages behind the Rich Menu ------------------------
@@ -366,7 +415,7 @@
     try { data = await api('/me/binding'); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>會員卡・兌換</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
     const { binding, card, rewards } = data;
-    if (binding?.status !== 'approved') {
+    if (binding?.status !== 'approved' && !card) {
       render(`<h2>會員卡・兌換</h2><div class="card stack">
         <b>${binding?.status === 'pending' ? `「${esc(binding.recordName)}」綁定審核中` : '還沒有會員卡'}</b>
         <div class="muted">${binding?.status === 'pending' ? '店家確認後就會開通會員卡，並用 LINE 通知你。'
@@ -389,8 +438,8 @@
         <div><span class="muted">點數餘額</span><div style="font-size:40px;font-weight:700;line-height:1.1">${card.balance}</div></div>
         <div class="muted">累積 ${card.earned}・已兌換 ${card.redeemed}・玩過 ${card.plays} 場${card.last ? '・最後一次 ' + esc(card.last) : ''}</div>
         <div class="muted">點數更新於 ${esc(fmtRange(card.updatedAt))}${card.stale ? '（網站暫時讀不到，顯示上次的資料）' : ''}</div>
-        ${binding.bonusStatus === 'granted' ? '<div class="muted">已含老玩家回歸禮 50 點</div>' : ''}
-        ${binding.bonusStatus === 'none' ? '<div class="muted">老玩家回歸禮處理中，稍後再打開就會看到。</div>' : ''}</div>
+        ${['granted', 'already'].includes(binding?.bonusStatus) ? '<div class="muted">老玩家回歸禮已處理（每名一次）</div>' : ''}
+        ${binding?.bonusStatus === 'none' ? '<div class="muted">老玩家回歸禮處理中，稍後再打開就會看到。</div>' : ''}</div>
       <div class="card muted">要兌換時，到店把這個畫面給店家看，店家會幫你扣點。</div>
       ${tracks.map(t => `<h3>${esc(t)}</h3>${rewards.filter(r => r.track === t).map(r => `<div class="card group-row" style="cursor:default">
         <div><b>${esc(r.name)}</b> <span class="tag ${card.balance >= r.cost ? 'ok' : ''}">${r.cost} 點${card.balance >= r.cost ? '・可兌換' : ''}</span></div>
@@ -857,6 +906,8 @@
     if (h === '#/create') return showCreate();
     if (h === '#/open') return showOpen();
     if (h === '#/history') return showHistory();
+    if (h === '#/record') return showReview(null);
+    if (/^#\/review\/[0-9a-f-]{36}$/.test(h)) return showReview(h.split('/')[2]);
     if (h === '#/guide') return showGuide();
     if (h === '#/veteran') return showVeteran();
     if (h === '#/card') return showCard();
@@ -877,6 +928,8 @@
       // ?game=<scripts.js id> preselects a script in the create flow ("預約這本" on the website).
       const params = new URLSearchParams(location.search);
       const view = params.get('view');
+      const review = params.get('review');
+      if (review && /^[0-9a-f-]{36}$/.test(review)) history.replaceState(null, '', location.pathname + '#/review/' + review);
       if (['open', 'create', 'history', 'guide', 'veteran', 'card', 'bindings'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
       const gameParam = params.get('game');
       if (view === 'create' && gameParam && /^[A-Za-z0-9_-]{1,64}$/.test(gameParam)) pendingGame = gameParam;

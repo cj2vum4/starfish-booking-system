@@ -10,7 +10,7 @@ const summary = [{ name: '阿明', agent: '#007', earned: 120, redeemed: 20, bal
 const rewards = [{ track: '保底', name: '折抵 50 元', cost: 50, note: '直接折抵當場費用', active: true }];
 
 // Fake PostgREST + Apps Script + LINE. `script` decides the grant_bonus answer.
-function backend({ admin = false, binding = null, script = { ok: true, granted: true }, scriptDown = false, now = 0 } = {}) {
+function backend({ admin = false, binding = null, account = null, script = { ok: true, granted: true }, scriptDown = false, now = 0 } = {}) {
   const calls = [];
   let current = binding;
   const fetcher = async (url, opts = {}) => {
@@ -30,6 +30,7 @@ function backend({ admin = false, binding = null, script = { ok: true, granted: 
       case 'resolve_session': return Response.json({ user_id: userId, display_name: 'QA', is_admin: admin });
       case 'bound_record_names': return Response.json(['小華']);
       case 'my_binding': return Response.json(current);
+      case 'my_record_account': return Response.json(account);
       case 'request_binding':
         current = { user_id: userId, record_name: args.p_name.trim(), status: 'pending', bonus_status: 'none' };
         return Response.json(current);
@@ -126,6 +127,15 @@ test('binding notifications link to the right pages', () => {
   assert.match(notificationText({ kind: 'binding_requested', display_name: '小明', record_name: '阿明' }, 'L'), /阿明[\s\S]*view=bindings/);
   assert.match(notificationText({ kind: 'binding_approved', record_name: '阿明' }, 'L'), /50 點[\s\S]*view=card/);
   assert.match(notificationText({ kind: 'binding_rejected', record_name: '阿明' }, 'L'), /view=veteran/);
+});
+
+test('new LINE record accounts get a card without a returning-player bonus', async () => {
+  const { settings, calls } = backend({ account: '阿明', now: 101 });
+  const data = await (await call(settings, '/me/binding')).json();
+  assert.equal(data.binding, null);
+  assert.equal(data.card.name, '阿明');
+  assert.equal(data.card.balance, 100);
+  assert.equal(scriptPosts(calls).length, 0);
 });
 
 test('records health check reports only a reason code', async () => {

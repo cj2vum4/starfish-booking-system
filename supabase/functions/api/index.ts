@@ -34,7 +34,7 @@ class ApiError extends Error {
 
 // Stable RPC error codes → HTTP status. Unknown database errors stay opaque (500).
 const NOT_FOUND = /_NOT_FOUND$/;
-const CONFLICT = new Set(['NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
+const CONFLICT = new Set(['IDENTITY_MERGE_REQUIRED', 'NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
   'SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
   'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE']);
 export function statusForCode(code: string) {
@@ -510,6 +510,8 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
       return `【揪團解散】${p.organizer_name} 解散了 ${when} 的揪團\n詳情：${link}`;
     case 'binding_requested':
       return `【老玩家綁定申請】${p.display_name || 'LINE 玩家'} 申請綁定玩本記錄名字「${p.record_name}」\n審核：https://liff.line.me/${liffId}?view=bindings`;
+    case 'review_reminder':
+      return `【填寫玩本心得】${p.played_date}《${p.game_title}》已記錄出席。\n日期、劇本與身分會自動帶入，填心得依集點規則拿點數：\nhttps://liff.line.me/${liffId}?review=${p.event_id}`;
     case 'binding_approved':
       return `【綁定完成】你的 LINE 已綁定玩本記錄「${p.record_name}」。\n符合資格的老玩家會收到 ${RETURN_BONUS} 點回歸禮，打開會員卡就能看到。\n會員卡：https://liff.line.me/${liffId}?view=card`;
     case 'binding_rejected':
@@ -824,6 +826,7 @@ export function parseStarfishCatalog(source: string, siteBase = CATALOG_SITE) {
       duration_minutes: Math.round(Number(e.time) * 60),
       genres: Array.isArray(e.types) ? e.types.filter(t => typeof t === 'string').slice(0, 20) : [],
       difficulty: e.difficulty == null ? null : String(e.difficulty), players_label: label || null,
+      review_key: typeof e.reviewKey === 'string' && e.reviewKey.trim() ? e.reviewKey.trim() : e.name.trim(),
       image_url: https(e.poster),
       source_url: typeof e.file === 'string' ? siteBase + e.file.split('/').map(encodeURIComponent).join('/') : null,
     };
@@ -914,6 +917,39 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     return [200, { history: camel(await rpc(settings, 'list_my_history', { p_actor: session.user_id })) }];
   }
+
+  const review = /^\/me\/reviews\/([0-9a-f-]{36})$/.exec(path);
+  const manualReview = path === '/me/records' && req.method === 'POST';
+  if (manualReview || (review && UUID.test(review[1]) && ['GET', 'POST'].includes(req.method))) {
+    const { session } = await requireSession(req, settings);
+    const body = req.method === 'POST' ? await readJson(req) : {};
+    if (manualReview && (typeof body.gameId !== 'string' || !UUID.test(body.gameId) ||
+        typeof body.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.date))) throw new ApiError(400, 'INVALID_REVIEW');
+    const context = await rpc<Record<string, any>>(settings, manualReview ? 'my_manual_review_context' : 'my_review_context',
+      manualReview ? { p_actor: session.user_id, p_game_id: body.gameId, p_date: body.date } : { p_actor: session.user_id, p_event_id: review![1] });
+    if (req.method === 'GET') return [200, { review: camel(context) }];
+    const digest = manualReview ? await sha256Hex(`manual|${session.user_id}|${body.gameId}|${body.date}`) : '';
+    const recordId = manualReview ? `${digest.slice(0,8)}-${digest.slice(8,12)}-${digest.slice(12,16)}-${digest.slice(16,20)}-${digest.slice(20,32)}` : review![1];
+    if (typeof body.character !== 'string' || !body.character.trim() || body.character.length > 100 ||
+        !/^[1-5]$/.test(String(body.rating ?? '')) || typeof body.comment !== 'string' || Array.from(body.comment).length > 50)
+      throw new ApiError(400, 'INVALID_REVIEW');
+    if (!settings.playRecordSecret) throw new ApiError(503, 'RECORDS_NOT_CONFIGURED');
+    let result: any;
+    try {
+      const response = await (settings.fetcher ?? fetch)(settings.playRecordUrl ?? PLAY_RECORD_URL, {
+        method: 'POST', signal: AbortSignal.timeout(45000), headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ action: 'line_record', secret: settings.playRecordSecret,
+          actor: session.user_id, event: recordId, name: context.record_name ?? '', displayName: context.display_name ?? '',
+          date: context.date, script: context.review_key ?? context.title, character: body.character.trim(), rating: String(body.rating), comment: body.comment }).toString() });
+      result = response.ok ? await response.json() : null;
+    } catch { result = null; }
+    if (!result?.ok) throw new ApiError(502, result?.error === 'IDENTITY_MERGE_REQUIRED' ? 'IDENTITY_MERGE_REQUIRED' : 'RECORD_SUBMIT_FAILED');
+    if (typeof result.name !== 'string' || !result.name || result.name.length > 60) throw new ApiError(502, 'RECORD_SUBMIT_FAILED');
+    await rpc(settings, 'save_record_account', { p_actor: session.user_id, p_name: result.name });
+    recordCache = null;
+    await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
+    return [200, { saved: true, duplicate: result.duplicate === true, name: result.name }];
+  }
   // ---- 老玩家綁定 and 會員卡 ----
   if (req.method === 'GET' && path === '/records/names') {
     await requireSession(req, settings);
@@ -937,9 +973,11 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       binding = await grantReturnBonus(settings, pending).catch(() => pending);  // retried on the next visit
     }
     let card = null, rewards: Reward[] = [];
-    if (binding?.status === 'approved') {
+    const recordName = binding?.status === 'approved' ? binding.record_name :
+      await rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id }).catch(() => null);
+    if (recordName) {
       const records = await playRecordSummary(settings);
-      const r = records.summary.find(x => x.name === binding!.record_name);
+      const r = records.summary.find(x => x.name === recordName);
       card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed,
         plays: r.plays, last: r.last, title: r.title ?? '', updatedAt: records.fetchedAt, stale: records.stale } : null;
       rewards = records.rewards.map(x => ({ track: x.track, name: x.name, cost: x.cost, note: x.note }));

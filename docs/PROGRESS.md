@@ -280,6 +280,27 @@
 - 待實測：真人老玩家申請 → 店家核准 → 會員卡多 50 點。
 - 下一階段（第 3 階段）：LINE 版玩本記錄（身分取自 LINE、場次結束後通知填寫、日期劇本帶入）與補登規則（上線前的遊玩日期只記錄不給點、不改首探）。
 
+## 進度盤點更新（2026-10-05）
+
+- 店家本次回報「老玩家綁定 LINE OA 已測試成功」：綁定本身改列真人驗收通過，取代上方第 2 階段的綁定待實測狀態。
+- 本次回報未逐項確認回歸禮 50 點入帳、會員卡餘額、老玩家選單切換、綁定申請／結果通知；這些項目仍保留待確認，不以綁定成功推定全部通過。
+- 依聊天「Update aggressive channel option」（2026-10-05）完成紀錄：LINE Login channel 2011840025 的 Add friend option 已為 On (aggressive)；Linked OA 原本空白，已設為 @825gdzws／海星劇本殺並儲存，先前相關待設定項目結案。
+- 核心預約、日曆整合、缺人場次、新舊玩家選單、會員卡、店家後台與報表均已有上線紀錄；第 3 階段 LINE 版玩本記錄與補登規則仍待實作。
+- 後續重點：補齊真人通知／登入驗收、決定過期揪團處理、確認第 3 階段上線日與回歸禮資格日、更新玩家說明，再進行 20–50 人／10 團／5 場成團的試營運。
+- 本次僅盤點並更新文件，未重新查詢正式資料庫、執行測試或部署；既有使用者與綁定數量是先前查詢快照，不代表本次綁定後的即時數字。
+
+## 第 3 階段：LINE 版玩本記錄與補登規則（程式完成，待上雲，2026-10-06）
+
+- 0025 review_context：games.review_key（對應網站劇本名）、line_record_accounts（LINE 帳號 ↔ 玩本歸戶名，一名一帳號）、
+  my_review_context（以出席紀錄為準，日期、劇本、身分不由前端提供）、my_manual_review_context（補登，不可填未來日期）、
+  記錄出席後觸發「填寫玩本心得」通知（自測帳號除外）；已綁定玩本名的帳號不能再核准另一個名字（IDENTITY_MERGE_REQUIRED，由店家合併）。
+- API：GET|POST /me/reviews/:eventId、POST /me/records（補登）；送 Apps Script action=line_record，同一場重送不重複寫入。
+- LIFF：遊戲紀錄每場有「填寫心得」，另有「補登玩本記錄」；通知連結 ?review=<eventId>。
+- starfishlarp Apps Script：submitLineRecord_（密碼、LockService、「LINE身分」分頁、同名新玩家加識別碼不繼承老玩家點數）、
+  設定「LINE上線日」：遊玩日在上線日前、上線後才填 → 0 點、不佔首探／新手好運／介紹人／互動點數。
+- npm test 92 passed；starfishlarp tests/run.sh 172 passed。尚未套用雲端、未部署 api／Apps Script、未 push。
+- 待店家決定：LINE上線日（留空＝補登規則不生效）、回歸禮資格日是否維持 2026/10/06。
+
 ## 尚待實測
 
 - P3：外部瀏覽器登入、session 過期自動重新登入。
