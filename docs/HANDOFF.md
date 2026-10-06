@@ -117,7 +117,7 @@
    - 保留：`line_record_accounts`（已有 1 筆由舊流程建立的歸戶名，會員卡會讀）。Apps Script 已移除 `line_record`；試算表的「LINE身分」分頁是舊流程留下的，可保留或刪除。
    - 會員卡：有存檔副本就先顯示並標「點數更新中」，背景再讀 Apps Script（Apps Script 讀取實測 2–60 秒）。
 4. LIFF 加好友設定已完成：依 2026-10-05 聊天「Update aggressive channel option」紀錄，Add friend option 為 On (aggressive)，Linked OA 已儲存為 @825gdzws；不再列為待設定。
-5. P12 試營運：20–50 位真人、10 團、5 場成團；招募文案在 `docs/PLAYER_GUIDE.md`（需補上老玩家綁定與會員卡的說明）。
+5. P12 試營運：20–50 位真人、10 團、5 場成團；招募文案與說明在 `docs/PLAYER_GUIDE.md`（2026-10-06 已補上新舊選單、玩後問卷、7 天補登、老玩家綁定與會員卡、過期揪團）。
 6. 已知限制：沒有每位使用者的請求頻率限制；Supabase CLI migration history 未同步（見第 5 節）。
 
 ---
