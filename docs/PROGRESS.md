@@ -332,6 +332,7 @@
   0028 移除 review_reminder 觸發器；老玩家選單第 3 格「玩本記錄」改為「玩後問卷・填心得拿點數」，直接開網站問卷（新玩家選單不變）。
 - 補登規則改為：LINE上線日後送出、送出日比遊玩日晚超過「補登寬限天數」（預設 7 個日曆天）才只記錄不給點。
   starfishlarp 一併移除 line_record；tests/run.sh 169 passed。npm test 91 passed。
+- api 部署 commit 8c35e98（SHA-256 8b942ade…c5bc，雲端一致）；/hooks/richmenu-setup：新玩家 richmenu-2d474a9c…、老玩家 richmenu-3261c554…，連結 1 位老玩家，取代舊選單 2 個。
 
 ## 尚待實測
 
