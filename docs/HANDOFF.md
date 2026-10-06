@@ -51,7 +51,7 @@
 | Google 服務帳戶 | `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（專案 `larpyoutube`） |
 | 玩本記錄 Apps Script | `https://script.google.com/macros/s/AKfycbz2jFZhU9tSm-WvZaC_lLSovG2zy3Up2-HNlK6sO6xyfnFDQu8DxRUIKmhDBg1AHMDsDg/exec` |
 | 玩本記錄試算表 | `1hjdPJQo5Z6nVICZsvljihSXoZAJ32DpiAEQikCaog-8` |
-| 圖文選單 | 新玩家 `richmenu-2d474a9cf7637504e898ec095ceb3466`（預設）；老玩家 `richmenu-3261c55446fc4cd8ac622f8d3abea33b`（2026-10-06 重建） |
+| 圖文選單 | 新玩家 `richmenu-c3b5b2e5a18ccb4f3f35cdadb858d217`（預設）；老玩家 `richmenu-2f2565347ba9fde8a7184f4a53a38072`（2026-10-06 第二次重建） |
 
 ---
 

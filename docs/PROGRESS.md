@@ -370,6 +370,8 @@
 - 已知限制：玩本記錄的「別名」不在公開總覽裡，新玩家若取到某位老玩家的別名，記錄會被算到那位老玩家（機率低）。
 - 店家現場 QR code 若想自動帶名字，可改用 https://liff.line.me/2011840025-6cuU9x8P?view=survey（需在 LINE 開啟）。
 - npm test 101 passed；starfishlarp tests/run.sh 174 passed。
+- 雲端：0030（SHA-256 494fe570…4925）Success、tests/claim_record_name.sql PASS；api 部署 commit 09792a7（SHA-256 c0e1f17e…b071，雲端一致）；
+  LIFF 已發布；/hooks/richmenu-setup：新玩家 richmenu-c3b5b2e5…、老玩家 richmenu-2f256534…，連結 2 位老玩家。網站問卷 ?name= 實測帶入並唯讀。
 
 ## 真人實測回報（2026-10-06）
 
