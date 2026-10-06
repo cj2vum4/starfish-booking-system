@@ -540,7 +540,8 @@
       <div class="card"><h3 style="margin-top:0">2. 選劇本</h3>
         <div class="chips" id="tags"></div><p class="muted" id="gameCount"></p><div id="games" class="stack"></div></div>
       <div class="card" id="whenCard"><h3 style="margin-top:0">3. 選時間</h3><div id="when"></div></div>
-      <div class="card"><h3 style="margin-top:0">4. 備註</h3>
+      <div class="card" id="venueCard"><h3 style="margin-top:0">4. 在哪裡玩？</h3>${venuePicker('南港')}</div>
+      <div class="card"><h3 style="margin-top:0">5. 備註</h3>
         <textarea id="note" maxlength="2000" placeholder="例如：有人第一次玩、想要不恐怖的"></textarea>
         <h3>誰可以加入</h3><div class="chips">
           <button class="chip" aria-pressed="true" data-vis="private">只有收到連結的人</button>
@@ -549,6 +550,7 @@
         <div id="err" class="error" hidden></div><button class="secondary" onclick="history.back()">返回</button></div>`);
 
     const $ = id => document.getElementById(id);
+    const chosenVenue = bindVenuePicker($('venueCard'));
     const game = () => games.find(g => g.gameId === state.gameId);
     const minutes = () => game()?.durationMinutes || 240;
     const tagMatch = g => !state.tag || TAG_FILTERS.find(([t]) => t === state.tag)[1].some(t => (g.genres || []).includes(t));
@@ -630,7 +632,7 @@
       try {
         const group = await api('/groups', { method: 'POST', body: { requestId, startsAt: state.start, capacity: state.capacity,
           gameId: state.gameId || null, preferences: !state.gameId && state.tag ? [state.tag] : [], note: $('note').value,
-          visibility: state.visibility } });
+          visibility: state.visibility, venue: chosenVenue() } });
         store.set('starfish.createRequest', null);
         go('#/group/' + group.groupId);
       } catch (e) {
@@ -646,8 +648,62 @@
   }
 
   // ---- Group page -------------------------------------------------------------------
+  // 場地：開團時主揪選，店家確認成團時沿用。分享訊息裡的地址與導航連結。
+  const VENUE_INFO = {
+    '南港': { label: '南港', address: '南港車站附近', maps: [['', 'https://maps.app.goo.gl/T25k6E3NWEWTWQbd9?g_st=ac']] },
+    '北車': { label: '台北車站', address: '台北車站附近', maps: [['', 'https://maps.app.goo.gl/jJ18RYbXC3ySM32B7']] },
+    '新竹交大': { label: '新竹交大', address: '新竹交大工五 117', maps: [
+      ['活動地點導航', 'https://maps.app.goo.gl/qJYEYwD2nj6c8Sb98?g_st=ac'],
+      ['機車停車導航', 'https://maps.app.goo.gl/Sr9ixti8pptGL5xZ6?g_st=ac'],
+      ['汽車停車導航', 'https://goo.gl/maps/dmc6UTfGwkmwS1Na7?g_st=ac']] },
+  };
+  const venueLabel = v => VENUE_INFO[v]?.label || v;
+  function venuePicker(current) {
+    const known = Object.keys(VENUE_INFO), other = !!current && !known.includes(current);
+    return `<div class="chips">${known.map(v =>
+        `<button class="chip" aria-pressed="${v === current}" data-venue="${esc(v)}">${esc(VENUE_INFO[v].label)}</button>`).join('')}
+        <button class="chip" aria-pressed="${other}" data-venue="">自選地點</button></div>
+      <input type="text" data-venue-other maxlength="60" placeholder="輸入地點名稱或地址" value="${other ? esc(current) : ''}" ${other ? '' : 'hidden'}>`;
+  }
+  // Wires a venuePicker inside root; returns a getter for the chosen venue ('' when 自選 is empty).
+  function bindVenuePicker(root) {
+    const other = root.querySelector('[data-venue-other]');
+    let chosen = root.querySelector('[data-venue][aria-pressed="true"]')?.dataset.venue ?? '南港';
+    root.querySelectorAll('[data-venue]').forEach(b => b.onclick = () => {
+      chosen = b.dataset.venue;
+      root.querySelectorAll('[data-venue]').forEach(x => x.setAttribute('aria-pressed', x === b));
+      other.hidden = chosen !== ''; if (!other.hidden) other.focus();
+    });
+    return () => chosen || other.value.trim();
+  }
+  function inviteText(g, url) {
+    const venue = g.event?.venue || g.venue || '南港', info = VENUE_INFO[venue];
+    const parts = new Intl.DateTimeFormat('en-CA', { ...tz, month: '2-digit', day: '2-digit' }).formatToParts(new Date(g.startsAt));
+    const part = t => parts.find(p => p.type === t).value;
+    const cents = g.event?.priceCents ?? g.gamePriceCents ?? DEFAULT_PRICE * 100;
+    const lines = [`日期：${part('month')}/${part('day')}`, `時間：${fmtTime(g.startsAt)}`,
+      `劇本：${g.gameTitle || '店家推薦' + (g.preferences?.length ? '（' + g.preferences.join('、') + '）' : '')}`,
+      `價格：${Math.round(cents / 100)}$`, `人數：${g.gamePlayersLabel || g.capacity + '人'}`,
+      `地址：${info ? info.address : venue}`];
+    if (info) info.maps.forEach(([label, link]) => { if (label) lines.push(label); lines.push(link); });
+    const readable = u => { try { return decodeURI(u); } catch { return u; } };
+    if (g.gameSourceUrl) lines.push('劇本介紹', readable(g.gameSourceUrl));
+    if (g.gameVideoUrl) lines.push('劇本影片介紹', g.gameVideoUrl);
+    lines.push('群組連結', url);
+    return lines.join('\n');
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch {}
+    const box = document.createElement('textarea');
+    box.value = text; box.setAttribute('readonly', ''); box.style.position = 'fixed'; box.style.opacity = '0';
+    document.body.appendChild(box); box.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch {}
+    box.remove();
+    return ok;
+  }
+
   async function share(text, url) {
-    const full = `${text}\n${url}`;
+    const full = url ? `${text}\n${url}` : text;
     if (liff.isApiAvailable('shareTargetPicker')) {
       try { await liff.shareTargetPicker([{ type: 'text', text: full }]); return; } catch {}
     }
@@ -665,6 +721,7 @@
       : { recruiting: '招募中', pending_confirmation: '等待店家確認', confirmed: '已成團', cancelled: '已解散' }[g.status] || g.status;
     render(`<div class="card stack"><div class="big">${esc(fmtRange(g.startsAt, g.endsAt))}</div>
         <div class="muted">${esc(g.gameTitle || '劇本待店家推薦')}${g.preferences?.length ? '・' + esc(g.preferences.join('、')) : ''}</div>
+        <div class="muted">地點：${esc(venueLabel(g.event?.venue || g.venue || '南港'))}</div>
         <div><span class="tag ok">${esc(statusText)}</span> <span class="tag">${g.filled}/${g.capacity} 人${open > 0 && g.status === 'recruiting' ? `・還缺 ${open} 人` : ''}</span>
         ${g.status === 'recruiting' ? `<span class="tag">${g.visibility === 'public' ? '公開招募' : '憑連結加入'}</span>` : ''}</div>
         ${g.note ? `<div class="muted">備註：${esc(g.note)}</div>` : ''}
@@ -692,7 +749,9 @@
     }
     if (g.isOrganizer && g.status === 'recruiting') {
       const toPublic = g.visibility !== 'public';
-      actions.innerHTML = `${open > 0 ? '<button id="invite">分享邀請連結到 LINE</button><button class="secondary" id="reserve">幫朋友保留位子</button>' : ''}
+      actions.innerHTML = `${open > 0 ? '<button id="invite">分享到 LINE</button><button class="secondary" id="copyInvite">複製邀請訊息</button><button class="secondary" id="reserve">幫朋友保留位子</button>' : ''}
+        <button class="secondary" id="venueEdit">更改場地</button>
+        <div class="card stack" id="venueBox" hidden>${venuePicker(g.venue || '南港')}<button id="venueSave">儲存場地</button></div>
         <button class="secondary" id="visibility">${toPublic ? '改為公開招募（出現在缺人場次）' : '改為只限收到連結的人'}</button>
         <button class="danger" id="cancel">解散揪團</button>`;
       document.getElementById('visibility').onclick = async e => {
@@ -705,10 +764,28 @@
       document.getElementById('invite')?.addEventListener('click', async e => {
         busy(e.target, true);
         try { const { token } = await api(`/groups/${id}/share-link`, { method: 'POST' });
-          await share(`${me.displayName || '我'}揪團玩劇本殺！\n${fmtRange(g.startsAt, g.endsAt)}，還缺 ${open} 人，點連結加入：`, inviteUrl(token)); }
+          await share(inviteText(g, inviteUrl(token))); }
         catch (x) { if (x.message !== 'reauth') err(message(x.code)); }
         busy(e.target, false);
       });
+      document.getElementById('copyInvite')?.addEventListener('click', async e => {
+        const btn = e.target;
+        busy(btn, true);
+        try { const { token } = await api(`/groups/${id}/share-link`, { method: 'POST' });
+          const ok = await copyText(inviteText(g, inviteUrl(token)));
+          busy(btn, false);
+          btn.textContent = ok ? '已複製，貼到群組就好' : '複製失敗，請改用「分享到 LINE」';
+          setTimeout(() => { btn.textContent = '複製邀請訊息'; }, 2500); }
+        catch (x) { busy(btn, false); if (x.message !== 'reauth') err(message(x.code)); }
+      });
+      const venueBox = document.getElementById('venueBox'), chosenVenue = bindVenuePicker(venueBox);
+      document.getElementById('venueEdit').onclick = () => { venueBox.hidden = !venueBox.hidden; };
+      document.getElementById('venueSave').onclick = async e => {
+        if (!chosenVenue()) return err(message('INVALID_VENUE'));
+        busy(e.target, true);
+        try { await api(`/groups/${id}/venue`, { method: 'POST', body: { venue: chosenVenue() } }); showGroup(id); }
+        catch (x) { if (x.message !== 'reauth') { err(message(x.code)); busy(e.target, false); } }
+      };
       document.getElementById('reserve')?.addEventListener('click', async e => {
         const name = prompt('幫誰保留位子？輸入朋友的名字（之後他用連結認領）');
         if (!name || !name.trim()) return;
@@ -810,13 +887,14 @@
     const fitting = games.filter(x => x.minPlayers <= g.capacity && g.capacity <= x.maxPlayers)
       .sort((a, b) => (playedBy[a.gameId]?.length ?? 0) - (playedBy[b.gameId]?.length ?? 0));
     const playedNote = x => playedBy[x.gameId]?.length ? `・團內 ${playedBy[x.gameId].length} 人玩過` : '';
+    const gv = g.venue || '南港';
     box.innerHTML = `<div class="card stack"><h3 style="margin-top:0">店家確認成團</h3>
       ${g.filled < g.capacity ? `<div class="muted">目前 ${g.filled}/${g.capacity} 人。成團後邀請連結就不能再加入新成員。</div>` : ''}
       <label class="muted">劇本</label><select id="cGame"><option value="">請選擇</option>${fitting.map(x =>
         `<option value="${esc(x.gameId)}" ${x.gameId === g.gameId ? 'selected' : ''}>${esc(x.title)}（${esc(hours(x.durationMinutes))}${esc(playedNote(x))}）</option>`).join('')}</select>
       <label class="muted">每人價格（元）</label><input type="text" id="cPrice" inputmode="numeric" value="${DEFAULT_PRICE}">
-      <label class="muted">場地</label><select id="cVenue">${VENUES.map(v => `<option>${esc(v)}</option>`).join('')}<option value="">自選場地</option></select>
-      <input type="text" id="cVenueOther" maxlength="200" placeholder="輸入場地名稱或地址" hidden>
+      <label class="muted">場地（主揪選的：${esc(venueLabel(gv))}）</label><select id="cVenue">${VENUES.map(v => `<option ${v === gv ? 'selected' : ''}>${esc(v)}</option>`).join('')}<option value="" ${VENUES.includes(gv) ? '' : 'selected'}>自選場地</option></select>
+      <input type="text" id="cVenueOther" maxlength="200" placeholder="輸入場地名稱或地址" value="${VENUES.includes(gv) ? '' : esc(gv)}" ${VENUES.includes(gv) ? 'hidden' : ''}>
       <label class="muted">DM</label><input type="text" id="cDm" value="${esc(DEFAULT_DM)}" maxlength="100">
       <div id="cHint" class="muted"></div>
       <button id="cGo">確認成團並寫入 Google 日曆</button><div id="cErr" class="error" hidden></div></div>`;

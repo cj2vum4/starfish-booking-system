@@ -5,20 +5,20 @@ import { handleApi, parseStarfishCatalog, sha256Hex } from '../supabase/function
 // Shape of cj2vum4/starfishlarp scripts.js (trimmed to three entries).
 const source = `/* 劇本資料 */
 window.SCRIPTS = [
-  {"id":"wangzuo","name":"王座","file":"7人/王座.html","players":7,"playersLabel":"4男3女","time":4.5,"difficulty":2,"types":["神話","陣營"],"poster":"https://i.postimg.cc/x.jpg"},
-  {"id":"gaoqian","name":"搞錢","file":"8人以上/搞錢.html","players":10,"playersLabel":"7-10人（可反串）","time":5,"difficulty":1,"types":["歡樂"],"poster":"http://insecure.example/x.jpg"},
+  {"id":"wangzuo","name":"王座","file":"7人/王座.html","players":7,"playersLabel":"4男3女","time":4.5,"difficulty":2,"types":["神話","陣營"],"poster":"https://i.postimg.cc/x.jpg","youtube":"javascript:alert(1)"},
+  {"id":"gaoqian","name":"搞錢","file":"8人以上/搞錢.html","players":10,"playersLabel":"7-10人（可反串）","time":5,"difficulty":1,"types":["歡樂"],"poster":"http://insecure.example/x.jpg","youtube":"https://youtu.be/abc"},
   {"id":"wuhuang","name":"吾皇在上","file":"8人以上/吾皇在上.html","players":8,"playersLabel":"8-9人","time":6,"difficulty":0,"types":[]}
 ];
 
 (function syncInitialScriptCount() { document.getElementById('filteredCount'); })();`;
 
-test('catalog is parsed as data: ranges, durations, https-only images, page links', () => {
+test('catalog is parsed as data: ranges, durations, https-only images and videos, page links', () => {
   const games = parseStarfishCatalog(source, 'https://site.example/');
   assert.equal(games.length, 3);
   assert.deepEqual(games[0], { slug: 'wangzuo', title: '王座', review_key: '王座', min_players: 7, max_players: 7, duration_minutes: 270,
     genres: ['神話', '陣營'], difficulty: '2', players_label: '4男3女', image_url: 'https://i.postimg.cc/x.jpg',
-    source_url: 'https://site.example/7%E4%BA%BA/%E7%8E%8B%E5%BA%A7.html' });
-  assert.deepEqual([games[1].min_players, games[1].max_players, games[1].image_url], [7, 10, null]);
+    source_url: 'https://site.example/7%E4%BA%BA/%E7%8E%8B%E5%BA%A7.html', video_url: null });
+  assert.deepEqual([games[1].min_players, games[1].max_players, games[1].image_url, games[1].video_url], [7, 10, null, 'https://youtu.be/abc']);
   assert.deepEqual([games[2].min_players, games[2].max_players, games[2].duration_minutes], [8, 9, 360]);
 });
 

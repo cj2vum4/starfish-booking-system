@@ -147,3 +147,16 @@ test('players can book up to 6 months ahead, month by month; later dates are ref
   assert.equal((await far.json()).error, 'TOO_FAR_AHEAD');
   assert.ok(!rpcNames(calls).includes('create_group'));
 });
+
+test('the organizer picks the venue when opening a group; blank or overlong venues are refused', async () => {
+  const sent = async venue => {
+    const { calls, settings } = backend();
+    const res = await handleApi(post('/groups', { ...group, ...(venue === undefined ? {} : { venue }) }), settings);
+    const call = calls.find(c => c.url.endsWith('/create_group'));
+    return [res.status, call && JSON.parse(call.body).p_venue];
+  };
+  assert.deepEqual(await sent(undefined), [201, '南港']);
+  assert.deepEqual(await sent(' 新竹交大 '), [201, '新竹交大']);
+  assert.deepEqual(await sent('   '), [400, undefined]);
+  assert.deepEqual(await sent('地'.repeat(61)), [400, undefined]);
+});

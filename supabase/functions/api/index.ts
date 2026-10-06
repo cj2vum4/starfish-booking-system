@@ -858,6 +858,7 @@ export function parseStarfishCatalog(source: string, siteBase = CATALOG_SITE) {
       difficulty: e.difficulty == null ? null : String(e.difficulty), players_label: label || null,
       review_key: typeof e.reviewKey === 'string' && e.reviewKey.trim() ? e.reviewKey.trim() : e.name.trim(),
       image_url: https(e.poster),
+      video_url: https(e.youtube),
       source_url: typeof e.file === 'string' ? siteBase + e.file.split('/').map(encodeURIComponent).join('/') : null,
     };
   });
@@ -881,6 +882,12 @@ const publicUser = (s: { user_id: string; display_name: string | null; is_admin:
   ({ id: s.user_id, displayName: s.display_name, isAdmin: s.is_admin });
 
 const BOOKING_HORIZON_MS = 183 * 86400000;
+// 場地：南港／北車／新竹交大，或主揪自己寫的地點（1–60 字）。沒給就是南港。
+function venueOf(value: unknown) {
+  if (value == null) return '南港';
+  if (typeof value !== 'string' || !value.trim() || Array.from(value.trim()).length > 60) throw new ApiError(400, 'INVALID_VENUE');
+  return value.trim();
+}
 
 // Groups past their start without being confirmed are cancelled before anyone reads or joins them.
 const GROUP_PATHS = /^\/(groups|me\/groups|admin\/groups|invites)(\/|$)/;
@@ -942,7 +949,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       p_actor: session.user_id, p_request_id: body.requestId, p_starts_at: startsAt.toISOString(),
       p_capacity: body.capacity, p_game_id: body.gameId ?? null, p_preferences: preferences,
       p_note: typeof body.note === 'string' ? body.note : '',
-      p_visibility: body.visibility === 'public' ? 'public' : 'private' });
+      p_visibility: body.visibility === 'public' ? 'public' : 'private', p_venue: venueOf(body.venue) });
     return [result.created ? 201 : 200, { groupId: result.group_id, startsAt: result.starts_at, endsAt: result.ends_at }];
   }
   if (req.method === 'GET' && path === '/games') {
@@ -1194,7 +1201,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (name === 'claim_invite') await requireFriend(settings, session.user_id);
     return [200, camel(await rpc(settings, name, { p_actor: session.user_id, p_token_hash: hash }))];
   }
-  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel|visibility|played))?$/.exec(path);
+  const groupRoute = /^\/groups\/([0-9a-f-]{36})(?:\/(share-link|reserve|join|cancel|visibility|venue|played))?$/.exec(path);
   if (groupRoute && UUID.test(groupRoute[1])) {
     const { session } = await requireSession(req, settings);
     const [, groupId, action] = groupRoute;
@@ -1221,6 +1228,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       return [200, camel(await rpc(settings, 'join_group', actor))];
     }
     if (req.method === 'POST' && action === 'cancel') return [200, camel(await rpc(settings, 'cancel_group', actor))];
+    if (req.method === 'POST' && action === 'venue') {
+      const { venue } = await readJson(req);
+      return [200, camel(await rpc(settings, 'set_group_venue', { ...actor, p_venue: venueOf(venue) }))];
+    }
     if (req.method === 'POST' && action === 'visibility') {
       const { visibility } = await readJson(req);
       if (visibility !== 'public' && visibility !== 'private') throw new ApiError(400, 'INVALID_VISIBILITY');

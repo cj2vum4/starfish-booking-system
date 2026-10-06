@@ -358,6 +358,17 @@
 - 店家已更新 Apps Script 並授權「連線到外部服務」、執行 setupAll：副本 updatedAt 變為 10:41:46Z（與 Apps Script 相同），期間沒有網站讀取觸發背景更新，判定為重算後的通知生效。
   網站榮譽牆實測：public/records 312 ms，未呼叫 Apps Script。
 
+## 開團選場地、分享／複製揪團訊息（2026-10-07）
+
+- 店家需求：分享到群組時顯示日期、時間、劇本、價格、人數（男女）、地址＋導航、劇本介紹、劇本影片、群組連結；要能只複製。
+  店家定案：場地由主揪開團時選（南港／北車／新竹交大／自選），成團前可改，店家確認成團時沿用。
+- 0031：groups.venue（預設南港）、games.video_url（劇本同步帶 scripts.js 的 youtube，只收 https）、create_group 加 p_venue、
+  set_group_venue（主揪、成團前）、_sf_group_summary 加場地與劇本人數標示／介紹／影片／價格。
+- api：POST /groups 收 venue（1–60 字，預設南港）、POST /groups/:id/venue。
+- LIFF：開團第 4 步「在哪裡玩？」；揪團頁顯示地點、主揪可「更改場地」；「分享到 LINE」「複製邀請訊息」用新格式；
+  店家確認成團時預選主揪的場地。地址與導航：南港車站附近、台北車站附近、新竹交大工五 117（活動地點／機車停車／汽車停車三個導航）。
+- npm test 102 passed（含 tests/group_venue.sql）。
+
 ## 預約範圍 6 個月、LINE 玩後問卷帶名字與新玩家自動綁定（2026-10-06）
 
 - 店家回報：玩家無法預約 2 個月後。原因：LIFF 只抓 21 天時段（api 每次最多 31 天）。
