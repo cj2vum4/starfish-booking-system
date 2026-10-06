@@ -333,6 +333,8 @@
 - 補登規則改為：LINE上線日後送出、送出日比遊玩日晚超過「補登寬限天數」（預設 7 個日曆天）才只記錄不給點。
   starfishlarp 一併移除 line_record；tests/run.sh 169 passed。npm test 91 passed。
 - api 部署 commit 8c35e98（SHA-256 8b942ade…c5bc，雲端一致）；/hooks/richmenu-setup：新玩家 richmenu-2d474a9c…、老玩家 richmenu-3261c554…，連結 1 位老玩家，取代舊選單 2 個。
+- 雲端：0027、0028 已套用（店家在 SQL Editor 確認執行）；review_reminder 觸發器 0、tests/review_context.sql PASS、users 6。
+- 店家已部署新版 Apps Script：line_record 不再存在（送出被當一般問卷、缺名字擋下未寫入），點數總覽正常。
 
 ## 尚待實測
 
