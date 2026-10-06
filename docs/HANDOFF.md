@@ -79,7 +79,7 @@
 ### 已上線並驗收
 - 好友入庫（webhook）、LIFF 登入、伺服器 session。
 - 開團（人數 → 劇本〔依人數與標籤篩選、玩過的排後〕→ 時間 → 備註／公開或私人）、邀請連結、幫朋友保留與認領、加入、退出、解散。
-- 可預約時段：週一二四五 19–24、週六 9–24、週日 13–24（台北）；同一時間只能一場；扣除店家 Google 日曆與 Outlook .ics 忙碌；讀不到日曆一律不給時段。
+- 可預約時段：週一二四五 19–24、週六 9–24、週日 13–24（台北），最遠 6 個月；同一時間只能一場；扣除店家 Google 日曆與 Outlook .ics 忙碌；讀不到日曆一律不給時段。
 - 店家確認成團（價格預設 400、場地下拉：南港／北車／新竹交大／自選、DM 預設海星）並寫入 Google 日曆；取消已成團場次；記錄出席 → 玩家遊戲紀錄。
 - LINE 通知（新揪團、有人加入、滿團〔全員〕、成團、取消、解散、綁定申請／結果），outbox＋重試；只送得到 OA 好友。
 - 開團／加入／認領必須是 OA 好友（前端面板＋後端即時問 LINE）。
@@ -127,7 +127,7 @@
 
 ### 資料庫 migration
 - **一律新增檔案**（`supabase/migrations/YYYYMMDDNNNN_name.sql`，以 `begin; … commit;` 包住），不改已套用的檔案。
-- 目前全部 28 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
+- 目前全部 30 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）
@@ -144,7 +144,7 @@
 ### LIFF 頁
 - `web/liff/index.html` 單頁應用，所有輸出經 `esc()`。push main 即由 GitHub Actions 發布。
 - `tests/liff.test.mjs` 檢查頁面腳本可解析、只載入 LINE SDK 與 config.js、每個圖文選單 `?view=` 都有對應路由。
-- Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings`、`?game=<scripts.js id>`、`?invite=`、`?group=`。
+- Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings|survey`、`?game=<scripts.js id>`、`?invite=`、`?group=`。
 
 ### 圖文選單
 - 圖片：`python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png` → `richmenu-new.jpg`、`richmenu-member.jpg`（2500×1686）。

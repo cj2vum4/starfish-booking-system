@@ -130,3 +130,20 @@ test('listing reuses a fresh sync of a covering window; creating a group always 
   await handleApi(post('/groups', group), settings);
   assert.equal(freebusy(), first + 3, 'every reservation re-checks the calendar');
 });
+
+test('players can book up to 6 months ahead, month by month; later dates are refused', async () => {
+  const { calls, settings } = backend();
+  const inRange = await handleApi(get('/slots?from=2027-03-01&days=31'), settings);
+  assert.equal(inRange.status, 200);
+  const listed = calls.filter(c => c.url.endsWith('/list_available_starts')).map(c => JSON.parse(c.body));
+  assert.equal(listed.length, 1, 'five months ahead is listed');
+  assert.ok(Date.parse(listed[0].p_to) <= now + 183 * 86400000, 'listing never goes past 6 months');
+  calls.length = 0;
+  const beyond = await handleApi(get('/slots?from=2027-05-01&days=31'), settings);
+  assert.deepEqual((await beyond.json()).slots, []);
+  assert.ok(!rpcNames(calls).includes('list_available_starts'));
+  const far = await handleApi(post('/groups', { ...group, startsAt: '2027-05-01T04:00:00Z' }), settings);
+  assert.equal(far.status, 400);
+  assert.equal((await far.json()).error, 'TOO_FAR_AHEAD');
+  assert.ok(!rpcNames(calls).includes('create_group'));
+});

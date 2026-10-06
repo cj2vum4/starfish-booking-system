@@ -34,7 +34,7 @@ class ApiError extends Error {
 
 // Stable RPC error codes → HTTP status. Unknown database errors stay opaque (500).
 const NOT_FOUND = /_NOT_FOUND$/;
-const CONFLICT = new Set(['IDENTITY_MERGE_REQUIRED', 'NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
+const CONFLICT = new Set(['IDENTITY_MERGE_REQUIRED', 'NAME_EXISTS', 'BINDING_PENDING', 'NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
   'SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
   'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE']);
 export function statusForCode(code: string) {
@@ -675,7 +675,7 @@ export function richMenuDefinition(kind: 'new' | 'member', liffId = DEFAULT_LIFF
   const liff = (view?: string) => `https://liff.line.me/${liffId}${view ? '?view=' + view : ''}`;
   const links = kind === 'new'
     ? [sitePage('主持人資訊.html'), SITE, liff(), liff('open'), liff('guide'), liff('veteran')]
-    : [liff(), liff('open'), sitePage('新增玩本記錄.html'), liff('card'), SITE, sitePage('榮譽牆.html')];  // 玩後問卷: the website form
+    : [liff(), liff('open'), liff('survey'), liff('card'), SITE, sitePage('榮譽牆.html')];  // 玩後問卷: LIFF fills the name, then the website form
   const widths = [833, 834, 833];
   return {
     size: { width: 2500, height: 1686 }, selected: true,
@@ -880,6 +880,8 @@ const inviteExpiry = (settings: Settings) =>
 const publicUser = (s: { user_id: string; display_name: string | null; is_admin: boolean }) =>
   ({ id: s.user_id, displayName: s.display_name, isAdmin: s.is_admin });
 
+const BOOKING_HORIZON_MS = 183 * 86400000;
+
 // Groups past their start without being confirmed are cancelled before anyone reads or joins them.
 const GROUP_PATHS = /^\/(groups|me\/groups|admin\/groups|invites)(\/|$)/;
 
@@ -902,6 +904,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     return [200, { user: publicUser(session), expiresAt: session.expires_at }];
   }
+  // 店家決定：最遠可預約 6 個月內的時段（約 183 天）。
   if (req.method === 'GET' && path === '/slots') {
     await requireSession(req, settings);
     const params = new URL(req.url).searchParams;
@@ -913,7 +916,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const fromDay = params.get('from');
     const startMs = fromDay ? taipeiDayStart(fromDay).getTime() : nowMs;
     const from = new Date(Math.max(nowMs, startMs));
-    const to = new Date(startMs + days * 86400000);
+    const to = new Date(Math.min(startMs + days * 86400000, nowMs + BOOKING_HORIZON_MS));
     if (to <= from) return [200, { slots: [] }];
     await syncCalendar(settings, from, to, LISTING_SYNC_MAX_AGE_MS);
     const slots = await rpc<{ starts_at: string; ends_at: string }[]>(settings, 'list_available_starts',
@@ -927,6 +930,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const startsAt = typeof body.startsAt === 'string' ? new Date(body.startsAt) : null;
     if (typeof body.requestId !== 'string' || !UUID.test(body.requestId)) throw new ApiError(400, 'INVALID_REQUEST');
     if (!startsAt || Number.isNaN(startsAt.getTime())) throw new ApiError(400, 'SLOT_UNAVAILABLE');
+    if (startsAt.getTime() > (settings.now ?? Date.now)() + BOOKING_HORIZON_MS) throw new ApiError(400, 'TOO_FAR_AHEAD');
     if (body.gameId != null && (typeof body.gameId !== 'string' || !UUID.test(body.gameId))) {
       throw new ApiError(400, 'GAME_NOT_FOUND');
     }
@@ -957,6 +961,29 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     await requireSession(req, settings);
     const [{ summary }, bound] = await Promise.all([playRecordSummary(settings, 600_000), rpc<string[]>(settings, 'bound_record_names', {})]);
     return [200, { names: summary.map(publicRecord), bound }];
+  }
+  // 玩後問卷從 LINE 打開：帶入綁定的名字；第一次填的新玩家取一個全新的名字直接綁定。
+  // 已在玩本記錄裡的名字不能這樣取得（避免冒用別人的點數），要走老玩家綁定由店家審核。
+  if (req.method === 'GET' && path === '/me/survey') {
+    const { session } = await requireSession(req, settings);
+    const [binding, account] = await Promise.all([
+      rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id }),
+      rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id })]);
+    return [200, { recordName: binding?.status === 'approved' ? binding.record_name : account,
+      pendingName: binding?.status === 'pending' ? binding.record_name : null }];
+  }
+  if (req.method === 'POST' && path === '/me/survey/name') {
+    const { session } = await requireSession(req, settings);
+    const { name } = await readJson(req);
+    if (typeof name !== 'string' || !name.trim() || Array.from(name.trim()).length > 30) throw new ApiError(400, 'INVALID_NAME');
+    const wanted = name.trim().toLowerCase();
+    const taken = (records: RecordData) => records.summary.some(r => r.name.trim().toLowerCase() === wanted);
+    // A name not in a recent copy is checked once more against the script itself before it is given away.
+    if (taken(await playRecordSummary(settings, 600_000)) || taken(await playRecordSummary(settings, 0))) {
+      throw new ApiError(409, 'NAME_EXISTS');
+    }
+    const claimed = await rpc<{ record_name: string }>(settings, 'claim_record_name', { p_actor: session.user_id, p_name: name });
+    return [201, { recordName: claimed.record_name }];
   }
   if (path === '/me/binding' && (req.method === 'GET' || req.method === 'POST')) {
     const { session } = await requireSession(req, settings);

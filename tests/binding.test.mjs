@@ -31,6 +31,7 @@ function backend({ admin = false, binding = null, account = null, script = { ok:
       case 'bound_record_names': return Response.json(['小華']);
       case 'my_binding': return Response.json(current);
       case 'my_record_account': return Response.json(account);
+      case 'claim_record_name': return Response.json({ record_name: args.p_name.trim() });
       case 'request_binding':
         current = { user_id: userId, record_name: args.p_name.trim(), status: 'pending', bonus_status: 'none' };
         return Response.json(current);
@@ -197,4 +198,31 @@ test('member card does not wait for the script: an outdated copy is shown at onc
   await Promise.all(later);
   assert.equal(scriptCalls, 1, 'refreshed after the response');
   assert.notEqual(saved.fetched_at, '-infinity');
+});
+
+test('LINE 玩後問卷: bound players get their name; a pending claim is offered; nothing else is guessed', async () => {
+  const bound = backend({ binding: { user_id: userId, record_name: '阿明', status: 'approved', bonus_status: 'granted' }, now: 20 });
+  assert.deepEqual(await (await call(bound.settings, '/me/survey')).json(), { recordName: '阿明', pendingName: null });
+  const fresh = backend({ account: '新玩家', now: 21 });
+  assert.equal((await (await call(fresh.settings, '/me/survey')).json()).recordName, '新玩家');
+  const pending = backend({ binding: { user_id: userId, record_name: '小華', status: 'pending', bonus_status: 'none' }, now: 22 });
+  assert.deepEqual(await (await call(pending.settings, '/me/survey')).json(), { recordName: null, pendingName: '小華' });
+  const none = backend({ now: 23 });
+  assert.deepEqual(await (await call(none.settings, '/me/survey')).json(), { recordName: null, pendingName: null });
+});
+
+test('a new player may claim only a brand-new name; existing 玩本記錄 names go through store-approved binding', async () => {
+  const b = backend({ now: 24 });
+  const claim = name => call(b.settings, '/me/survey/name', 'POST', { name });
+  for (const name of ['阿明', ' 阿明 ', '小華']) {
+    const res = await claim(name);
+    assert.equal(res.status, 409, name);
+    assert.equal((await res.json()).error, 'NAME_EXISTS');
+  }
+  assert.ok(!b.calls.some(c => c.url.endsWith('/claim_record_name')), 'existing names never reach the database claim');
+  assert.equal((await claim('')).status, 400);
+  assert.equal((await claim('字'.repeat(31))).status, 400);
+  const ok = await claim(' 小海星 ');
+  assert.equal(ok.status, 201);
+  assert.equal((await ok.json()).recordName, '小海星');
 });

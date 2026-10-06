@@ -358,6 +358,19 @@
 - 店家已更新 Apps Script 並授權「連線到外部服務」、執行 setupAll：副本 updatedAt 變為 10:41:46Z（與 Apps Script 相同），期間沒有網站讀取觸發背景更新，判定為重算後的通知生效。
   網站榮譽牆實測：public/records 312 ms，未呼叫 Apps Script。
 
+## 預約範圍 6 個月、LINE 玩後問卷帶名字與新玩家自動綁定（2026-10-06）
+
+- 店家回報：玩家無法預約 2 個月後。原因：LIFF 只抓 21 天時段（api 每次最多 31 天）。
+  店家定案最遠 6 個月：api BOOKING_HORIZON_MS＝183 天（/slots 截到 6 個月、POST /groups 超過回 TOO_FAR_AHEAD）；
+  LIFF 選時間改為一次一個月，「‹ 上個月／下個月 ›」切換。
+- 店家定案「自動帶名字＋新玩家自動綁定」：0030 claim_record_name（全新名字直接綁到 LINE，一個 LINE 一個名字、一個名字一個 LINE；
+  綁定審核中不可取；不分大小寫）；api GET /me/survey、POST /me/survey/name（名字已在玩本記錄 → 409 NAME_EXISTS，引導老玩家綁定）。
+  LIFF #/survey：已綁定 → 直接開網站問卷並帶 ?name=；審核中 → 用申請的名字；第一次 → 取名字（預填 LINE 名稱）。
+  老玩家選單「玩後問卷」改連 LIFF ?view=survey。starfishlarp play-record.js 支援 ?name=（唯讀）。
+- 已知限制：玩本記錄的「別名」不在公開總覽裡，新玩家若取到某位老玩家的別名，記錄會被算到那位老玩家（機率低）。
+- 店家現場 QR code 若想自動帶名字，可改用 https://liff.line.me/2011840025-6cuU9x8P?view=survey（需在 LINE 開啟）。
+- npm test 101 passed；starfishlarp tests/run.sh 174 passed。
+
 ## 真人實測回報（2026-10-06）
 
 - 店家回報：老玩家回饋（綁定、回歸禮）與各類 LINE 通知都實測正常 → P7 完成，第 2 階段綁定／回歸禮驗收完成。
@@ -366,7 +379,7 @@
 
 ## 尚待實測
 
-- P3：外部瀏覽器登入、session 過期自動重新登入。
+- P3：外部瀏覽器登入已由店家實測成功（2026-10-06）；session 過期自動重新登入待觀察。
 - 問卷送出耗時：等第一筆真實 doPost，再決定是否略過每次的分頁檢查（預估省 2–4 秒）或改背景重算。
 - P12：20–50 位真人玩家、10 個揪團、5 場成團。
 

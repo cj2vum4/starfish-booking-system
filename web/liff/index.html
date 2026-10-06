@@ -38,6 +38,8 @@
   .times .chip { width:100%; border-radius:10px; padding:10px; }
   .stepper { display:flex; align-items:center; gap:12px; }
   .stepper button { width:44px; padding:8px; }
+  .month-nav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .month-nav button { width:auto; padding:8px 12px; }
   .stepper output { min-width:56px; text-align:center; font-size:20px; font-weight:700; }
   select, textarea, input[type=text] { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line);
     background:var(--card); color:var(--fg); font:inherit; }
@@ -95,6 +97,9 @@
   const ERRORS = {
     IDENTITY_MERGE_REQUIRED: '你的新舊玩本名字需要由店家合併，請聯絡海星。',
     SLOT_UNAVAILABLE: '這個時段剛被預約，或店家剛好有事，請改選其他時間。',
+    TOO_FAR_AHEAD: '最遠只能預約 6 個月內的時段。',
+    NAME_EXISTS: '這個名字已經有玩本記錄了。如果是你，請按「我是老玩家」綁定（店家確認）；不是的話請換一個名字。',
+    BINDING_PENDING: '你的老玩家綁定還在審核中，請先用申請的名字填寫。',
     CALENDAR_UNAVAILABLE: '暫時無法確認店家行事曆，請稍後再試。',
     GROUP_FULL: '這團已經滿了。', SOLD_OUT: '這團已經滿了。',
     GROUP_CLOSED: '這團已停止招募。', INVITE_USED: '這個位子已經被別人認領了。',
@@ -361,6 +366,43 @@
   }
 
   // ---- 會員卡: the bound 歸戶名's points from the website, shown to the store to redeem ----
+  // ---- 玩後問卷: open the website form with the player's LINE-bound name filled in ----
+  const surveyUrl = name => SITE + encodeURIComponent('新增玩本記錄.html') + '?name=' + encodeURIComponent(name);
+  async function showSurvey() {
+    render(`<h2>玩後問卷</h2><div class="card">讀取中…</div>`);
+    let data;
+    try { data = await api('/me/survey'); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>玩後問卷</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    if (data.recordName) { location.replace(surveyUrl(data.recordName)); return; }
+    if (data.pendingName) {
+      render(`<h2>玩後問卷</h2><div class="card stack"><b>老玩家綁定審核中：「${esc(data.pendingName)}」</b>
+        <div class="muted">店家確認前，先用這個名字填寫，點數會算在同一個名字上。</div>
+        <button id="sGo">用「${esc(data.pendingName)}」填問卷</button></div>${homeBtn}`);
+      document.getElementById('sGo').onclick = () => location.replace(surveyUrl(data.pendingName));
+      return;
+    }
+    render(`<h2>玩後問卷</h2>
+      <div class="card stack"><b>第一次填問卷：取一個名字</b>
+        <div class="muted">之後都會用這個名字累積點數、上榮譽牆，並自動綁定你的 LINE，下次打開就直接帶入。</div>
+        <input id="sName" type="text" maxlength="30" placeholder="例如：小海星" autocomplete="nickname" value="${esc(me.displayName || '')}">
+        <button id="sClaim">用這個名字填問卷</button><div id="sErr" class="error" hidden></div></div>
+      <div class="card stack"><b>以前填過玩本記錄？</b>
+        <div class="muted">請用「我是老玩家」綁定以前的名字（店家確認），點數才不會分成兩份。</div>
+        <button class="secondary" id="sVet">我是老玩家</button></div>${homeBtn}`);
+    document.getElementById('sVet').onclick = () => go('#/veteran');
+    document.getElementById('sClaim').onclick = async e => {
+      const err = document.getElementById('sErr');
+      busy(e.target, true); err.hidden = true;
+      try {
+        const { recordName } = await api('/me/survey/name', { method: 'POST', body: { name: document.getElementById('sName').value } });
+        location.replace(surveyUrl(recordName));
+      } catch (x) {
+        if (x.message === 'reauth') return;
+        busy(e.target, false); err.textContent = message(x.code); err.hidden = false;
+      }
+    };
+  }
+
   async function showCard() {
     render(`<h2>會員卡・兌換</h2><div class="card">讀取中…</div>`);
     let data;
@@ -468,14 +510,25 @@
     catch (e) { if (e.message !== 'reauth') render(`<h2>我要開團</h2><div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="history.back()">返回</button>`); return; }
 
-    const state = { capacity: 6, tag: '', gameId: '', day: null, start: null, visibility: 'private' };
+    const state = { capacity: 6, tag: '', gameId: '', day: null, start: null, visibility: 'private', month: 0 };
     const wanted = games.find(g => g.slug === pendingGame);
     pendingGame = null;
     if (wanted) {
       state.gameId = wanted.gameId;
       state.capacity = Math.min(Math.max(state.capacity, wanted.minPlayers), wanted.maxPlayers);
     }
-    const slotCache = {};  // minutes -> slots (or {error})
+    const slotCache = {};  // "minutes|YYYY-MM" -> slots (or {error})
+    // 店家決定最遠可預約 6 個月（伺服器也檢查）；時間一次看一個月。
+    const months = (() => {
+      const last = dayKey(new Date(Date.now() + 183 * 86400000).toISOString()).slice(0, 7);
+      const list = [dayKey(new Date().toISOString()).slice(0, 7)];
+      while (list[list.length - 1] < last) {
+        const [y, mo] = list[list.length - 1].split('-').map(Number);
+        list.push(mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`);
+      }
+      return list;
+    })();
+    const slotKey = () => `${minutes()}|${months[state.month]}`;
     // One request ID per form keeps double taps and retries from opening two groups.
     const requestId = store.get('starfish.createRequest') || crypto.randomUUID();
     store.set('starfish.createRequest', requestId);
@@ -528,30 +581,41 @@
     }
 
     async function paintWhen() {
-      const m = minutes();
-      if (!slotCache[m]) {
-        $('when').innerHTML = '<p class="muted">正在確認店家可預約的時間…</p>';
-        try { slotCache[m] = (await api(`/slots?days=21&minutes=${m}`)).slots; }
-        catch (e) { if (e.message === 'reauth') return; slotCache[m] = { error: e.code }; }
-        if (m !== minutes()) return;  // the player picked another script meanwhile
+      const m = minutes(), key = slotKey(), month = months[state.month];
+      const [y, mo] = month.split('-').map(Number);
+      const nav = `<div class="month-nav">
+        <button class="secondary" id="prevMonth" ${state.month === 0 ? 'disabled' : ''}>‹ 上個月</button>
+        <b>${y} 年 ${mo} 月</b>
+        <button class="secondary" id="nextMonth" ${state.month === months.length - 1 ? 'disabled' : ''}>下個月 ›</button></div>`;
+      const bindNav = () => {
+        $('prevMonth').onclick = () => { state.month--; state.day = state.start = null; paintWhen(); };
+        $('nextMonth').onclick = () => { state.month++; state.day = state.start = null; paintWhen(); };
+      };
+      if (!slotCache[key]) {
+        $('when').innerHTML = nav + '<p class="muted">正在確認店家可預約的時間…</p>'; bindNav();
+        const days = new Date(Date.UTC(y, mo, 0)).getUTCDate();
+        try { slotCache[key] = (await api(`/slots?from=${month}-01&days=${days}&minutes=${m}`)).slots; }
+        catch (e) { if (e.message === 'reauth') return; slotCache[key] = { error: e.code }; }
+        if (key !== slotKey()) return;  // the player picked another script or month meanwhile
       }
-      const slots = slotCache[m];
-      if (slots.error) { $('when').innerHTML = `<p class="error">${esc(message(slots.error))}</p>`; paintSummary(); return; }
-      if (!slots.length) { $('when').innerHTML = `<p class="muted">接下來三週沒有可容納 ${esc(hours(m))} 的時段，請換劇本或洽店家。</p>`; paintSummary(); return; }
+      const slots = slotCache[key];
+      if (slots.error) { $('when').innerHTML = nav + `<p class="error">${esc(message(slots.error))}</p>`; bindNav(); paintSummary(); return; }
+      if (!slots.length) { $('when').innerHTML = nav + `<p class="muted">這個月沒有可容納 ${esc(hours(m))} 的時段，看看下個月、換劇本或洽店家。</p>`; bindNav(); paintSummary(); return; }
       const days = [...new Set(slots.map(s => dayKey(s.startsAt)))];
       if (!days.includes(state.day)) { state.day = days[0]; state.start = null; }
-      $('when').innerHTML = `<p class="muted">每場 ${esc(hours(m))}</p><div class="chips" id="days">${days.map(d => {
+      $('when').innerHTML = nav + `<p class="muted">每場 ${esc(hours(m))}</p><div class="chips" id="days">${days.map(d => {
           const first = slots.find(s => dayKey(s.startsAt) === d);
           return `<button class="chip day" aria-pressed="${d === state.day}" data-day="${d}">${esc(fmtDay(first.startsAt))}</button>`; }).join('')}</div>
         <div class="times" style="margin-top:10px">${slots.filter(s => dayKey(s.startsAt) === state.day).map(s =>
           `<button class="chip" aria-pressed="${s.startsAt === state.start}" data-start="${esc(s.startsAt)}">${esc(fmtTime(s.startsAt))}–${esc(fmtTime(s.endsAt))}</button>`).join('')}</div>`;
       document.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { state.day = b.dataset.day; state.start = null; paintWhen(); });
       document.querySelectorAll('[data-start]').forEach(b => b.onclick = () => { state.start = b.dataset.start; paintWhen(); });
+      bindNav();
       paintSummary();
     }
 
     function paintSummary() {
-      const slots = slotCache[minutes()];
+      const slots = slotCache[slotKey()];
       const slot = Array.isArray(slots) && slots.find(s => s.startsAt === state.start);
       $('summary').textContent = slot ? `${fmtRange(slot.startsAt, slot.endsAt)}・${state.capacity} 人・${game()?.title || '請店家推薦'}` : '請選擇開始時間';
       $('submit').disabled = !slot;
@@ -574,7 +638,7 @@
         busy($('submit'), false);
         if (e.code === 'NOT_FRIEND') return showFriendGate(() => $('submit').click());
         $('err').textContent = message(e.code); $('err').hidden = false;
-        if (e.code === 'SLOT_UNAVAILABLE') { store.set('starfish.createRequest', null); delete slotCache[minutes()]; state.start = null; paintWhen(); }
+        if (e.code === 'SLOT_UNAVAILABLE') { store.set('starfish.createRequest', null); delete slotCache[slotKey()]; state.start = null; paintWhen(); }
       }
     });
     paintGames();
@@ -862,6 +926,7 @@
     if (h === '#/guide') return showGuide();
     if (h === '#/veteran') return showVeteran();
     if (h === '#/card') return showCard();
+    if (h === '#/survey') return showSurvey();
     if (h === '#/admin' && me.isAdmin) return showAdmin();
     if (h === '#/bindings' && me.isAdmin) return showBindings();
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
@@ -881,7 +946,7 @@
       const view = params.get('view');
       // Links from before 玩本心得 moved back to the website form land on the history page.
       if (params.get('review')) history.replaceState(null, '', location.pathname + '#/history');
-      if (['open', 'create', 'history', 'guide', 'veteran', 'card', 'bindings'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
+      if (['open', 'create', 'history', 'guide', 'veteran', 'card', 'bindings', 'survey'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
       const gameParam = params.get('game');
       if (view === 'create' && gameParam && /^[A-Za-z0-9_-]{1,64}$/.test(gameParam)) pendingGame = gameParam;
       const invite = new URLSearchParams(location.search).get('invite');
