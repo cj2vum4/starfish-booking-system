@@ -342,6 +342,8 @@
   釋出座位與時段、撤銷邀請、寫稽核；以交易內旗標讓狀態觸發器不發「揪團解散」通知（主揪自己解散仍照舊通知）。
 - api 在 /groups、/me/groups、/admin/groups、/invites 路由前先呼叫（失敗不擋請求），不需 pg_cron。
 - npm test 93 passed（含 tests/expire_groups.sql）。
+- 雲端：0029（SHA-256 1e8ab0ab…8b44）Success、tests/expire_groups.sql PASS；api 部署 commit 273682e（SHA-256 209ba61d…59e3，雲端一致）。
+  上線後第一次呼叫即取消 10/4 16:00 那團（audit group.expire 1 筆）；之後的招募中揪團未受影響。
 
 ## 尚待實測
 
