@@ -318,6 +318,14 @@
   api 部署 commit 5bf9a3a（SHA-256 7ed5a8eb…ce15，雲端一致）；LIFF 已發布。
 - 本次之前用舊流程送出的那 1 筆不在新清單內（舊流程沒有留存內容），但已寫入網站玩本記錄。
 
+## 移除 LINE 心得與補登，改回網站玩後問卷（2026-10-06）
+
+- 店家決定：LINE 補登沒有劇本角色選單、又與網站玩後問卷重疊，不需要。0027 移除 record_submissions 佇列與
+  my_review_context、my_manual_review_context、save_record_account；api 移除 /me/reviews、/me/records；
+  LIFF 遊戲紀錄頁恢復「填寫玩本記錄」連到網站。舊通知連結 ?review= 導到遊戲紀錄頁。
+- 保留：出席後的 LINE 提醒（改為連到網站問卷）、LINE上線日＝2026/10/06（店家決定保留，網站問卷補填也適用）、會員卡先顯示存檔副本。
+- 移除前確認佇列 0 筆、review_reminder 通知 0 筆。
+
 ## 尚待實測
 
 - P3：外部瀏覽器登入、session 過期自動重新登入。

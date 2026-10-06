@@ -48,18 +48,12 @@ begin
   if (select status||'/'||attendance from public.booking_participants where id=p_u3)<>'no_show/absent' then raise exception 'absence not recorded'; end if;
   if (public.admin_complete_event(adm,ev)->>'completed')::boolean then raise exception 'complete not idempotent'; end if;
 
-  r := public.my_review_context(u2,ev);
-  update public.games set review_key='QA 評價鍵' where id=g;
-  r := public.my_manual_review_context(u2,g,'2020-01-01');
-  if r->>'review_key'<>'QA 評價鍵' or r->>'date'<>'2020-01-01' then raise exception 'manual context wrong'; end if;
-  begin
-    perform public.my_manual_review_context(u2,g,(now() at time zone 'Asia/Taipei')::date+1);
-    raise exception 'MISSING';
-  exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'INVALID_RECORD_DATE' then raise exception 'future date accepted: %',msg; end if;
-  end;
-  r := public.my_review_context(u2,ev);
-  perform public.save_record_account(u2,'QA LINE記錄');
+  -- 出席後只提醒去網站填玩後問卷：缺席者不提醒、同場不重複。
+  if (select count(*) from public.notification_logs where event_id=ev and notification_type='review_reminder')<>2 then raise exception 'reminders missing or duplicated'; end if;
+  if exists(select 1 from public.notification_logs where event_id=ev and notification_type='review_reminder' and user_id=u3)
+    then raise exception 'absent player reminded'; end if;
+  -- 既有的 LINE 歸戶名仍擋住別人用同一名字綁定。
+  insert into public.line_record_accounts(user_id,record_name) values(u2,'QA LINE記錄');
   if public.my_record_account(u2)<>'QA LINE記錄' or public.my_record_account(u3) is not null then raise exception 'record account scope failed'; end if;
   if not(public.bound_record_names() ? 'QA LINE記錄') then raise exception 'record account claimable'; end if;
   begin
@@ -68,14 +62,8 @@ begin
   exception when others then get stacked diagnostics msg = message_text;
     if msg<>'NAME_TAKEN' then raise exception 'record identity stolen: %',msg; end if;
   end;
-  if r->>'title'<>'QA 歷史一' or r->>'date'<>to_char((now()-interval '5 hours') at time zone 'Asia/Taipei','YYYY-MM-DD') then raise exception 'review context wrong'; end if;
-  if (select count(*) from public.notification_logs where event_id=ev and notification_type='review_reminder')<>2 then raise exception 'reminders missing or duplicated'; end if;
-  begin
-    perform public.my_review_context(u3,ev);
-    raise exception 'MISSING';
-  exception when others then get stacked diagnostics msg = message_text;
-    if msg<>'REVIEW_NOT_FOUND' then raise exception 'absent review access: %',msg; end if;
-  end;
+  if to_regclass('public.record_submissions') is not null or to_regprocedure('public.my_review_context(uuid,uuid)') is not null
+    or to_regprocedure('public.save_record_account(uuid,text)') is not null then raise exception 'LINE review flow not removed'; end if;
   -- A group session awaiting attendance stays on the store list after it starts.
   sat := (now() at time zone 'Asia/Taipei')::date+1; sat := sat+((6-extract(dow from sat)::int+7)%7);
   while exists(select 1 from public.time_slots where status<>'released' and (starts_at at time zone 'Asia/Taipei')::date=sat)
@@ -114,10 +102,8 @@ declare r text;
 begin
   foreach r in array array['anon','authenticated'] loop
     if has_table_privilege(r,'public.line_record_accounts','SELECT') or
-      has_function_privilege(r,'public.save_record_account(uuid,text)','EXECUTE') or
       has_function_privilege(r,'public.my_record_account(uuid)','EXECUTE') then raise exception 'record identity exposed to %',r; end if;
-    if has_function_privilege(r,'public.my_manual_review_context(uuid,uuid,date)','EXECUTE') then raise exception 'manual context exposed'; end if;
-    if has_function_privilege(r,'public.my_review_context(uuid,uuid)','EXECUTE') or has_function_privilege(r,'public.admin_complete_event(uuid,uuid,uuid[])','EXECUTE')
+    if has_function_privilege(r,'public.admin_complete_event(uuid,uuid,uuid[])','EXECUTE')
       or has_function_privilege(r,'public.list_my_history(uuid)','EXECUTE')
       or has_function_privilege(r,'public.group_played_games(uuid,uuid)','EXECUTE')
       then raise exception 'history RPC exposed to %', r; end if;

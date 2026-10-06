@@ -511,7 +511,7 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
     case 'binding_requested':
       return `【老玩家綁定申請】${p.display_name || 'LINE 玩家'} 申請綁定玩本記錄名字「${p.record_name}」\n審核：https://liff.line.me/${liffId}?view=bindings`;
     case 'review_reminder':
-      return `【填寫玩本心得】${p.played_date}《${p.game_title}》已記錄出席。\n日期、劇本與身分會自動帶入，填心得依集點規則拿點數：\nhttps://liff.line.me/${liffId}?review=${p.event_id}`;
+      return `【填寫玩後問卷】${p.played_date}《${p.game_title}》已記錄出席，謝謝來玩！\n到網站填玩後問卷（選這天和這本劇本、用平常的名字），就能依集點規則拿點數：\n${PLAY_RECORD_FORM}`;
     case 'binding_approved':
       return `【綁定完成】你的 LINE 已綁定玩本記錄「${p.record_name}」。\n符合資格的老玩家會收到 ${RETURN_BONUS} 點回歸禮，打開會員卡就能看到。\n會員卡：https://liff.line.me/${liffId}?view=card`;
     case 'binding_rejected':
@@ -556,6 +556,7 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
 // it to add the one-time 回歸禮 when the store approves a binding.
 const PLAY_RECORD_URL = 'https://script.google.com/macros/s/AKfycbz2jFZhU9tSm-WvZaC_lLSovG2zy3Up2-HNlK6sO6xyfnFDQu8DxRUIKmhDBg1AHMDsDg/exec';
 const RETURN_BONUS = 50;
+const PLAY_RECORD_FORM = 'https://cj2vum4.github.io/starfishlarp/%E6%96%B0%E5%A2%9E%E7%8E%A9%E6%9C%AC%E8%A8%98%E9%8C%84.html';  // 新增玩本記錄.html
 type RecordSummary = { name: string; agent: string; earned: number; redeemed: number; balance: number; plays: number;
   last: string; title?: string };
 type Reward = { track: string; name: string; cost: number; note: string };
@@ -631,41 +632,6 @@ async function grantReturnBonus(settings: Settings, binding: Binding): Promise<B
   recordCache = null;  // the balance just changed
   await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
   return rpc<Binding>(settings, 'mark_binding_bonus', { p_user_id: binding.user_id, p_status: status });
-}
-
-// Writes queued LINE 玩本心得 to the Apps Script. The sheet dedupes on actor+record, so a resend
-// after a timeout is safe. Identity conflicts and rejected input are permanent; the rest retry.
-const PERMANENT_RECORD_ERRORS = new Set(['IDENTITY_MERGE_REQUIRED', 'INVALID_RECORD', 'INVALID_SECRET']);
-export async function processRecordSubmissions(settings: Settings, limit = 3) {
-  if (!settings.playRecordSecret) return { saved: 0, failed: 0 };
-  const batch = await rpc<Record<string, any>[]>(settings, 'claim_record_submissions', { p_limit: limit });
-  const tally = { saved: 0, failed: 0 };
-  for (const s of batch) {
-    let result: any = null;
-    try {
-      const response = await (settings.fetcher ?? fetch)(settings.playRecordUrl ?? PLAY_RECORD_URL, {
-        method: 'POST', signal: AbortSignal.timeout(60000), headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ action: 'line_record', secret: settings.playRecordSecret,
-          actor: s.user_id, event: s.record_id, name: s.record_name ?? '', displayName: s.display_name ?? '',
-          date: s.date, script: s.review_key, character: s.character, rating: String(s.rating), comment: s.comment }).toString() });
-      result = response.ok ? await response.json() : { error: `HTTP_${response.status}` };
-    } catch (e) { result = { error: (e as Error)?.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK' }; }
-    let error: string | null = null;
-    if (!result?.ok) error = typeof result?.error === 'string' ? result.error.slice(0, 60) : 'RECORD_SUBMIT_FAILED';
-    else if (typeof result.name !== 'string' || !result.name || result.name.length > 60) error = 'BAD_RESPONSE';
-    else {
-      try { await rpc(settings, 'save_record_account', { p_actor: s.user_id, p_name: result.name }); }
-      catch { error = 'IDENTITY_MERGE_REQUIRED'; }  // the sheet's name is already held by another LINE account
-    }
-    await rpc(settings, 'complete_record_submission', { p_actor: s.user_id, p_record_id: s.record_id,
-      p_name: error ? null : result.name, p_duplicate: result?.duplicate === true, p_error: error,
-      p_permanent: error !== null && PERMANENT_RECORD_ERRORS.has(error) });
-    if (error) { tally.failed++; continue; }
-    tally.saved++;
-    recordCache = null;  // the balance just changed
-    await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
-  }
-  return tally;
 }
 
 const publicRecord = (r: RecordSummary) => ({ name: r.name, agent: r.agent, plays: r.plays, last: r.last });
@@ -959,39 +925,6 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     return [200, { history: camel(await rpc(settings, 'list_my_history', { p_actor: session.user_id })) }];
   }
 
-  const review = /^\/me\/reviews\/([0-9a-f-]{36})$/.exec(path);
-  const manualReview = path === '/me/records' && req.method === 'POST';
-  if (manualReview || (review && UUID.test(review[1]) && ['GET', 'POST'].includes(req.method))) {
-    const { session } = await requireSession(req, settings);
-    const body = req.method === 'POST' ? await readJson(req) : {};
-    if (manualReview && (typeof body.gameId !== 'string' || !UUID.test(body.gameId) ||
-        typeof body.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.date))) throw new ApiError(400, 'INVALID_REVIEW');
-    const context = await rpc<Record<string, any>>(settings, manualReview ? 'my_manual_review_context' : 'my_review_context',
-      manualReview ? { p_actor: session.user_id, p_game_id: body.gameId, p_date: body.date } : { p_actor: session.user_id, p_event_id: review![1] });
-    if (req.method === 'GET') return [200, { review: camel(context) }];
-    const digest = manualReview ? await sha256Hex(`manual|${session.user_id}|${body.gameId}|${body.date}`) : '';
-    const recordId = manualReview ? `${digest.slice(0,8)}-${digest.slice(8,12)}-${digest.slice(12,16)}-${digest.slice(16,20)}-${digest.slice(20,32)}` : review![1];
-    if (typeof body.character !== 'string' || !body.character.trim() || body.character.length > 100 ||
-        !/^[1-5]$/.test(String(body.rating ?? '')) || typeof body.comment !== 'string' || Array.from(body.comment).length > 50)
-      throw new ApiError(400, 'INVALID_REVIEW');
-    if (!settings.playRecordSecret) throw new ApiError(503, 'RECORDS_NOT_CONFIGURED');
-    // Queued, then written by processRecordSubmissions after the response (the sheet takes 15-30 s).
-    const queued = await rpc<{ status: string; duplicate: boolean }>(settings, 'queue_record_submission', {
-      p_actor: session.user_id, p_record_id: recordId, p_event_id: manualReview ? null : recordId,
-      p_title: context.title, p_review_key: context.review_key ?? context.title, p_date: context.date,
-      p_character: body.character.trim(), p_rating: Number(body.rating), p_comment: body.comment,
-      p_record_name: context.record_name ?? '', p_display_name: context.display_name ?? '' });
-    return [202, { queued: true, status: queued.status, duplicate: queued.duplicate === true }];
-  }
-  if (req.method === 'GET' && path === '/me/records') {
-    const { session } = await requireSession(req, settings);
-    const [binding, account, submissions] = await Promise.all([
-      rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id }),
-      rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id }),
-      rpc(settings, 'my_record_submissions', { p_actor: session.user_id })]);
-    return [200, { recordName: binding?.status === 'approved' ? binding.record_name : account,
-      submissions: camel(submissions) }];
-  }
   // ---- 老玩家綁定 and 會員卡 ----
   if (req.method === 'GET' && path === '/records/names') {
     await requireSession(req, settings);
@@ -1277,11 +1210,8 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   }
   try {
     const [status, data] = await route(req, path, settings);
-    // Queued work also retries here: viewing 我的心得 nudges any submission still waiting.
-    if (status < 300 && ((req.method === 'POST' && !path.startsWith('/hooks/')) || (req.method === 'GET' && path === '/me/records'))) {
-      const work = Promise.all([
-        req.method === 'POST' && settings.lineAccessToken ? deliverNotifications(settings).catch(() => undefined) : undefined,
-        settings.playRecordSecret ? processRecordSubmissions(settings).catch(() => undefined) : undefined]);
+    if (req.method === 'POST' && status < 300 && settings.lineAccessToken && !path.startsWith('/hooks/')) {
+      const work = deliverNotifications(settings).catch(() => undefined);
       if (settings.background) settings.background(work); else await work;
     }
     return reply(status, data);
