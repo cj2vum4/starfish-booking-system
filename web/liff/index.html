@@ -272,8 +272,8 @@
   // ---- 我的遊戲紀錄 ---------------------------------------------------------------------
   async function showHistory() {
     render(`<h2>我的遊戲紀錄</h2><div class="card">讀取中…</div>`);
-    let history;
-    try { ({ history } = await api('/me/history')); }
+    let history, records;
+    try { [{ history }, records] = await Promise.all([api('/me/history'), api('/me/records')]); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>我的遊戲紀錄</h2><div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
     render(`<h2>我的遊戲紀錄</h2><p class="muted">在海星玩過 ${history.length} 場。</p>
@@ -282,6 +282,7 @@
         <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div>
         ${h.eventId ? `<button data-review="${esc(h.eventId)}">填寫心得</button>` : ''}</div></div>`).join('')
         : '<div class="card muted">還沒有紀錄。玩完第一場後，店家記錄出席就會出現在這裡。</div>'}
+      ${reviewList(records.submissions)}
       <div class="card stack"><b>填玩本記錄拿點數</b>
         <div class="muted">點場次的「填寫心得」，自動帶入 LINE 身分、日期與劇本。老玩家請先完成綁定。舊場次可用下方按鈕補登。</div>
         <button id="manualRecord">補登玩本記錄</button>
@@ -290,6 +291,22 @@
     bindSiteLinks();
     document.querySelectorAll('[data-review]').forEach(el => el.onclick = () => go('#/review/' + el.dataset.review));
     document.getElementById('manualRecord').onclick = () => go('#/record');
+    document.getElementById('reloadReviews')?.addEventListener('click', showHistory);
+  }
+
+  // 在 LINE 送出的心得：先排隊，再由後端寫進網站玩本記錄（網站重算點數要 15–30 秒）。
+  const REVIEW_STATUS = { pending: ['處理中', ''], sending: ['處理中', ''], saved: ['已記錄', 'ok'], failed: ['未寫入', 'warn'] };
+  function reviewList(list) {
+    if (!list.length) return '';
+    const waiting = list.some(r => r.status === 'pending' || r.status === 'sending');
+    return `<h3>我在 LINE 填的玩本心得</h3>${list.map(r => {
+      const [label, cls] = REVIEW_STATUS[r.status] ?? ['處理中', ''];
+      return `<div class="card stack" style="cursor:default"><div><b>${esc(r.title)}</b> <span class="tag ${cls}">${label}</span></div>
+        <div class="muted">${esc(r.date)}・${esc(r.character)}・${'★'.repeat(r.rating)}</div>
+        ${r.comment ? `<div>${esc(r.comment)}</div>` : ''}
+        ${r.status === 'failed' ? `<div class="error">${esc(r.errorCode === 'IDENTITY_MERGE_REQUIRED' ? message('IDENTITY_MERGE_REQUIRED') : '沒有寫進玩本記錄，請聯絡店家，或重新填一次。')}</div>` : ''}</div>`;
+    }).join('')}
+      ${waiting ? '<div class="card muted stack">處理中的心得約 1 分鐘內會寫進玩本記錄，點數也會跟著更新。<button class="secondary" id="reloadReviews">重新整理</button></div>' : ''}`;
   }
 
   async function showReview(id) {
@@ -298,10 +315,9 @@
     try {
       if (id) r = (await api('/me/reviews/' + id)).review;
       else {
-        const [catalog, account] = await Promise.all([api('/games'), api('/me/binding')]);
+        const [catalog, account] = await Promise.all([api('/games'), api('/me/records')]);
         games = catalog.games;
-        r = { title: '補登玩本記錄', date: '', recordName: account.binding?.status === 'approved' ? account.binding.recordName : account.card?.name,
-          displayName: me.displayName };
+        r = { title: '補登玩本記錄', date: '', recordName: account.recordName, displayName: me.displayName };
       }
     }
     catch (e) { if (e.message !== 'reauth') render(`<div class="card error">${esc(message(e.code))}</div>`); return; }
@@ -327,8 +343,9 @@
         const result = await api(id ? '/me/reviews/' + id : '/me/records', { method: 'POST', body: { character: document.getElementById('reviewRole').value,
           rating: document.getElementById('reviewRating').value, comment: document.getElementById('reviewComment').value,
           ...(!id ? { gameId: document.getElementById('recordGame').value, date: document.getElementById('recordDate').value } : {}) } });
-        msg.textContent = result.duplicate ? '這場已填寫過，沒有重複新增。' : '心得已儲存，點數已依規則重算。';
-      } catch (e) { msg.textContent = message(e.code); this.disabled = false; }
+        msg.textContent = result.duplicate ? '這場已經填過，沒有重複新增。' : '已收到！約 1 分鐘內會寫進玩本記錄，可以先離開。';
+        setTimeout(() => go('#/history'), 2500);
+      } catch (e) { if (e.message === 'reauth') return; msg.textContent = message(e.code); this.disabled = false; }
     };
   }
 
@@ -415,7 +432,7 @@
     try { data = await api('/me/binding'); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>會員卡・兌換</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
     const { binding, card, rewards } = data;
-    if (binding?.status !== 'approved' && !card) {
+    if (binding?.status !== 'approved' && !card && !data.recordName) {
       render(`<h2>會員卡・兌換</h2><div class="card stack">
         <b>${binding?.status === 'pending' ? `「${esc(binding.recordName)}」綁定審核中` : '還沒有會員卡'}</b>
         <div class="muted">${binding?.status === 'pending' ? '店家確認後就會開通會員卡，並用 LINE 通知你。'
@@ -427,7 +444,7 @@
       return;
     }
     if (!card) {
-      render(`<h2>會員卡・兌換</h2><div class="card error">玩本記錄裡暫時找不到「${esc(binding.recordName)}」，請聯絡店家確認。</div>${homeBtn}`);
+      render(`<h2>會員卡・兌換</h2><div class="card muted">「${esc(binding?.recordName ?? data.recordName)}」的點數正在更新，請過 1 分鐘再打開；一直看不到請聯絡店家。</div>${homeBtn}`);
       return;
     }
     const tracks = [...new Set(rewards.map(r => r.track))];
@@ -437,7 +454,8 @@
         <div class="big">${esc(card.name)}${card.title ? ` <span class="tag ok">${esc(card.title)}</span>` : ''}</div>
         <div><span class="muted">點數餘額</span><div style="font-size:40px;font-weight:700;line-height:1.1">${card.balance}</div></div>
         <div class="muted">累積 ${card.earned}・已兌換 ${card.redeemed}・玩過 ${card.plays} 場${card.last ? '・最後一次 ' + esc(card.last) : ''}</div>
-        <div class="muted">點數更新於 ${esc(fmtRange(card.updatedAt))}${card.stale ? '（網站暫時讀不到，顯示上次的資料）' : ''}</div>
+        <div class="muted">${card.refreshing ? '點數更新中，這裡先顯示上次的資料，稍後重新打開就是最新的。'
+          : `點數更新於 ${esc(fmtRange(card.updatedAt))}${card.stale ? '（網站暫時讀不到，顯示上次的資料）' : ''}`}</div>
         ${['granted', 'already'].includes(binding?.bonusStatus) ? '<div class="muted">老玩家回歸禮已處理（每名一次）</div>' : ''}
         ${binding?.bonusStatus === 'none' ? '<div class="muted">老玩家回歸禮處理中，稍後再打開就會看到。</div>' : ''}</div>
       <div class="card muted">要兌換時，到店把這個畫面給店家看，店家會幫你扣點。</div>

@@ -560,7 +560,7 @@ type RecordSummary = { name: string; agent: string; earned: number; redeemed: nu
   last: string; title?: string };
 type Reward = { track: string; name: string; cost: number; note: string };
 type Binding = Record<string, any> & { user_id: string; record_name: string; status: string; bonus_status: string };
-type RecordData = { summary: RecordSummary[]; rewards: Reward[]; fetchedAt: string; stale: boolean };
+type RecordData = { summary: RecordSummary[]; rewards: Reward[]; fetchedAt: string; stale: boolean; refreshing?: boolean };
 let recordCache: { at: number; url: string; data: RecordData } | null = null;
 let lastRecordError = '';  // why the last summary fetch failed (a code only, no content)
 
@@ -579,7 +579,9 @@ async function fetchRecordSummary(settings: Settings, url: string): Promise<{ bo
 // The Apps Script is slow (5-25 s) and sometimes answers 404, so the last good copy is kept in
 // the database. A page asks for data no older than maxAgeMs; when the script fails (after one
 // retry) the older copy is used instead and marked stale.
-async function playRecordSummary(settings: Settings, maxAgeMs = 60_000): Promise<RecordData> {
+// With preferCopy (pages a player is waiting on), an outdated copy is returned at once, marked
+// refreshing, and the script is read after the response.
+async function playRecordSummary(settings: Settings, maxAgeMs = 60_000, preferCopy = false): Promise<RecordData> {
   const url = settings.playRecordUrl ?? PLAY_RECORD_URL;
   const now = (settings.now ?? Date.now)();
   if (recordCache && recordCache.url === url && now - recordCache.at < Math.min(maxAgeMs, 60_000)) return recordCache.data;
@@ -592,6 +594,10 @@ async function playRecordSummary(settings: Settings, maxAgeMs = 60_000): Promise
     const data = shape(saved.payload, saved.fetched_at, false);
     recordCache = { at: savedAt, url, data };
     return data;
+  }
+  if (saved && preferCopy && settings.background) {
+    settings.background(playRecordSummary(settings, maxAgeMs).catch(() => undefined));
+    return { ...shape(saved.payload, Number.isFinite(savedAt) ? saved.fetched_at : '', false), refreshing: true };
   }
   let result = await fetchRecordSummary(settings, url);
   if (result.reason) result = await fetchRecordSummary(settings, url);
@@ -625,6 +631,41 @@ async function grantReturnBonus(settings: Settings, binding: Binding): Promise<B
   recordCache = null;  // the balance just changed
   await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
   return rpc<Binding>(settings, 'mark_binding_bonus', { p_user_id: binding.user_id, p_status: status });
+}
+
+// Writes queued LINE 玩本心得 to the Apps Script. The sheet dedupes on actor+record, so a resend
+// after a timeout is safe. Identity conflicts and rejected input are permanent; the rest retry.
+const PERMANENT_RECORD_ERRORS = new Set(['IDENTITY_MERGE_REQUIRED', 'INVALID_RECORD', 'INVALID_SECRET']);
+export async function processRecordSubmissions(settings: Settings, limit = 3) {
+  if (!settings.playRecordSecret) return { saved: 0, failed: 0 };
+  const batch = await rpc<Record<string, any>[]>(settings, 'claim_record_submissions', { p_limit: limit });
+  const tally = { saved: 0, failed: 0 };
+  for (const s of batch) {
+    let result: any = null;
+    try {
+      const response = await (settings.fetcher ?? fetch)(settings.playRecordUrl ?? PLAY_RECORD_URL, {
+        method: 'POST', signal: AbortSignal.timeout(60000), headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ action: 'line_record', secret: settings.playRecordSecret,
+          actor: s.user_id, event: s.record_id, name: s.record_name ?? '', displayName: s.display_name ?? '',
+          date: s.date, script: s.review_key, character: s.character, rating: String(s.rating), comment: s.comment }).toString() });
+      result = response.ok ? await response.json() : { error: `HTTP_${response.status}` };
+    } catch (e) { result = { error: (e as Error)?.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK' }; }
+    let error: string | null = null;
+    if (!result?.ok) error = typeof result?.error === 'string' ? result.error.slice(0, 60) : 'RECORD_SUBMIT_FAILED';
+    else if (typeof result.name !== 'string' || !result.name || result.name.length > 60) error = 'BAD_RESPONSE';
+    else {
+      try { await rpc(settings, 'save_record_account', { p_actor: s.user_id, p_name: result.name }); }
+      catch { error = 'IDENTITY_MERGE_REQUIRED'; }  // the sheet's name is already held by another LINE account
+    }
+    await rpc(settings, 'complete_record_submission', { p_actor: s.user_id, p_record_id: s.record_id,
+      p_name: error ? null : result.name, p_duplicate: result?.duplicate === true, p_error: error,
+      p_permanent: error !== null && PERMANENT_RECORD_ERRORS.has(error) });
+    if (error) { tally.failed++; continue; }
+    tally.saved++;
+    recordCache = null;  // the balance just changed
+    await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
+  }
+  return tally;
 }
 
 const publicRecord = (r: RecordSummary) => ({ name: r.name, agent: r.agent, plays: r.plays, last: r.last });
@@ -934,21 +975,22 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
         !/^[1-5]$/.test(String(body.rating ?? '')) || typeof body.comment !== 'string' || Array.from(body.comment).length > 50)
       throw new ApiError(400, 'INVALID_REVIEW');
     if (!settings.playRecordSecret) throw new ApiError(503, 'RECORDS_NOT_CONFIGURED');
-    let result: any;
-    try {
-      const response = await (settings.fetcher ?? fetch)(settings.playRecordUrl ?? PLAY_RECORD_URL, {
-        method: 'POST', signal: AbortSignal.timeout(45000), headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ action: 'line_record', secret: settings.playRecordSecret,
-          actor: session.user_id, event: recordId, name: context.record_name ?? '', displayName: context.display_name ?? '',
-          date: context.date, script: context.review_key ?? context.title, character: body.character.trim(), rating: String(body.rating), comment: body.comment }).toString() });
-      result = response.ok ? await response.json() : null;
-    } catch { result = null; }
-    if (!result?.ok) throw new ApiError(502, result?.error === 'IDENTITY_MERGE_REQUIRED' ? 'IDENTITY_MERGE_REQUIRED' : 'RECORD_SUBMIT_FAILED');
-    if (typeof result.name !== 'string' || !result.name || result.name.length > 60) throw new ApiError(502, 'RECORD_SUBMIT_FAILED');
-    await rpc(settings, 'save_record_account', { p_actor: session.user_id, p_name: result.name });
-    recordCache = null;
-    await rpc(settings, 'expire_record_snapshot', {}).catch(() => undefined);
-    return [200, { saved: true, duplicate: result.duplicate === true, name: result.name }];
+    // Queued, then written by processRecordSubmissions after the response (the sheet takes 15-30 s).
+    const queued = await rpc<{ status: string; duplicate: boolean }>(settings, 'queue_record_submission', {
+      p_actor: session.user_id, p_record_id: recordId, p_event_id: manualReview ? null : recordId,
+      p_title: context.title, p_review_key: context.review_key ?? context.title, p_date: context.date,
+      p_character: body.character.trim(), p_rating: Number(body.rating), p_comment: body.comment,
+      p_record_name: context.record_name ?? '', p_display_name: context.display_name ?? '' });
+    return [202, { queued: true, status: queued.status, duplicate: queued.duplicate === true }];
+  }
+  if (req.method === 'GET' && path === '/me/records') {
+    const { session } = await requireSession(req, settings);
+    const [binding, account, submissions] = await Promise.all([
+      rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id }),
+      rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id }),
+      rpc(settings, 'my_record_submissions', { p_actor: session.user_id })]);
+    return [200, { recordName: binding?.status === 'approved' ? binding.record_name : account,
+      submissions: camel(submissions) }];
   }
   // ---- 老玩家綁定 and 會員卡 ----
   if (req.method === 'GET' && path === '/records/names') {
@@ -976,13 +1018,14 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const recordName = binding?.status === 'approved' ? binding.record_name :
       await rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id }).catch(() => null);
     if (recordName) {
-      const records = await playRecordSummary(settings);
+      const records = await playRecordSummary(settings, 60_000, true);
       const r = records.summary.find(x => x.name === recordName);
       card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed,
-        plays: r.plays, last: r.last, title: r.title ?? '', updatedAt: records.fetchedAt, stale: records.stale } : null;
+        plays: r.plays, last: r.last, title: r.title ?? '', updatedAt: records.fetchedAt, stale: records.stale,
+        refreshing: records.refreshing === true } : null;
       rewards = records.rewards.map(x => ({ track: x.track, name: x.name, cost: x.cost, note: x.note }));
     }
-    return [200, { binding: camel(binding), card, rewards }];
+    return [200, { binding: camel(binding), recordName, card, rewards }];
   }
   if (req.method === 'GET' && path === '/admin/bindings') {
     const { session } = await requireSession(req, settings);
@@ -1234,8 +1277,11 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   }
   try {
     const [status, data] = await route(req, path, settings);
-    if (req.method === 'POST' && status < 300 && settings.lineAccessToken && !path.startsWith('/hooks/')) {
-      const work = deliverNotifications(settings).catch(() => undefined);
+    // Queued work also retries here: viewing 我的心得 nudges any submission still waiting.
+    if (status < 300 && ((req.method === 'POST' && !path.startsWith('/hooks/')) || (req.method === 'GET' && path === '/me/records'))) {
+      const work = Promise.all([
+        req.method === 'POST' && settings.lineAccessToken ? deliverNotifications(settings).catch(() => undefined) : undefined,
+        settings.playRecordSecret ? processRecordSubmissions(settings).catch(() => undefined) : undefined]);
       if (settings.background) settings.background(work); else await work;
     }
     return reply(status, data);

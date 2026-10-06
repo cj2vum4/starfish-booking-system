@@ -113,9 +113,10 @@ test('bonus outcomes: ineligible and already are recorded; failures leave it to 
 test('member card shows the bound name only, with rewards; unbound players get no card', async () => {
   const bound = backend({ binding: { user_id: userId, record_name: '阿明', status: 'approved', bonus_status: 'granted' }, now: 8 });
   const data = await (await call(bound.settings, '/me/binding')).json();
-  const { updatedAt, stale, ...card } = data.card;
+  const { updatedAt, stale, refreshing, ...card } = data.card;
   assert.deepEqual(card, { name: '阿明', agent: '#007', balance: 100, earned: 120, redeemed: 20, plays: 9, last: '2026/9/20', title: '' });
   assert.equal(stale, false);
+  assert.equal(refreshing, false);
   assert.ok(updatedAt);
   assert.deepEqual(data.rewards, [{ track: '保底', name: '折抵 50 元', cost: 50, note: '直接折抵當場費用' }]);
   assert.equal(scriptPosts(bound.calls).length, 0, 'no grant call once granted');
@@ -174,4 +175,26 @@ test('slow or failing Apps Script: one retry, then the saved copy (marked stale)
   failures = 2;  // both tries fail: served from the saved copy, reported as stale
   res = await handleApi(new Request(`${base}/health/records`), settings);
   assert.deepEqual([res.status, (await res.json()).error, scriptCalls], [503, 'HTTP_404', 4]);
+});
+
+test('member card does not wait for the script: an outdated copy is shown at once and refreshed afterwards', async () => {
+  const later = [];
+  let scriptCalls = 0, saved = { payload: { summary, rewards }, fetched_at: '-infinity' };
+  const settings = { supabaseUrl: 'https://db.invalid', serviceKey: 'k', loginChannelId: '1', allowedOrigins: [],
+    playRecordUrl: SCRIPT, now: () => 2_000_000_000, background: work => later.push(work),
+    fetcher: async (url, opts = {}) => {
+      if (url === `${SCRIPT}?action=summary`) { scriptCalls++; return Response.json({ ok: true, summary, rewards }); }
+      const name = url.split('/rpc/')[1];
+      if (name === 'resolve_session') return Response.json({ user_id: userId, display_name: '小明', is_admin: false });
+      if (name === 'my_binding') return Response.json({ user_id: userId, record_name: '阿明', status: 'approved', bonus_status: 'granted' });
+      if (name === 'get_record_snapshot') return Response.json(saved);
+      if (name === 'put_record_snapshot') { saved = { payload: JSON.parse(opts.body).p_payload, fetched_at: new Date(2_000_000_000).toISOString() }; return Response.json({ ok: true }); }
+      return Response.json(null);
+    } };
+  const res = await handleApi(new Request(`${base}/me/binding`, { headers: { Authorization: 'Bearer ' + 'S'.repeat(43) } }), settings);
+  const { card } = await res.json();
+  assert.deepEqual([card.balance, card.refreshing, scriptCalls], [100, true, 0], 'answered from the copy before reading the script');
+  await Promise.all(later);
+  assert.equal(scriptCalls, 1, 'refreshed after the response');
+  assert.notEqual(saved.fetched_at, '-infinity');
 });
