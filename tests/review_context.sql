@@ -48,10 +48,9 @@ begin
   if (select status||'/'||attendance from public.booking_participants where id=p_u3)<>'no_show/absent' then raise exception 'absence not recorded'; end if;
   if (public.admin_complete_event(adm,ev)->>'completed')::boolean then raise exception 'complete not idempotent'; end if;
 
-  -- 出席後只提醒去網站填玩後問卷：缺席者不提醒、同場不重複。
-  if (select count(*) from public.notification_logs where event_id=ev and notification_type='review_reminder')<>2 then raise exception 'reminders missing or duplicated'; end if;
-  if exists(select 1 from public.notification_logs where event_id=ev and notification_type='review_reminder' and user_id=u3)
-    then raise exception 'absent player reminded'; end if;
+  -- 玩後問卷改由店家現場給 QR code，記錄出席不再發 LINE 提醒。
+  if exists(select 1 from public.notification_logs where event_id=ev and notification_type='review_reminder')
+    then raise exception 'review reminder still queued'; end if;
   -- 既有的 LINE 歸戶名仍擋住別人用同一名字綁定。
   insert into public.line_record_accounts(user_id,record_name) values(u2,'QA LINE記錄');
   if public.my_record_account(u2)<>'QA LINE記錄' or public.my_record_account(u3) is not null then raise exception 'record account scope failed'; end if;

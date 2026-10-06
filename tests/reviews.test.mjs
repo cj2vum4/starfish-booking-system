@@ -3,11 +3,8 @@ import assert from 'node:assert/strict';
 import { handleApi, notificationText } from '../supabase/functions/api/index.ts';
 const event = '22222222-2222-4222-8222-222222222222';
 
-test('after attendance the reminder sends players to the website form, which lists each script\'s roles', () => {
-  const text = notificationText({ kind: 'review_reminder', event_id: event, game_title: '年輪', played_date: '2026-10-05' });
-  assert.match(text, /2026-10-05《年輪》/);
-  assert.ok(text.includes('https://cj2vum4.github.io/starfishlarp/%E6%96%B0%E5%A2%9E%E7%8E%A9%E6%9C%AC%E8%A8%98%E9%8C%84.html'));
-  assert.doesNotMatch(text, /review=/);
+test('recording attendance sends no 玩後問卷 reminder (the store hands out a QR code)', () => {
+  assert.equal(notificationText({ kind: 'review_reminder', event_id: event, game_title: '年輪', played_date: '2026-10-05' }), null);
 });
 
 test('LINE no longer accepts 玩本心得 itself', async () => {

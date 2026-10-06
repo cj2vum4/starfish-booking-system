@@ -510,8 +510,6 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
       return `【揪團解散】${p.organizer_name} 解散了 ${when} 的揪團\n詳情：${link}`;
     case 'binding_requested':
       return `【老玩家綁定申請】${p.display_name || 'LINE 玩家'} 申請綁定玩本記錄名字「${p.record_name}」\n審核：https://liff.line.me/${liffId}?view=bindings`;
-    case 'review_reminder':
-      return `【填寫玩後問卷】${p.played_date}《${p.game_title}》已記錄出席，謝謝來玩！\n到網站填玩後問卷（選這天和這本劇本、用平常的名字），就能依集點規則拿點數：\n${PLAY_RECORD_FORM}`;
     case 'binding_approved':
       return `【綁定完成】你的 LINE 已綁定玩本記錄「${p.record_name}」。\n符合資格的老玩家會收到 ${RETURN_BONUS} 點回歸禮，打開會員卡就能看到。\n會員卡：https://liff.line.me/${liffId}?view=card`;
     case 'binding_rejected':
@@ -556,7 +554,6 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
 // it to add the one-time 回歸禮 when the store approves a binding.
 const PLAY_RECORD_URL = 'https://script.google.com/macros/s/AKfycbz2jFZhU9tSm-WvZaC_lLSovG2zy3Up2-HNlK6sO6xyfnFDQu8DxRUIKmhDBg1AHMDsDg/exec';
 const RETURN_BONUS = 50;
-const PLAY_RECORD_FORM = 'https://cj2vum4.github.io/starfishlarp/%E6%96%B0%E5%A2%9E%E7%8E%A9%E6%9C%AC%E8%A8%98%E9%8C%84.html';  // 新增玩本記錄.html
 type RecordSummary = { name: string; agent: string; earned: number; redeemed: number; balance: number; plays: number;
   last: string; title?: string };
 type Reward = { track: string; name: string; cost: number; note: string };
@@ -652,7 +649,7 @@ export function richMenuDefinition(kind: 'new' | 'member', liffId = DEFAULT_LIFF
   const liff = (view?: string) => `https://liff.line.me/${liffId}${view ? '?view=' + view : ''}`;
   const links = kind === 'new'
     ? [sitePage('主持人資訊.html'), SITE, liff(), liff('open'), liff('guide'), liff('veteran')]
-    : [liff(), liff('open'), liff('history'), liff('card'), SITE, sitePage('榮譽牆.html')];
+    : [liff(), liff('open'), sitePage('新增玩本記錄.html'), liff('card'), SITE, sitePage('榮譽牆.html')];  // 玩後問卷: the website form
   const widths = [833, 834, 833];
   return {
     size: { width: 2500, height: 1686 }, selected: true,

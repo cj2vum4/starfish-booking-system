@@ -83,7 +83,7 @@ def icon_medal(d, cx, cy):  # 我是老玩家: medal with a star
     star(d, cx, cy + 40, 52, GOLD_L)
 
 
-def icon_quill(d, cx, cy):  # 玩本記錄: scroll and quill
+def icon_quill(d, cx, cy):  # 玩後問卷: scroll and quill
     d.rounded_rectangle([cx - 110, cy - 90, cx + 70, cy + 100], radius=14, outline=GOLD, width=10)
     for k in range(4):
         d.line([cx - 80, cy - 50 + k * 40, cx + 30 - (k == 3) * 50, cy - 50 + k * 40], fill=GOLD_D, width=8)
@@ -124,7 +124,7 @@ MENUS = {
             (icon_calendar, '劇本預約', '開團・我的揪團'), (icon_seats, '缺人場次', '還有空位的公開團'),
             (icon_compass, '新手指南', '第一次怎麼玩'), (icon_medal, '我是老玩家', '綁定以前的紀錄')],
     'member': [(icon_calendar, '劇本預約', '開團・我的揪團'), (icon_seats, '缺人場次', '還有空位的公開團'),
-               (icon_quill, '玩本記錄', '紀錄與心得'), (icon_card, '會員卡・兌換', '點數與獎勵'),
+               (icon_quill, '玩後問卷', '填心得拿點數'), (icon_card, '會員卡・兌換', '點數與獎勵'),
                (icon_book, '劇本介紹', '劇本總覽與故事'), (icon_trophy, '榮譽牆', '玩家排行與徽章')],
 }
 

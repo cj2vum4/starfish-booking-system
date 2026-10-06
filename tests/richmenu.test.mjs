@@ -19,7 +19,7 @@ test('rich menus: six cells tiling 2500x1686 exactly; new and member menus open 
   assert.deepEqual(richMenuDefinition('new', 'LIFF-ID').areas.map(a => a.action.uri), [
     site + encodeURIComponent('主持人資訊.html'), site, liff, liff + '?view=open', liff + '?view=guide', liff + '?view=veteran']);
   assert.deepEqual(richMenuDefinition('member', 'LIFF-ID').areas.map(a => a.action.uri), [
-    liff, liff + '?view=open', liff + '?view=history', liff + '?view=card', site, site + encodeURIComponent('榮譽牆.html')]);
+    liff, liff + '?view=open', site + encodeURIComponent('新增玩本記錄.html'), liff + '?view=card', site, site + encodeURIComponent('榮譽牆.html')]);
 });
 
 function lineFake(existing = [], members = []) {
