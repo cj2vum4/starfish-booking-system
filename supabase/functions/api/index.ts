@@ -969,7 +969,8 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   // ---- 老玩家綁定 and 會員卡 ----
   if (req.method === 'GET' && path === '/records/names') {
     await requireSession(req, settings);
-    const [{ summary }, bound] = await Promise.all([playRecordSummary(settings, 600_000), rpc<string[]>(settings, 'bound_record_names', {})]);
+    // The saved copy answers at once; a copy older than 10 minutes is refreshed after the response.
+    const [{ summary }, bound] = await Promise.all([playRecordSummary(settings, 600_000, true), rpc<string[]>(settings, 'bound_record_names', {})]);
     return [200, { names: summary.map(publicRecord), bound }];
   }
   // 玩後問卷從 LINE 打開：帶入綁定的名字；第一次填的新玩家取一個全新的名字直接綁定。
@@ -1008,8 +1009,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     }
     let binding = await rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id });
     if (binding?.status === 'approved' && binding.bonus_status === 'none' && settings.playRecordSecret) {
+      // The Apps Script takes seconds; the card shows 「回歸禮處理中」 and the grant finishes after the response.
       const pending = binding;
-      binding = await grantReturnBonus(settings, pending).catch(() => pending);  // retried on the next visit
+      const work = grantReturnBonus(settings, pending).catch(() => pending);  // retried on the next visit
+      if (settings.background) settings.background(work); else binding = await work;
     }
     let card = null, rewards: Reward[] = [];
     const recordName = binding?.status === 'approved' ? binding.record_name :

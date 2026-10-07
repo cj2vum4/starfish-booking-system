@@ -1013,6 +1013,10 @@
   }
 
   async function start() {
+    // Check the saved session while LINE initialises instead of after it (each menu tap opens a fresh page).
+    const savedToken = store.get(KEY);
+    const early = savedToken ? fetch(API_BASE + '/me', { headers: { Authorization: 'Bearer ' + savedToken } })
+      .then(r => r.ok ? r.json() : null).catch(() => null) : Promise.resolve(null);
     try {
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
@@ -1032,7 +1036,8 @@
       // Notification links arrive as ?group=<id>.
       const group = new URLSearchParams(location.search).get('group');
       if (group && /^[0-9a-f-]{36}$/.test(group)) history.replaceState(null, '', location.pathname + '#/group/' + group);
-      if (store.get(KEY)) { try { me = (await api('/me')).user; } catch (e) { if (e.message === 'reauth') return; } }
+      me = (await early)?.user ?? null;
+      if (!me) store.set(KEY, null);
       if (!me && !(await signIn())) return;
       document.getElementById('who').textContent = me.displayName || '';
       checkFriendship();

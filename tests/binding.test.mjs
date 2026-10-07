@@ -226,3 +226,35 @@ test('a new player may claim only a brand-new name; existing 玩本記錄 names 
   assert.equal(ok.status, 201);
   assert.equal((await ok.json()).recordName, '小海星');
 });
+
+test('veteran pages never wait on the Apps Script: names come from the saved copy, the bonus is granted afterwards', async () => {
+  const later = [], calls = [];
+  let release; const scriptHeld = new Promise(r => { release = r; });  // the Apps Script answers only when released
+  let saved = { payload: { ok: true, summary, rewards }, fetched_at: new Date(0).toISOString() };  // long out of date
+  let binding = { user_id: userId, record_name: '阿明', status: 'approved', bonus_status: 'none' };
+  const settings = { supabaseUrl: 'https://db.invalid', serviceKey: 'k', loginChannelId: '1', allowedOrigins: [],
+    playRecordUrl: SCRIPT, playRecordSecret: 'bonus-secret', now: () => 4_000_000_000_000, background: w => later.push(w),
+    fetcher: async (url, opts = {}) => {
+      if (url.startsWith(SCRIPT)) { calls.push(url === SCRIPT ? 'grant' : 'summary'); await scriptHeld; return Response.json(url === SCRIPT ? { ok: true, granted: true } : { ok: true, summary, rewards }); }
+      const name = url.split('/rpc/')[1], args = opts.body ? JSON.parse(opts.body) : {};
+      switch (name) {
+        case 'resolve_session': return Response.json({ user_id: userId, display_name: 'QA', is_admin: false });
+        case 'my_binding': return Response.json(binding);
+        case 'bound_record_names': return Response.json([]);
+        case 'get_record_snapshot': return Response.json(saved);
+        case 'put_record_snapshot': saved = { payload: JSON.parse(opts.body).p_payload, fetched_at: new Date().toISOString() }; return Response.json({ ok: true });
+        case 'mark_binding_bonus': binding = { ...binding, bonus_status: args.p_status }; return Response.json(binding);
+        default: return Response.json(null);
+      }
+    } };
+  const names = await (await call(settings, '/records/names')).json();
+  assert.equal(names.names.length, 2);
+  const card = await (await call(settings, '/me/binding')).json();
+  assert.equal(card.binding.bonusStatus, 'none', 'answered before the bonus call');
+  assert.equal(card.card.balance, 100);
+  // Both answers above arrived while the Apps Script was still holding its reply.
+  release();
+  await Promise.all(later);
+  assert.ok(calls.includes('grant') && calls.includes('summary'), 'bonus and fresh names follow after the response');
+  assert.equal(binding.bonus_status, 'granted');
+});
