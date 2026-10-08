@@ -1,5 +1,26 @@
 # 施工紀錄 2026-10-02
 
+## 成團前完整日曆重查（2026-10-08）
+
+- 新增 0032：確認成團檢查完整實際場次區間，同長／縮短／延長都排除外部忙碌；保留既有 RPC 與已確認重送的冪等行為。
+- API：先取得店家授權的實際時段，即時同步 Google／Outlook，再以 checked RPC 確認；劇本時長於查詢期間改變時拒絕，請重新操作。日曆故障在成團前回 503；成團後寫入故障仍可重試。
+- 新增 tests/confirm_calendar_recheck.sql，含撞期回滾、不產生場次／成團通知、時長變動、縮短尾段釋出、重送及權限；API 測試涵蓋 Google／Outlook 故障、查詢順序、每次即時讀取及已確認重送。
+- npm test：107 passed、0 failed、0 skipped。
+- 雲端：0032 套用成功（SHA-256 14281207…3e7a3）；tests/confirm_calendar_recheck.sql PASS，測試交易 ROLLBACK；事後核對 test_users=0、test_games=0、full_window_check=true。
+- API 已透過 Dashboard 部署，重新載入後內容與 release artifact 完全一致（LF SHA-256 2dd7839d…b456e）；部署版本額外跑成團／取消 API 7 項測試全過。線上健康檢查 200，未登入 /me 與確認成團均 401。
+- 部署前比對發現雲端仍未包含 HEAD f2e7d3b 的兩處會員頁效能調整；為只處理本次需求，保留雲端既有會員流程。精確 release 與前版備份保存在本機 docs/backups/api-confirm-recheck-release.ts、api-before-confirm-recheck-cloud.ts（不推送）；本機主 source 含既有會員效能調整，仍通過完整 107 項測試。
+- 證據：docs/evidence/confirm-calendar-recheck-pass.png、confirm-calendar-api-deployed.png（本機）。
+- 需真人驗收：開團後在主日曆加入重疊行程，確認成團應被擋下；移除衝突後再確認成功。
+
+## 功能完整性檢查（2026-10-08）
+
+- Node v24.11.1：npm test 104 passed、0 failed、0 skipped；31 個 migration 本機套用與 21 份 SQL 測試通過。
+- 線上 LIFF／config 與本機內容一致；未登入 API 與無簽章 webhook 均 401；日曆健康檢查 200。
+- 發現三項優先補強：確認成團未重新檢查整段外部日曆、通知重送依賴下一次成功操作、新玩家取名於來源離線時仍接受過期名單。
+- 補充重現只在本機使用合成回應，沒有更動正式玩家資料、點數、揪團或通知，也沒有修改業務程式或部署。
+- 真人待驗收：session 到期重新登入、真實問卷送出耗時、P12 的 20–50 位玩家／10 團／5 場。
+- 完整範圍、證據、限制與修正建議見 `docs/FUNCTIONAL_REVIEW_2026-10-08.md`。
+
 ## 已完成並驗證
 
 - Supabase starfishlarp：Healthy、Tokyo，原有 public schema 無資料表。

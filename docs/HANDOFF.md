@@ -127,13 +127,19 @@
 
 ### 資料庫 migration
 - **一律新增檔案**（`supabase/migrations/YYYYMMDDNNNN_name.sql`，以 `begin; … commit;` 包住），不改已套用的檔案。
-- 目前全部 31 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
+- 目前全部 32 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）
 - 新表一律 `enable row level security` 並 `revoke all … from public,anon,authenticated`；RPC 只 `grant execute … to service_role`。
 - 業務錯誤用 `raise exception 'CODE'`（P0001 + 大寫代碼），API `statusForCode` 對應 HTTP 狀態，LIFF `ERRORS` 對應中文訊息。三處要一起加。
 - 每個 migration 配一份 `tests/<name>.sql`（以 rollback 結束），並登記到 `tests/database.test.mjs` 的清單。
+
+### 2026-10-08 成團日曆修正
+- 0032 已套用並通過 tests/confirm_calendar_recheck.sql 雲端回滾驗收；確認成團前即時查完整時段，資料庫檢查同長／縮短／延長的整段撞期。
+- 新 RPC：admin_group_confirmation_window、admin_confirm_group_event_checked，只授權 service_role；已確認重送不再讀 free/busy。
+- API 已部署；精確 release LF SHA-256：2dd7839d94fbc9a8795eaa7cc8c5b5fd1b53aa0494e6d97b784de4d206ab456e。
+- 注意：雲端原先未包含 HEAD f2e7d3b 的兩處會員頁效能調整，本次只部署成團修正，因此會員差異仍存在。本機精確 release：docs/backups/api-confirm-recheck-release.ts，前版：api-before-confirm-recheck-cloud.ts；皆為本機忽略檔。未來部署完整主 source 時會一併帶上會員調整。
 
 ### Edge Function `api`
 - 單一檔案 `supabase/functions/api/index.ts`，無外部相依，可直接在 Node 24 測試（`handleApi(req, settings)`）。`verify_jwt` 關閉（自己驗 session）。

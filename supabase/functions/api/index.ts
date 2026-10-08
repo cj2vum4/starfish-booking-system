@@ -1066,6 +1066,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   const confirmRoute = /^\/admin\/groups\/([0-9a-f-]{36})\/confirm$/.exec(path);
   if (req.method === 'POST' && confirmRoute && UUID.test(confirmRoute[1])) {
     const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
     const body = await readJson(req);
     const price = body.priceTwd;
     if (typeof price !== 'number' || !Number.isInteger(price) || price < 0 || price > 100000) {
@@ -1074,10 +1075,16 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (body.gameId != null && (typeof body.gameId !== 'string' || !UUID.test(body.gameId))) {
       throw new ApiError(400, 'GAME_NOT_FOUND');
     }
-    const result = await rpc<Record<string, any>>(settings, 'admin_confirm_group_event', {
+    const window = await rpc<{ starts_at: string; ends_at: string; event_id?: string }>(settings,
+      'admin_group_confirmation_window', { p_actor: session.user_id, p_group_id: confirmRoute[1], p_game_id: body.gameId ?? null });
+    // A repeated confirmation only retries the calendar write, even if free/busy is offline
+    // or the store calendar now contains this event itself.
+    if (window.event_id) return [200, { eventId: window.event_id, ...(await writeCalendarEvent(settings, window.event_id)) }];
+    await syncCalendar(settings, new Date(window.starts_at), new Date(window.ends_at));
+    const result = await rpc<Record<string, any>>(settings, 'admin_confirm_group_event_checked', {
       p_actor: session.user_id, p_group_id: confirmRoute[1], p_venue: typeof body.venue === 'string' ? body.venue : '',
       p_dm_name: typeof body.dmName === 'string' ? body.dmName : '', p_game_id: body.gameId ?? null,
-      p_price_cents: price * 100 });
+      p_price_cents: price * 100, p_starts_at: window.starts_at, p_ends_at: window.ends_at });
     return [result.created ? 201 : 200, { eventId: result.event_id, ...(await writeCalendarEvent(settings, result.event_id)) }];
   }
   const cancelRoute = /^\/admin\/events\/([0-9a-f-]{36})\/cancel$/.exec(path);

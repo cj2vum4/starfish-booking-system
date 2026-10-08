@@ -13,11 +13,14 @@ const payload = { event_id: eventId, google_event_id: null, title: '王座', sta
   ends_at: '2026-10-10T09:30:00+00:00', venue: '海星劇本殺', dm_name: '店長', price_cents: 65000, capacity: 7,
   organizer_name: '阿明', players: ['阿明', '涵涵'] };
 
-function backend({ isAdmin = true, googleStatus = 200, alreadySynced = false, withEventsCalendar = true } = {}) {
+function backend({ isAdmin = true, googleStatus = 200, alreadySynced = false, withEventsCalendar = true,
+  busyStatus = 200, confirmed = false } = {}) {
   const calls = [];
   const fetcher = async (url, opts = {}) => {
     calls.push({ url, body: opts.body });
     if (url === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'g', expires_in: 3600 });
+    if (url === 'https://www.googleapis.com/calendar/v3/freeBusy') return Response.json({
+      calendars: { [google.calendarId]: { busy: [] } } }, { status: busyStatus });
     if (url.startsWith('https://www.googleapis.com/calendar/v3/calendars/')) {
       return new Response('{}', { status: googleStatus });
     }
@@ -25,7 +28,9 @@ function backend({ isAdmin = true, googleStatus = 200, alreadySynced = false, wi
     const args = JSON.parse(opts.body);
     if (name === 'resolve_session') return Response.json(args.p_session_hash === await sha256Hex(session)
       ? { user_id: 'owner', display_name: '店長', is_admin: isAdmin, expires_at: 'x' } : null);
-    if (name === 'admin_confirm_group_event') {
+    if (name === 'admin_group_confirmation_window') return Response.json(confirmed ? { event_id: eventId }
+      : { starts_at: payload.starts_at, ends_at: payload.ends_at });
+    if (name === 'admin_confirm_group_event_checked') {
       if (!isAdmin) return Response.json({ code: 'P0001', message: 'NOT_ADMIN' }, { status: 400 });
       return Response.json({ event_id: eventId, created: true });
     }
@@ -44,9 +49,17 @@ test('confirming writes one calendar event with a stable ID and marks it synced'
   const response = await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), settings);
   assert.equal(response.status, 201);
   assert.deepEqual(await response.json(), { eventId, calendarSynced: true });
-  const confirm = JSON.parse(calls.find(c => c.url.endsWith('/admin_confirm_group_event')).body);
+  const confirm = JSON.parse(calls.find(c => c.url.endsWith('/admin_confirm_group_event_checked')).body);
   assert.equal(confirm.p_price_cents, 65000);
   assert.equal(confirm.p_actor, 'owner');
+  const busyRead = calls.findIndex(c => c.url.endsWith('/freeBusy'));
+  const busySync = calls.findIndex(c => c.url.endsWith('/sync_calendar_busy'));
+  const committed = calls.findIndex(c => c.url.endsWith('/admin_confirm_group_event_checked'));
+  assert.ok(busyRead >= 0 && busyRead < busySync && busySync < committed);
+  assert.equal(confirm.p_starts_at, payload.starts_at);
+  assert.equal(confirm.p_ends_at, payload.ends_at);
+  assert.deepEqual(JSON.parse(calls[busyRead].body), { timeMin: new Date(payload.starts_at).toISOString(),
+    timeMax: new Date(payload.ends_at).toISOString(), items: [{ id: google.calendarId }] });
   const write = calls.find(c => c.url.includes('/calendar/v3/calendars/'));
   assert.ok(write.url.includes(encodeURIComponent(google.eventsCalendarId)), 'writes only to the store calendar');
   assert.ok(!write.url.includes(encodeURIComponent(google.calendarId)), 'never writes to the owner calendar');
@@ -58,6 +71,34 @@ test('confirming writes one calendar event with a stable ID and marks it synced'
   assert.ok(event.description.includes('每人：NT$650') && event.description.includes('阿明、涵涵'));
   const mark = JSON.parse(calls.find(c => c.url.endsWith('/mark_event_calendar_synced')).body);
   assert.equal(mark.p_google_event_id, event.id);
+});
+
+test('free/busy or Outlook failure stops confirmation before any event is committed', async () => {
+  for (const failure of ['google', 'outlook', 'unset']) {
+    const run = backend({ busyStatus: failure === 'google' ? 503 : 200 });
+    if (failure === 'unset') delete run.settings.google;
+    if (failure === 'outlook') {
+      run.settings.icsUrls = ['https://outlook.invalid/busy.ics'];
+      const base = run.settings.fetcher;
+      run.settings.fetcher = (url, opts) => url === run.settings.icsUrls[0]
+        ? Promise.resolve(new Response('offline', { status: 503 })) : base(url, opts);
+    }
+    const res = await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), run.settings);
+    assert.equal(res.status, 503, failure);
+    assert.ok(!run.calls.some(c => c.url.endsWith('/admin_confirm_group_event_checked')), failure);
+    assert.ok(!run.calls.some(c => c.url.includes('/calendar/v3/calendars/')), failure);
+  }
+});
+
+test('confirmation always refreshes free/busy; confirmed retries skip the read during an outage', async () => {
+  const live = backend();
+  for (let i = 0; i < 2; i++) assert.equal((await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), live.settings)).status, 201);
+  assert.equal(live.calls.filter(c => c.url.endsWith('/freeBusy')).length, 2);
+  const retry = backend({ confirmed: true, alreadySynced: true, busyStatus: 503 });
+  const res = await handleApi(post(`/admin/groups/${groupId}/confirm`, confirmBody), retry.settings);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { eventId, calendarSynced: true });
+  assert.ok(!retry.calls.some(c => c.url.endsWith('/freeBusy') || c.url.endsWith('/admin_confirm_group_event_checked')));
 });
 
 test('a retry after a partial failure is idempotent; Google 409 counts as already written', async () => {
