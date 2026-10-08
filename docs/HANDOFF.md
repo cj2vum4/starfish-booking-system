@@ -19,7 +19,7 @@
                 │                                      ├─► Google Sheets（店家報表匯出）
                 │                                      ├─► LINE Messaging API（推播、圖文選單）
                 │                                      └─► 網站 Apps Script（玩本記錄點數、回歸禮）
-                └─ LINE webhook ──► Edge Function `line-webhook`（好友加入／封鎖入庫）
+                └─ LINE webhook ──► Edge Function `line-webhook`（好友加入／封鎖入庫；玩家私訊提醒店家 LINE）
 
 海星網站 cj2vum4/starfishlarp（GitHub Pages）
   ├─ scripts.js（劇本資料唯一來源）──push──► GitHub Action ──► api /hooks/catalog-sync
