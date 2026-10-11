@@ -157,12 +157,14 @@
     return data;
   }
 
-  async function signIn() {
+  // returnTo: where LINE login sends the player back. On the first sign-in it is the address the page was
+  // opened with, because start() has already moved ?view=/?game= into the hash and they would be lost.
+  async function signIn(returnTo = location.href) {
     const idToken = liff.getIDToken();
-    if (!idToken) { liff.login({ redirectUri: location.href }); return false; }
+    if (!idToken) { liff.login({ redirectUri: returnTo }); return false; }
     const res = await fetch(API_BASE + '/auth/line', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ idToken }) });
-    if (res.status === 401) { liff.logout(); liff.login({ redirectUri: location.href }); return false; } // stale ID token
+    if (res.status === 401) { liff.logout(); liff.login({ redirectUri: returnTo }); return false; } // stale ID token
     if (!res.ok) throw new Error('LOGIN_FAILED');
     const data = await res.json();
     store.set(KEY, data.sessionToken);
@@ -1019,6 +1021,7 @@
     try {
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+      const entry = location.href;  // before the rewrites below: a login round trip must come back with ?game= etc.
       // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
       // Rich Menu, website and notification links: ?view=open|create|history|guide|veteran|card|bindings
       // (bindings: store only); none = 首頁（劇本預約＋我的揪團）.
@@ -1037,7 +1040,7 @@
       if (group && /^[0-9a-f-]{36}$/.test(group)) history.replaceState(null, '', location.pathname + '#/group/' + group);
       me = (await early)?.user ?? null;
       if (!me) store.set(KEY, null);
-      if (!me && !(await signIn())) return;
+      if (!me && !(await signIn(entry))) return;
       document.getElementById('who').textContent = me.displayName || '';
       checkFriendship();
       document.addEventListener('visibilitychange', () => { if (!document.hidden) checkFriendship(); });

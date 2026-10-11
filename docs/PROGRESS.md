@@ -14,7 +14,7 @@
   - 用量：每月約 8,600 次 Edge Function 呼叫（免費額度 50 萬次）；只有真的有通知要送時才計入 LINE 訊息額度。
 - **新玩家取名（10/8 報告第 3 項）**：`POST /me/survey/name` 讀不到網站最新名單、只剩舊副本時，回 503 RECORDS_UNAVAILABLE
   （「暫時讀不到海星網站的玩本記錄，請稍後再試」），不再拿舊名單判斷名字沒人用；舊副本裡已有的名字照樣回 409。
-  第一次讀取已失敗時不再重讀第二輪，玩家少等一次。
+  第一輪（讀＋重試）失敗時仍讀第二輪：Apps Script 冷啟動常在第二輪就有結果（審查時以模擬冷啟動 35／60 秒重現）。
 - **開團篩選標籤**：LIFF 改用網站的 7 個核心標籤（情感／推理／陣營／歡樂／微恐／新手／繁體，順序同網站），精確比對；
   原本的「驚悚」「機制」移除。57 本每個標籤都至少對得到 11 本。
 - **官網預約連結**（starfishlarp）：57 個劇本頁最下方「立即預約」改連
@@ -27,7 +27,17 @@
   - LINE OA 目前是輕用量（每月 200 則免費），每月最多成團約 4 場。估算一團 6 人從開團到成團約 18 則推播，4 場約 72 則，
     加上未成團揪團與聊天提醒，目前額度足夠；若之後加「開場前一天提醒」等通知要再估一次。
   - 只有一位主持人；同一天不接不同地區的場次（南港＋台北車站同一天可以，新竹交大不能和台北同一天）。尚未做成系統規則，見 HANDOFF 待辦。
-- npm test（Node 22.22，型別剝除）：125 passed、0 failed；新增 tests/tick.test.mjs（6 項）、tests/tick_schedule.sql、取名與標籤各 1 項。
+- **LIFF 登入來回保留劇本**：官網按鈕開到 `?view=create&game=<id>` 後，若需重新經過 LINE 登入（外部瀏覽器、ID token 過期），
+  原本會回到沒有 `game=` 的網址、劇本沒被選好；改為第一次登入帶原始網址回來。`tests/liff.test.mjs` 以模擬瀏覽器實際執行頁面驗證。
+- **審查（三個角度＋逐項反證）**修正：上述取名第二輪、LIFF 登入保留 `game=`、`tick_tokens` 權限收緊為 service_role 只能 select／delete
+  （Supabase 預設權限原本會讓它能自己寫入通行碼）、HANDOFF「恢復排程不要重跑整個 migration」、SECURITY 補上 pg_net 對 PUBLIC 的預設權限。
+  官網 `tests/cta.test.js` 的 id 規則改成與預約資料庫相同（小寫英數與 -）。
+- **真 Postgres 整合測試**（PG16＋自行編譯 Supabase 同版 pg_cron 1.6.4、pg_net 0.20.4，不連正式環境）：34 個 migration 全部套用、
+  24 份 SQL 測試全 PASS（tick_schedule 走 pg_cron 分支；改動排程內容會被抓到）；排程 03:05、03:10 自動觸發成功；
+  pg_net 於 commit 後才送出；一次性通行碼 202／重用 401；過期揪團取消、通知送出、失敗通知重送、分批 20／20／4 皆正常；清理工作只刪本專案 7 天前紀錄。
+  未驗證的一段：用正式網址走 HTTPS 拿到 202（需要改系統憑證，環境不允許）；已確認請求以正式主機名稱送出並驗證憑證，
+  202 路徑以只差網址的函式副本驗證。上線後以 `net._http_response` 的 202 確認。
+- npm test（Node 22.22，型別剝除）：126 passed、0 failed；新增 tests/tick.test.mjs（6 項）、tests/tick_schedule.sql、取名、標籤、LIFF 登入各 1 項。
 - **店家要做的事（依序）**：
   1. Supabase → Edge Functions → api → Code：貼上 GitHub main 最新的 `supabase/functions/api/index.ts` → Deploy，比對 SHA-256。
   2. SQL Editor：貼上 `supabase/migrations/202610110034_tick_schedule.sql` → Run（Success）。

@@ -8,7 +8,7 @@
 |---|---|
 | public 資料表 | 20 張，全部啟用 RLS |
 | anon／authenticated 對資料表的權限 | 無 |
-| anon／authenticated 可執行的函式 | 僅 Supabase 內建 `rls_auto_enable`（event trigger），0018 已收回 |
+| anon／authenticated 可執行的函式 | 僅 Supabase 內建 `rls_auto_enable`（event trigger），0018 已收回。2026-10-11 起另有 pg_net 預設開放給 PUBLIC 的 `net.http_*`（見下方 `/hooks/tick`），不經 Data API 對外 |
 | 未固定 search_path 的函式 | 無 |
 | 序列對 API 角色開放 | 無 |
 | Security Advisor | 0 errors；2 warnings 皆為 `rls_auto_enable`（0018 處理）；20 infos 為「RLS 開啟但無 policy」，屬刻意設計：資料只經後端以 service_role 存取 |
@@ -30,10 +30,15 @@
 - `/health/calendar` 公開，只回 ok 與錯誤代碼，不回任何行程資料。
 - `/hooks/tick`（2026-10-11，0034）：只接受資料庫 pg_cron 每次產生的一次性通行碼（`X-Tick-Token`，64 個十六進位字元，
   兩個 gen_random_uuid 共 244 位元隨機）。資料庫只存 SHA-256，10 分鐘內有效、核銷即刪；格式不符不查資料庫，錯誤或重用回 401。
-  通行碼在 pg_net 送出前會短暫留在 `net.http_request_queue`（Supabase 上任何資料庫登入角色可讀，但 net schema 不經 Data API 對外）；
-  就算被拿到，也只能提早觸發本來就會做的工作（送出已排隊的通知、取消已過開場時間的揪團），不回傳任何資料。
+  通行碼在 pg_net 送出前會短暫（毫秒級）留在 `net.http_request_queue`；就算被拿到，也只能提早觸發本來就會做的工作
+  （送出已排隊的通知、取消已過開場時間的揪團），不回傳任何資料。
+  0034 是第一次啟用 pg_net：pg_net 安裝時把 `net` schema 的表（佇列與回應）的全部權限、以及 `net.http_get/post/delete` 的執行權
+  開放給 PUBLIC（含 anon／authenticated），Supabase 官方說明收回也會被重新授權。目前碰不到的原因是 anon／authenticated 不能直接連資料庫、
+  `net` 不在 Data API 的 Exposed schemas。規則：**絕對不要把 `net` 加進 Exposed schemas**；日後若新增可直接登入資料庫的帳號
+  （例如唯讀報表帳號），要知道它能讀改 pg_net 佇列並從資料庫發出任意 HTTP 請求。
   排程指令（`cron.job.command`、`cron.job_run_details`）只有 `select public._sf_tick()`，沒有任何密碼。
-  發碼與呼叫函式只有 postgres（排程擁有者）能執行，service_role 只能核銷。
+  發碼與呼叫函式只有 postgres（排程擁有者）能執行；service_role 對 `tick_tokens` 只有 select／delete（0034 先 revoke all，
+  避免 Supabase 預設權限讓它能自己寫入通行碼），只能核銷。`tests/tick_schedule.sql` 檢查這些權限。
 
 ## 外部資料
 

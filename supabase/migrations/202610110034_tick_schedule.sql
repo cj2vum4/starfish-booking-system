@@ -10,8 +10,9 @@ create table public.tick_tokens (
   created_at timestamptz not null default now()
 );
 alter table public.tick_tokens enable row level security;
-revoke all on public.tick_tokens from public,anon,authenticated;
-grant select,insert,update,delete on public.tick_tokens to service_role;
+-- service_role only spends tokens (select + delete); Supabase's default privileges would also let it mint them.
+revoke all on public.tick_tokens from public,anon,authenticated,service_role;
+grant select,delete on public.tick_tokens to service_role;
 
 -- One wake-up token: 2 x 122 random bits from gen_random_uuid() (pg_strong_random), 64 hex characters.
 -- Only its hash is stored; leftovers from failed deliveries are removed after an hour.

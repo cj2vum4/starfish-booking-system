@@ -36,6 +36,17 @@ begin
       raise exception 'tick_tokens exposed to %', r; end if;
     if has_function_privilege(r,'public.consume_tick_token(text)','EXECUTE') then raise exception 'consume exposed to %', r; end if;
   end loop;
+  -- The api's key may only spend tokens, never write its own.
+  foreach f in array array['INSERT','UPDATE','TRUNCATE'] loop
+    if has_table_privilege('service_role','public.tick_tokens',f) then raise exception 'service_role can % tick_tokens', f; end if;
+  end loop;
+  set local role service_role;
+  begin
+    insert into public.tick_tokens(token_hash) values (repeat('a',64));
+    raise exception 'service_role minted a token';
+  exception when insufficient_privilege then null;
+  end;
+  reset role;
   foreach r in array array['anon','authenticated','service_role'] loop
     foreach f in array array['public._sf_new_tick_token()','public._sf_tick()'] loop
       if has_function_privilege(r,f,'EXECUTE') then raise exception '% exposed to %', f, r; end if;

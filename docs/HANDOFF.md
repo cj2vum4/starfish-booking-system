@@ -149,7 +149,10 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - `starfish-tick-cleanup` 每天台北 03:17 刪除本專案工作 7 天前的 `cron.job_run_details`（pg_cron 不會自己清）。
 - 檢查：Dashboard → Integrations → Cron；或 `select * from cron.job_run_details order by start_time desc limit 5;`、
   `select status_code, timed_out, error_msg, created from net._http_response order by created desc limit 5;`（回應保留約 6 小時）。
-- 停用：`select cron.unschedule('starfish-tick'); select cron.unschedule('starfish-tick-cleanup');`。重跑 migration 會以同名更新工作，不會重複。
+- 停用：`select cron.unschedule('starfish-tick'); select cron.unschedule('starfish-tick-cleanup');`。
+- 恢復：只在 SQL Editor 執行 migration 最後那兩行 `cron.schedule(...)`（同名會更新、不會重複）。
+  **不要重跑整個 0034**：`create table tick_tokens` 會報 42P07 而整批回滾，排程也不會建立。
+- 啟用 pg_net 後，`net` schema 的表與 `net.http_*` 函式依 pg_net 預設開放給 PUBLIC（含 anon／authenticated）；因為 `net` 不在 Data API 的 Exposed schemas、這兩個角色也不能直接連資料庫，所以外部碰不到。**絕對不要把 `net` 加進 Exposed schemas**（見 SECURITY.md）。
 - 本機 PGlite 沒有 pg_cron／pg_net：migration 會略過排程（NOTICE），`tests/tick_schedule.sql` 只在雲端檢查排程是否存在。
 
 ### 2026-10-08 成團日曆修正

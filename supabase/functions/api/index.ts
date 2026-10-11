@@ -1007,11 +1007,12 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const wanted = name.trim().toLowerCase();
     const taken = (records: RecordData) => records.summary.some(r => r.name.trim().toLowerCase() === wanted);
     // A name not in a recent copy is checked once more against the script itself before it is given away.
+    // That second read runs even when the first one failed: a cold script often answers by then.
     // A copy kept only because the script could not be read is not proof that a name is free: names added
     // since then would be handed to the wrong player, so naming waits until the script answers again.
     const recent = await playRecordSummary(settings, 600_000);
     if (taken(recent)) throw new ApiError(409, 'NAME_EXISTS');
-    const latest = recent.stale ? recent : await playRecordSummary(settings, 0);
+    const latest = await playRecordSummary(settings, 0);
     if (latest.stale) throw new ApiError(503, 'RECORDS_UNAVAILABLE');
     if (taken(latest)) throw new ApiError(409, 'NAME_EXISTS');
     const claimed = await rpc<{ record_name: string }>(settings, 'claim_record_name', { p_actor: session.user_id, p_name: name });

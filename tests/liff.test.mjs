@@ -34,3 +34,44 @@ test('script filters are the website\'s 7 core tags, matched exactly (starfishla
   assert.deepEqual(JSON.parse(list[1].replace(/'/g, '"')), ['情感', '推理', '陣營', '歡樂', '微恐', '新手', '繁體']);
   assert.match(inline, /const tagMatch = g => !state\.tag \|\| \(g\.genres \|\| \[\]\)\.includes\(state\.tag\);/);
 });
+
+// Runs the page script against a fake browser opened from a website 立即預約 link, with no saved session.
+async function openLiff(search, { idToken = 'id-token', authStatus = 200 } = {}) {
+  const inline = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const loc = new URL(`https://cj2vum4.github.io/starfish-booking-system/${search}`);
+  const logins = [], storage = new Map();
+  const el = () => ({ textContent: '', innerHTML: '', hidden: true, addEventListener() {}, style: {}, querySelectorAll: () => [] });
+  const ctx = {
+    window: { STARFISH_CONFIG: { LIFF_ID: 'X', API_BASE: 'https://api.example' }, addEventListener() {}, scrollTo() {} },
+    document: { getElementById: el, addEventListener() {}, hidden: false, querySelector: () => null, querySelectorAll: () => [] },
+    location: { get href() { return loc.href; }, get pathname() { return loc.pathname; }, get search() { return loc.search; },
+      get hash() { return loc.hash; }, set hash(h) { loc.hash = h; }, replace() {} },
+    history: { replaceState(_s, _t, url) { loc.href = new URL(url, loc.href).href; } },
+    liff: { init: async () => {}, isLoggedIn: () => true, getIDToken: () => idToken, login: o => logins.push(o?.redirectUri),
+      logout() {}, getFriendship: async () => ({ friendFlag: true }), isInClient: () => false },
+    sessionStorage: { getItem: k => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v), removeItem: k => storage.delete(k) },
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    fetch: async url => url.endsWith('/auth/line')
+      ? Response.json(authStatus === 200 ? { sessionToken: 't', user: { displayName: 'x' } } : { error: 'INVALID_ID_TOKEN' }, { status: authStatus })
+      : new Promise(() => {}),  // page data never arrives: only the sign-in path is under test
+    URLSearchParams, URL, Intl, Date, Math, JSON, Promise, console, setTimeout, clearTimeout, Response, crypto,
+    navigator: { userAgent: 'node' },
+  };
+  ctx.window.window = ctx.window;
+  vm.createContext(ctx);
+  vm.runInContext(inline, ctx);
+  await new Promise(r => setTimeout(r, 50));
+  return { logins, url: loc.href };
+}
+
+test('website 立即預約 links keep ?game= through a LINE login round trip', async () => {
+  const link = '?view=create&game=wangzuo';
+  for (const opts of [{ idToken: null }, { authStatus: 401 }]) {  // no ID token yet / a stale one
+    const { logins } = await openLiff(link, opts);
+    assert.equal(logins.length, 1, JSON.stringify(opts));
+    assert.equal(new URL(logins[0]).search, link, `${JSON.stringify(opts)}: comes back with the script preselected`);
+  }
+  const signedIn = await openLiff(link);
+  assert.equal(signedIn.logins.length, 0);
+  assert.ok(signedIn.url.endsWith('/#/create') && !signedIn.url.includes('game='), 'the address bar is tidied once signed in');
+});
