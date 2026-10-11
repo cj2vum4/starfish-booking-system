@@ -5,24 +5,30 @@
 整體計畫與店家定案見 `docs/GAS_MIGRATION.md`。
 
 - **第 0 階段：店家通知走管理員 OA。** 新揪團、滿團待確認、老玩家綁定申請，以及 line-webhook 的「玩家私訊提醒」，
-  在設定 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN` 後改由管理員 OA 發送，用它自己的免費額度；
-  管理員 OA 回 400／403／404（店家沒加它好友，或兩個 OA 不在同一個 Provider）時自動改由玩家 OA 送出，記錄 `VIA_PLAYER_OA`，不會漏。
+  在設定 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN` 後改由管理員 OA 發送，用它自己的免費額度。管理員 OA 傳不到時
+  （沒加好友或不同 Provider：400／403／404；token 失效：401；每月免費則數用完：429）自動改由玩家 OA 送出，記錄 `VIA_PLAYER_OA_<碼>`，不會漏。
   玩家通知（加入、滿團、成團、取消、解散、綁定結果）一律走玩家 OA。店家後台新增「LINE 通知」卡，用 LINE profile API 檢查兩個 OA 傳不傳得到自己。
-- **移除 Google 試算表報表匯出**（店家沒在用）：`/admin/sheets/export`、`GOOGLE_SHEET_ID` 移除，服務帳戶權限降為 `spreadsheets.readonly`（只供一次性匯入）。
-- **第 1 階段：角色問卷。** 0035 `role_survey_responses`（RLS、只有店家 RPC 能讀改刪）；
-  `POST /public/role-survey`（網站送出，CORS 只限網站、蜜罐、全站 10 分鐘 200 份上限）；
-  LINE 店家後台「角色問卷回覆」：依劇本看回覆、填分配的角色與備註、刪除、匯入舊「角色問卷總表」（服務帳戶唯讀、可重複匯入不重複）。
-  網站 `survey.js` 先送預約系統，連不上／還沒部署（404／5xx／網路錯誤）才改送舊 GAS，所以網站可先上線。
-- 測試：npm test 133 passed（新增 OA 分流 6 項、問卷 API 6 項、tests/role_survey.sql）；網站 tests/run.sh 新增問卷送出 5 種情況 20 項。
-  LINE 店家畫面以假 LINE SDK＋假 API 在 390 寬實際截圖檢查（問卷列表、回覆展開、店家後台通知卡）。
+- **移除 Google 試算表報表匯出**（店家沒在用）：`/admin/sheets/export`、`GOOGLE_SHEET_ID` 移除；api 向 Google 只申請 `spreadsheets.readonly`。
+- **第 1 階段：角色問卷。** 0035 `role_survey_responses`（RLS、只有店家 RPC 能讀改刪）、刪除記號 `role_survey_tombstones`、
+  排程工作表 `scheduled_jobs`；`POST /public/role-survey`（只收劇本目錄裡的名稱、單次 16 KB、蜜罐、全站 10 分鐘 30 份／一天 200 份或 5 MB）；
+  LINE 店家後台「角色問卷回覆」：依劇本看回覆、填分配的角色與備註、刪除（留下不含內容的記號，重新匯入不會帶回來）、
+  匯入舊「角色問卷總表」（服務帳戶唯讀；以分頁＋時間辨識列，之後在試算表改字不會重複；右邊的「分配角色」「備註」欄會帶進來）。
+  每次送出帶「送出編號」，重送或改送舊 GAS 的副本都認得出是同一份。
+  網站 `survey.js` 先送預約系統，連不上／還沒部署／伺服器錯誤／暫時收太多才改送舊 GAS；共用總表後 api 每 6 小時自動匯入這些列。
+- 審查（三個角度＋逐項反證，2026-10-11）後修正：刪除不再被重新匯入復原、匯入鍵不受試算表編輯影響、401／429 也退回玩家 OA、
+  防灌爆改為劇本白名單與每日量、問卷回應對任何來源可讀（避免讀不到結果而重送）、同秒回覆翻頁不漏、
+  「看更早的回覆」保留還沒儲存的輸入、line-webhook 記錄 `VIA_PLAYER_OA`、文件更新。
+- 測試：npm test（新增 OA 分流、問卷 API 7 項、tests/role_survey.sql）全過；網站 tests/run.sh 新增問卷 6 種情況 35 項、
+  `tests/survey.test.js`（12 份問卷的劇本名稱都對得到 reviewKey）。LINE 店家畫面以假 LINE SDK＋假 API 在 390 寬截圖與操作檢查
+  （列表、展開、翻頁保留輸入、店家後台通知卡）。
 - **店家要做的事（依序）**：
   1. 管理員 OA：確認它的 Messaging API channel 和玩家 OA 在同一個 Provider（劇本殺玩家通知 2005594335）；
      發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；用自己的 LINE 加管理員 OA 好友。
   2. SQL Editor：套用 `supabase/migrations/202610110035_role_survey.sql`，再跑 `tests/role_survey.sql`（須 PASS）。
   3. 部署 api 與 line-webhook 兩支 Edge Function（貼 GitHub main 最新檔案，比對 SHA-256）。
-  4. Supabase Secrets 可刪除 `GOOGLE_SHEET_ID`。
-  5. LINE 店家後台 →「店家後台」看「LINE 通知」卡應顯示「✅ 店家通知由管理員 OA 發送」。
-  6. 舊角色問卷：把 Google 試算表「角色問卷總表」共用給服務帳戶（檢視者），在「角色問卷回覆」按「匯入舊回覆」。
+  4. Supabase Secrets 刪除 `GOOGLE_SHEET_ID`；舊的報表試算表若有共用給服務帳戶（編輯者），請移除共用。
+  5. LINE 店家後台 →「店家後台：場次總覽」看「LINE 通知」卡應顯示「✅ 店家通知由管理員 OA 發送」。
+  6. 舊角色問卷：把 Google 試算表「角色問卷總表」共用給服務帳戶（檢視者），在「角色問卷回覆」按「匯入舊回覆」；之後每 6 小時自動匯入。
 - 真人待驗收：玩家填一份網站角色問卷 → 店家在 LINE「角色問卷回覆」看得到；另一個帳號私訊玩家 OA → 提醒從管理員 OA 收到。
 
 ## 定時排程、取名防呆、篩選標籤、官網預約直達開團頁（2026-10-11）

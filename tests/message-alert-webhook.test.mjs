@@ -103,9 +103,10 @@ test('mixed follow and message persists friendship first and malformed direct us
   assert.equal(invalid.calls.length,0);
 });
 test('alerts go out from the store OA when configured, falling back to the players OA when it cannot reach the admin', async () => {
-  for (const [adminStatus, expected] of [[200, ['store-token']], [404, ['store-token', 'test-token']], [400, ['store-token', 'test-token']]]) {
+  for (const [adminStatus, expected] of [[200, ['store-token']], [404, ['store-token', 'test-token']], [400, ['store-token', 'test-token']],
+    [401, ['store-token', 'test-token']], [429, ['store-token', 'test-token']]]) {
     const tokens = [];
-    const { settings } = setup();
+    const { calls, settings } = setup();
     const base = settings.fetcher;
     settings.adminLineAccessToken = 'store-token';
     settings.fetcher = async (url, opts) => {
@@ -118,5 +119,7 @@ test('alerts go out from the store OA when configured, falling back to the playe
     };
     assert.equal((await handleWebhook(req(), settings)).status, 200);
     assert.deepEqual(tokens, expected, `store OA answered ${adminStatus}`);
+    const done = JSON.parse(calls.find(c => c.url.endsWith('complete_oa_message_alert')).body);
+    assert.deepEqual([done.p_result, done.p_error], ['sent', adminStatus === 200 ? null : `VIA_PLAYER_OA_${adminStatus}`]);
   }
 });

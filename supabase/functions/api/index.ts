@@ -63,9 +63,9 @@ function newToken() {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function readJson(req: Request): Promise<Record<string, unknown>> {
+async function readJson(req: Request, max = MAX_BODY): Promise<Record<string, unknown>> {
   const text = await req.text();
-  if (text.length > MAX_BODY) throw new ApiError(413, 'INVALID_BODY_SIZE');
+  if (text.length > max) throw new ApiError(413, 'INVALID_BODY_SIZE');
   try {
     const data = JSON.parse(text || '{}');
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error();
@@ -532,7 +532,9 @@ function pushText(settings: Settings, token: string, to: string, text: string, r
     body: JSON.stringify({ to, messages: [{ type: 'text', text: text.slice(0, 5000) }] }),
   });
 }
-const UNREACHABLE = new Set([400, 403, 404]);  // not a friend of that OA / unknown user ID
+// The store's OA cannot deliver: not its friend / unknown user ID (400, 403, 404), a revoked token (401),
+// or its monthly free messages are used up (429). The players' OA sends it instead.
+const ADMIN_OA_FALLBACK = new Set([400, 401, 403, 404, 429]);
 
 // Sends queued notifications. LINE's retry key makes a resend after a timeout a no-op.
 export async function deliverNotifications(settings: Settings, limit = 20) {
@@ -550,9 +552,10 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
       try {
         let response = await pushText(settings, viaAdmin ? settings.adminLineAccessToken! : settings.lineAccessToken,
           n.line_user_id, text, n.retry_key);
-        if (viaAdmin && UNREACHABLE.has(response.status) && n.friend_status !== 'blocked') {
+        if (viaAdmin && ADMIN_OA_FALLBACK.has(response.status) && n.friend_status !== 'blocked') {
+          const adminStatus = response.status;
           response = await pushText(settings, settings.lineAccessToken, n.line_user_id, text, n.retry_key);
-          error = 'VIA_PLAYER_OA';  // delivered, but the store's OA could not reach this admin
+          error = `VIA_PLAYER_OA_${adminStatus}`;  // delivered, but the store's OA could not
         }
         // 409: this retry key was already accepted, i.e. the message went out earlier.
         if (response.ok || response.status === 409) result = 'sent';
@@ -579,7 +582,14 @@ export async function runScheduledWork(settings: Settings) {
     total.sent += tally.sent; total.skipped += tally.skipped; total.failed += tally.failed;
     if (tally.sent + tally.skipped + tally.failed < NOTIFY_BATCH || clock() - started > TICK_BUDGET_MS) break;
   }
-  console.log('tick', JSON.stringify({ expired, ...total }));  // counts only, for the Edge Function logs
+  // During the transition the website may fall back to the old Apps Script; bring those answers in every 6 hours.
+  // Fails quietly until the store shares the 角色問卷總表 with the service account.
+  let surveys: number | null = null;
+  if (settings.google && await rpc<boolean>(settings, 'claim_scheduled_job', { p_name: 'role-survey-import', p_every: '6 hours' })
+    .catch(() => false)) {
+    surveys = await importRoleSurveys(settings, null).then(r => r.imported, () => null);
+  }
+  console.log('tick', JSON.stringify({ expired, ...total, surveys }));  // counts only, for the Edge Function logs
   return { expired, ...total };
 }
 
@@ -729,27 +739,40 @@ export function sheetSerialToIso(serial: number, timeZone = 'Asia/Taipei') {
   return new Date(utc).toISOString();
 }
 
-// One tab of the 角色問卷總表 → answers. Column A is 時間戳記 (read as a serial for an exact time);
-// every other column with a header becomes {label, value} using the text the store sees.
-// import_key = SHA-256 of tab, time and the row, so importing again never duplicates.
+// One tab of the 角色問卷總表 → answers. Column A is 時間戳記 (read as a serial for an exact time); every other
+// column with a header becomes {label, value} using the text the store sees. Columns the store added by hand
+// (分配角色 / 角色分配 / 備註) become the answer's assigned role and note, and 送出編號 (written by the website's
+// fallback) ties the row to an answer the booking system may already have.
+// import_key = SHA-256 of tab + time + how many earlier rows share that time, so later edits to a row in the
+// sheet never create a second copy.
+const SHEET_ROLE = new Set(['分配角色', '角色分配']), SHEET_NOTE = new Set(['備註']), SHEET_CLIENT_ID = '送出編號';
 export async function surveyRowsFromSheet(tab: string, shown: unknown[][], serials: unknown[][], timeZone: string) {
   const header = (shown[0] ?? []).map(h => String(h ?? '').trim());
   const rows: Record<string, unknown>[] = [];
+  const seen = new Map<number, number>();
   let skipped = 0;
   for (let i = 1; i < shown.length; i++) {
-    const cells = shown[i] ?? [];
+    const cells = header.map((_, c) => String((shown[i] ?? [])[c] ?? '').trim());
     const serial = Number((serials[i] ?? [])[0]);
-    const fields = header.map((label, c) => ({ label, value: String(cells[c] ?? '').trim() }))
-      .filter((f, c) => c > 0 && f.label && f.value);
+    const pick = (names: Set<string>) => cells.find((v, c) => names.has(header[c]) && v) ?? '';
+    const fields = header.map((label, c) => ({ label, value: cells[c] }))
+      .filter((f, c) => c > 0 && f.label && f.value && !SHEET_ROLE.has(f.label) && !SHEET_NOTE.has(f.label) && f.label !== SHEET_CLIENT_ID);
     if (!fields.length) continue;  // an empty row is not an answer
     if (!Number.isFinite(serial) || serial < 1) { skipped++; continue; }
+    const nth = seen.get(serial) ?? 0;
+    seen.set(serial, nth + 1);
+    const clientId = pick(new Set([SHEET_CLIENT_ID]));
     rows.push({ script: tab, submitted_at: sheetSerialToIso(serial, timeZone), fields,
-      import_key: await sha256Hex(JSON.stringify([tab, serial, cells])) });
+      import_key: await sha256Hex(JSON.stringify([tab, serial, nth])),
+      ...(UUID_ANY.test(clientId) ? { client_id: clientId.toLowerCase() } : {}),
+      assigned_role: pick(SHEET_ROLE), store_note: pick(SHEET_NOTE) });
   }
   return { rows, skipped };
 }
+const UUID_ANY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-async function importRoleSurveys(settings: Settings, actor: string) {
+// actor null = the scheduled import (answers the website sent to the old Apps Script during the transition).
+async function importRoleSurveys(settings: Settings, actor: string | null) {
   const sheetId = settings.roleSurveySheetId ?? ROLE_SURVEY_SHEET_ID;
   const meta = await sheetsGet(settings, sheetId, '?fields=properties.timeZone,sheets.properties.title');
   const timeZone = meta?.properties?.timeZone || 'Asia/Taipei';
@@ -770,8 +793,9 @@ async function importRoleSurveys(settings: Settings, actor: string) {
     rows.push(...got.rows);
   }
   if (rows.length > 5000) throw new ApiError(400, 'IMPORT_TOO_LARGE');
-  const done = rows.length ? await rpc<{ imported: number; skipped: number }>(settings, 'admin_import_role_surveys',
-    { p_actor: actor, p_rows: rows }) : { imported: 0, skipped: 0 };
+  const done = !rows.length ? { imported: 0, skipped: 0 } : actor
+    ? await rpc<{ imported: number; skipped: number }>(settings, 'admin_import_role_surveys', { p_actor: actor, p_rows: rows })
+    : await rpc<{ imported: number; skipped: number }>(settings, 'system_import_role_surveys', { p_rows: rows });
   return { tabs: perTab, imported: done.imported, skipped: done.skipped + skipped };
 }
 
@@ -1198,10 +1222,12 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   // ---- 角色分配問卷（網站問卷送出；店家在 LINE 看回覆、分配角色）----
   if (req.method === 'POST' && path === '/public/role-survey') {
     // The website posts text/plain JSON (a simple request: no CORS preflight), like it did to the Apps Script.
-    const body = await readJson(req);
+    // body.id is the website's 送出編號: a resend after a lost response is recognised instead of stored twice.
+    const body = await readJson(req, 16 * 1024);
     if (typeof body.website === 'string' && body.website) return [200, { ok: true }];  // honeypot: drop silently
     await rpc(settings, 'submit_role_survey', { p_script: typeof body.script === 'string' ? body.script : '',
-      p_fields: Array.isArray(body.fields) ? body.fields : [] });
+      p_fields: Array.isArray(body.fields) ? body.fields : [],
+      p_client_id: typeof body.id === 'string' && UUID_ANY.test(body.id) ? body.id.toLowerCase() : null });
     return [201, { ok: true }];
   }
   if (req.method === 'GET' && path === '/admin/role-surveys') {
@@ -1211,10 +1237,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   if (req.method === 'GET' && path === '/admin/role-surveys/responses') {
     const { session } = await requireSession(req, settings);
     const params = new URL(req.url).searchParams;
-    const before = params.get('before');
-    if (before && Number.isNaN(Date.parse(before))) throw new ApiError(400, 'INVALID_RANGE');
+    const before = params.get('before'), beforeId = params.get('beforeId');
+    if ((before && Number.isNaN(Date.parse(before))) || (beforeId && !UUID.test(beforeId))) throw new ApiError(400, 'INVALID_RANGE');
     return [200, { responses: camel(await rpc(settings, 'admin_role_survey_responses', { p_actor: session.user_id,
-      p_script: params.get('script') ?? '', p_limit: 30, p_before: before || null })) }];
+      p_script: params.get('script') ?? '', p_limit: 30, p_before: before || null, p_before_id: before && beforeId ? beforeId : null })) }];
   }
   if (req.method === 'POST' && path === '/admin/role-surveys/import') {
     const { session } = await requireSession(req, settings);
@@ -1386,12 +1412,18 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
 }
 
 export async function handleApi(req: Request, settings: Settings): Promise<Response> {
-  const cors = corsHeaders(req, settings);
-  const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), {
-    status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
-  if (req.method === 'OPTIONS') return new Response(null, { status: cors['Access-Control-Allow-Origin'] ? 204 : 403, headers: cors });
   // Supabase serves this function at /functions/v1/api/...; strip everything up to "/api".
   const path = new URL(req.url).pathname.replace(/^.*?\/api(?=\/|$)/, '') || '/';
+  // The website's role survey answer is readable from any origin: CORS does not protect a simple POST anyway, and a
+  // page that cannot read a successful answer would resend it to the old Apps Script (a duplicate).
+  const openSurvey = path === '/public/role-survey';
+  const cors = openSurvey ? { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST',
+    'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Max-Age': '600' } : corsHeaders(req, settings);
+  const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), {
+    status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  if (req.method === 'OPTIONS' && path !== '/public/records') {
+    return new Response(null, { status: cors['Access-Control-Allow-Origin'] ? 204 : 403, headers: cors });
+  }
   if (req.method === 'GET' && path === '/health/records') {
     // Public like /health/calendar: says whether the website's 玩本記錄 summary is readable, never its content.
     try {

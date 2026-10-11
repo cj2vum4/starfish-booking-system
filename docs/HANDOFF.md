@@ -1,6 +1,6 @@
 # 交接文件：海星劇本殺 LINE 預約系統
 
-最後更新：2026-10-11（定時排程、官網預約直達開團頁；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
+最後更新：2026-10-11（定時排程、官網預約直達開團頁、移除 GAS 第 0／1 階段；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準，GAS 移除計畫見 `docs/GAS_MIGRATION.md`）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
 `docs/PROGRESS.md`（逐階段施工紀錄）、`docs/SECURITY.md`（安全設計）、`docs/PLAYER_GUIDE.md`（玩家說明）。
 
 店家（帳號持有人）只講中文，回覆請用繁體中文、白話、少術語。
@@ -54,6 +54,9 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 | Google 服務帳戶 | `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（專案 `larpyoutube`） |
 | 玩本記錄 Apps Script | `https://script.google.com/macros/s/AKfycbz2jFZhU9tSm-WvZaC_lLSovG2zy3Up2-HNlK6sO6xyfnFDQu8DxRUIKmhDBg1AHMDsDg/exec` |
 | 玩本記錄試算表 | `1hjdPJQo5Z6nVICZsvljihSXoZAJ32DpiAEQikCaog-8` |
+| 角色問卷總表（舊，過渡期備援） | `1NrmyrSq3UqoU0m-2JWVJsvF18VKwW18n-P-w-iyYb5M`；Apps Script `…/AKfycbx5Fyc528P0kL6sdNAdNcYElbQj8xhJb7dkIm0khATVeRizzouNcI04MGhcrmBUxiHM/exec`（starfishlarp `survey.js` 的 `LEGACY_ENDPOINT`，清空前不可停用） |
+| 角色問卷網站送出 | starfishlarp `survey.js` → api `POST /public/role-survey`；問卷頁 `問卷/<劇本>.html`，`script` 必須＝reviewKey |
+| 管理員 OA | 待店家提供 ID（須與玩家 OA 同一個 Provider 2005594335） |
 | 圖文選單 | 新玩家 `richmenu-c3b5b2e5a18ccb4f3f35cdadb858d217`（預設）；老玩家 `richmenu-2f2565347ba9fde8a7184f4a53a38072`（2026-10-06 第二次重建） |
 
 ---
@@ -126,7 +129,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 6. 已知限制：沒有每位使用者的請求頻率限制；Supabase CLI migration history 未同步（見第 5 節）。
 7. **同一天不接不同地區（2026-10-11 店家定案，尚未做進系統）**：只有一位主持人；南港與台北車站同一天可以，新竹交大不能和台北的場次同一天。
    目前場地在選時間之後才選，且成團前可改；實作時需在開團、改場地、店家確認成團三處檢查同日其他場次的地區。
-8. LINE 訊息額度：店家是輕用量（每月 200 則），預計每月最多成團 4 場（約 72 則推播），目前足夠；新增任何推播（例如開場前提醒）前先估算。
+8. LINE 訊息額度：兩個 OA 各自是輕用量（每月各 200 則）。玩家 OA：每月最多成團 4 場約 72 則；管理員 OA：新揪團、滿團、綁定申請、
+   玩家私訊提醒。管理員 OA 用完時會改由玩家 OA 送出（占用玩家 OA 額度）。新增任何推播（例如開場前提醒）前先估算。
 9. （已修，2026-10-11）《天才在左我在右》的「線上遊玩入口」原本固定在右下角，會蓋住預約與玩家評價按鈕；已移進內容、放在預約按鈕上方。
 
 ---
@@ -135,7 +139,7 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 
 ### 資料庫 migration
 - **一律新增檔案**（`supabase/migrations/YYYYMMDDNNNN_name.sql`，以 `begin; … commit;` 包住），不改已套用的檔案。
-- 目前全部 32 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
+- 目前全部 35 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）
@@ -166,12 +170,12 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - 單一檔案 `supabase/functions/api/index.ts`，無外部相依，可直接在 Node 24 測試（`handleApi(req, settings)`）。`verify_jwt` 關閉（自己驗 session）。
 - 部署：目前是在 Dashboard → Edge Functions → api → Code，把 GitHub 上該 commit 的檔案貼進編輯器並 Deploy，
   部署前後比對 SHA-256（以 LF 換行計算）確認雲端與 GitHub 一致。也可改用 `supabase functions deploy api --no-verify-jwt`。
-- 成功的 POST（`/hooks/*` 除外）結束後會在背景送通知。
+- 成功的 POST（`/hooks/*`、`/public/*` 除外）結束後會在背景送通知；另外每 5 分鐘的排程也會送（0034）。
 
 ### LIFF 頁
 - `web/liff/index.html` 單頁應用，所有輸出經 `esc()`。push main 即由 GitHub Actions 發布。
 - `tests/liff.test.mjs` 檢查頁面腳本可解析、只載入 LINE SDK 與 config.js、每個圖文選單 `?view=` 都有對應路由。
-- Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings|survey`、`?game=<scripts.js id>`、`?invite=`、`?group=`。
+- Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings|survey|surveys`（bindings、surveys 只限店家）、`?game=<scripts.js id>`、`?invite=`、`?group=`。
 
 ### 圖文選單
 - 圖片：`python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png` → `richmenu-new.jpg`、`richmenu-member.jpg`（2500×1686）。

@@ -114,7 +114,7 @@
     SURVEY_NOT_FOUND: '找不到這份回覆，可能已經刪除。', IMPORT_TOO_LARGE: '試算表太大（超過 5000 列），請聯絡維護者分批匯入。',
     GOOGLE_NOT_CONFIGURED: '還沒設定 Google 服務帳戶。',
     SHEET_NOT_SHARED: '試算表沒有共用給下面這個服務帳戶（權限選「檢視者」即可）。',
-    SHEETS_API_DISABLED: '下面這個 Google Cloud 專案還沒啟用 Google Sheets API。',
+    SHEETS_API_DISABLED: '下面這個 Google Cloud 專案還沒啟用 Google Sheets API。', INVALID_BODY_SIZE: '內容太長了。',
     SHEET_NOT_FOUND: '找不到這份試算表。',
     SHEETS_FAILED: '暫時讀不到 Google 試算表，請稍後再試。', INVALID_RANGE: '查詢的日期範圍不正確。', GOOGLE_KEY_INVALID: 'Google 服務帳戶金鑰無效。',
     CALENDAR_WRITE_FAILED: '已成團，但寫入 Google 日曆失敗，請按「重新寫入 Google 日曆」。',
@@ -187,7 +187,7 @@
       <button class="secondary" id="guideBtn">新手指南</button></div>
       <h3>我的揪團</h3><div id="mine" class="muted">讀取中…</div>
       ${me.isAdmin ? `<h3>店家管理</h3><div class="card stack"><div class="muted">劇本資料來源：GitHub starfishlarp／scripts.js</div>
-        <button id="adminBtn">店家後台：場次總覽與匯出</button>
+        <button id="adminBtn">店家後台：場次總覽</button>
         <button class="secondary" id="bindingsBtn">老玩家綁定審核</button>
         <button class="secondary" id="surveysBtn">角色問卷回覆</button>
         <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
@@ -486,7 +486,9 @@
         <div class="muted">共 ${x.total} 份・最新 ${esc(fmtRange(x.latestAt))}</div></button>`).join('')
         : '<div class="card muted">還沒有回覆。</div>'}
       <div class="card stack"><b>匯入舊的「角色問卷總表」</b>
-        <div class="muted">先把 Google 試算表「角色問卷總表」共用給服務帳戶（檢視者），再按匯入。每一頁會變成同名問卷；同一列重複匯入不會變兩份。</div>
+        <div class="muted">先把 Google 試算表「角色問卷總表」共用給服務帳戶（檢視者），再按匯入。每一頁會變成同名問卷，
+          右邊自己加的「分配角色」「備註」也會帶進來；已匯入或已刪除的不會重複出現。
+          共用之後，網站暫時連不上時存到舊試算表的回覆，系統每 6 小時會自動匯入。</div>
         <button class="secondary" id="importBtn">匯入舊回覆</button><div id="importMsg" class="muted"></div></div>${homeBtn}`);
     document.querySelectorAll('[data-script]').forEach(b => b.onclick = () => go('#/surveys/' + encodeURIComponent(b.dataset.script)));
     document.getElementById('importBtn').onclick = async e => {
@@ -506,17 +508,20 @@
         if (/^SHEET/.test(x.code || '')) {
           try {
             const g = await api('/admin/google-account');
-            msg.insertAdjacentHTML('beforeend', `<div style="margin-top:8px;word-break:break-all">服務帳戶：<b>${esc(g.serviceAccountEmail)}</b></div>`);
+            msg.insertAdjacentHTML('beforeend', `<div style="margin-top:8px;word-break:break-all">服務帳戶：<b>${esc(g.serviceAccountEmail)}</b>
+              ${g.projectId ? `<br>Google Cloud 專案：<b>${esc(g.projectId)}</b>` : ''}</div>`);
           } catch {}
         }
       }
     };
   }
 
-  async function showSurveyScript(script, before = null, shown = []) {
-    if (!before) render(`<h2>${esc(script)}</h2><div class="card">讀取中…</div>`);
+  // cursor = the last answer already shown ({submittedAt, id}); older answers are added below the shown ones.
+  async function showSurveyScript(script, cursor = null, shown = []) {
+    if (!cursor) render(`<h2>${esc(script)}</h2><div class="card">讀取中…</div>`);
     let responses;
-    try { ({ responses } = await api(`/admin/role-surveys/responses?script=${encodeURIComponent(script)}${before ? '&before=' + encodeURIComponent(before) : ''}`)); }
+    try { ({ responses } = await api(`/admin/role-surveys/responses?script=${encodeURIComponent(script)}${cursor
+      ? `&before=${encodeURIComponent(cursor.submittedAt)}&beforeId=${encodeURIComponent(cursor.id)}` : ''}`)); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>${esc(script)}</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
     const all = [...shown, ...responses];
     const card = r => `<div class="card stack" id="r-${esc(r.id)}">
@@ -537,7 +542,16 @@
       ${responses.length === 30 ? '<button class="secondary" id="more">看更早的回覆</button>' : ''}
       <div class="stack"><button class="secondary" id="back">回問卷列表</button>${homeBtn}</div>`);
     document.getElementById('back').onclick = () => go('#/surveys');
-    document.getElementById('more')?.addEventListener('click', () => showSurveyScript(script, all[all.length - 1].submittedAt, all));
+    const next = responses.length ? { submittedAt: responses.at(-1).submittedAt, id: responses.at(-1).id } : cursor;
+    document.getElementById('more')?.addEventListener('click', () => {
+      // Keep what the store typed but has not saved yet.
+      all.forEach(r => {
+        const role = document.querySelector(`[data-role="${r.id}"]`), note = document.querySelector(`[data-note="${r.id}"]`);
+        if (role) r.assignedRole = role.value;
+        if (note) r.storeNote = note.value;
+      });
+      showSurveyScript(script, next, all);
+    });
     document.querySelectorAll('[data-save]').forEach(btn => btn.onclick = async () => {
       const id = btn.dataset.save, saved = document.querySelector(`[data-saved="${id}"]`);
       busy(btn, true);
@@ -550,7 +564,7 @@
       busy(btn, false);
     });
     document.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => {
-      if (!confirm('確定刪除這份回覆？刪除後無法復原。')) return;
+      if (!confirm('確定刪除這份回覆？刪除後無法復原，之後重新匯入也不會再出現。\n如果是玩家要求刪除個資，舊的 Google 試算表「角色問卷總表」裡那一列也請一併刪除。')) return;
       busy(btn, true);
       try {
         await api(`/admin/role-surveys/responses/${btn.dataset.del}/delete`, { method: 'POST' });

@@ -21,10 +21,10 @@
 | 階段 | 內容 | 狀態 |
 |---|---|---|
 | 0 | 店家通知走管理員 OA（傳不到自動退回玩家 OA）；移除試算表匯出 | 程式完成（2026-10-11），待店家設定管理員 OA token 並部署 |
-| 1 | 角色問卷：網站送進 Supabase（`role_survey_responses`），LINE 店家「角色問卷回覆」；舊總表可匯入 | 程式完成（2026-10-11），待部署 0035＋api |
+| 1 | 角色問卷：網站送進 Supabase（`role_survey_responses`），LINE 店家「角色問卷回覆」；舊總表可匯入（共用給服務帳戶後每 6 小時自動匯入過渡期落在舊表的回覆） | 程式完成（2026-10-11），待部署 0035＋api |
 | 2 | 玩本記錄與點數搬進 Supabase（固定制計分、公開資料、網站改讀寫 Supabase、匯入與對帳） | 設計如下，待店家確認第 2 階段的預設規則 |
 | 3 | 店家點數管理：兌換申請與審核、補點／扣點、作廢、別名歸戶、精選心得、獎勵／任務／規則設定、月報、店家圖文選單 | 待做 |
-| 4 | 對帳一致一段時間後：停用兩支 GAS 的網頁部署、取消試算表公開發布、刪除程式碼與 `PLAY_RECORD_*` 秘密、`play_record_snapshot` | 待做 |
+| 4 | 對帳一致一段時間後關閉：見下方「第 4 階段步驟」 | 待做 |
 
 ## 第 2 階段設計
 
@@ -72,6 +72,21 @@
 3. 對帳：每位玩家的餘額與 `play_record_snapshot`（GAS 最後一次的點數總覽）逐一比對，全部一致才切換。
 4. 切換：網站改讀寫 Supabase。切換後若有舊頁面送到 GAS，再按一次匯入（以去重鍵只補新列，並用新規則計點）。
 5. 觀察一段時間無誤 → 第 4 階段。
+
+### 第 4 階段步驟（關閉 GAS）
+角色問卷：
+1. starfishlarp `survey.js` 清空 `LEGACY_ENDPOINT`，12 份問卷頁進 `survey.js?v=`。
+2. 等 GitHub Pages 與瀏覽器快取過期（約 10 分鐘），再留一天給還開著舊頁面的人。
+3. LINE 店家後台「角色問卷回覆」按一次「匯入舊回覆」（或等下一次 6 小時自動匯入）。
+4. 停用 `GoogleAppsScript_角色問卷.gs` 的網頁部署；從 api 移除自動匯入；從 starfishlarp 刪除該 .gs；
+   店家可移除總表對服務帳戶的共用，總表留作唯讀備份。
+
+玩本記錄：
+1. 網站讀寫全部改走 Supabase 並觀察一段時間、對帳一致。
+2. 停用 `GoogleAppsScript_玩本記錄.gs` 的網頁部署，取消「表單回應 1」的「發布到網路」。
+3. 移除 api 的 `playRecordSummary`、`/hooks/records-changed`、`/health/records`、`play_record_snapshot`，
+   以及 Supabase Secrets 的 `PLAY_RECORD_SECRET`、`PLAY_RECORD_URL` 與 Apps Script 指令碼屬性 `BOOKING_SECRET`。
+4. starfishlarp 刪除 .gs 與 JSONP／CSV 讀取程式、`tests/gas.test.js`（規則已移到預約系統的測試）。
 
 ### 第 2 階段開工前請店家確認（我的建議）
 1. 介紹人：只接受已存在的玩家名字（建議），亂填的不給點、只記錄。

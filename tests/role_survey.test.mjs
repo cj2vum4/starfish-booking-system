@@ -11,11 +11,11 @@ const google = { clientEmail: 'sa@test.iam.gserviceaccount.com', calendarId: 'ow
 
 // Fake PostgREST + Google. `rpcs` records every call; `answer(name, args)` may override a result.
 function backend({ isAdmin = true, answer = () => undefined, sheets = {} } = {}) {
-  const rpcs = [], google = [];
+  const rpcs = [], googleCalls = [];
   const fetcher = async (url, opts = {}) => {
     if (url === 'https://oauth2.googleapis.com/token') return Response.json({ access_token: 'g', expires_in: 3600 });
     if (url.startsWith('https://sheets.googleapis.com/')) {
-      google.push(decodeURIComponent(url));
+      googleCalls.push(decodeURIComponent(url));
       if (sheets.status) return Response.json({ error: sheets.error ?? {} }, { status: sheets.status });
       if (url.includes('?fields=')) return Response.json(sheets.meta);
       return Response.json(url.includes('UNFORMATTED_VALUE') ? sheets.serials : sheets.shown);
@@ -30,26 +30,35 @@ function backend({ isAdmin = true, answer = () => undefined, sheets = {} } = {})
     if (name === 'admin_import_role_surveys') return Response.json({ imported: args.p_rows.length, skipped: 0 });
     return Response.json([]);
   };
-  return { rpcs, google, settings: { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k',
-    allowedOrigins: [SITE], lineAccessToken: 'line', google: { ...google }, fetcher } };
+  return { rpcs, google: googleCalls, settings: { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k',
+    allowedOrigins: [SITE], lineAccessToken: 'line', fetcher } };
 }
 const call = (settings, path, { method = 'GET', body, origin, auth = true, type } = {}) => handleApi(new Request(`https://x/functions/v1/api${path}`,
   { method, body, headers: { ...(auth ? { Authorization: `Bearer ${session}` } : {}), ...(origin ? { Origin: origin } : {}),
     ...(type ? { 'Content-Type': type } : {}) } }), settings);
 
-test('the website posts answers as text/plain JSON and gets CORS headers for the site only', async () => {
+test('the website posts answers as text/plain JSON with its 送出編號; any page can read the reply', async () => {
   const b = backend();
   const fields = [{ label: 'Line名稱', value: '阿明' }, { label: '喜歡', value: ['推理', '情感'] }];
+  const id = 'A1B2C3D4-0000-4000-8000-000000000001';
   const res = await call(b.settings, '/public/role-survey', { method: 'POST', auth: false, origin: SITE,
-    type: 'text/plain;charset=UTF-8', body: JSON.stringify({ script: '王座', fields, website: '' }) });
+    type: 'text/plain;charset=UTF-8', body: JSON.stringify({ script: '王座', fields, website: '', id }) });
   assert.deepEqual([res.status, await res.json()], [201, { ok: true }]);
-  assert.equal(res.headers.get('access-control-allow-origin'), SITE);
-  assert.deepEqual(b.rpcs.find(r => r[0] === 'submit_role_survey')[1], { p_script: '王座', p_fields: fields });
+  assert.equal(res.headers.get('access-control-allow-origin'), '*',
+    'a page that cannot read a saved answer would resend it to the old Apps Script');
+  assert.deepEqual(b.rpcs.find(r => r[0] === 'submit_role_survey')[1], { p_script: '王座', p_fields: fields, p_client_id: id.toLowerCase() });
   assert.ok(!b.rpcs.some(r => r[0] === 'claim_notifications'), 'no notification run after a public post');
 
-  const other = await call(b.settings, '/public/role-survey', { method: 'POST', auth: false, origin: 'https://evil.example',
-    body: JSON.stringify({ script: '王座', fields }) });
-  assert.equal(other.headers.get('access-control-allow-origin'), null, 'other sites cannot read the answer');
+  await call(b.settings, '/public/role-survey', { method: 'POST', auth: false, body: JSON.stringify({ script: '王座', fields, id: 'nope' }) });
+  assert.equal(b.rpcs.filter(r => r[0] === 'submit_role_survey').at(-1)[1].p_client_id, null);
+  const big = await call(b.settings, '/public/role-survey', { method: 'POST', auth: false,
+    body: JSON.stringify({ script: '王座', fields: [{ label: 'a', value: '字'.repeat(17000) }] }) });
+  assert.equal(big.status, 413, 'answers are capped at 16 KB per post');
+  const pre = await call(b.settings, '/public/role-survey', { method: 'OPTIONS', auth: false, origin: 'https://other.example' });
+  assert.deepEqual([pre.status, pre.headers.get('access-control-allow-origin')], [204, '*']);
+  // Store pages keep the strict origin list.
+  const admin = await call(b.settings, '/admin/role-surveys', { origin: 'https://evil.example' });
+  assert.equal(admin.headers.get('access-control-allow-origin'), null);
 });
 
 test('bots filling the honeypot are told ok and nothing is saved; bad posts get a code', async () => {
@@ -71,9 +80,12 @@ test('bots filling the honeypot are told ok and nothing is saved; bad posts get 
 test('store pages need a session; answers, edits and deletes go through the store-only RPCs', async () => {
   const b = backend();
   assert.equal((await call(b.settings, '/admin/role-surveys', { auth: false })).status, 401);
-  await call(b.settings, '/admin/role-surveys/responses?script=%E7%8E%8B%E5%BA%A7&before=2026-10-01T00:00:00Z');
-  assert.deepEqual(b.rpcs.at(-1), ['admin_role_survey_responses', { p_actor: 'owner', p_script: '王座', p_limit: 30, p_before: '2026-10-01T00:00:00Z' }]);
+  const lastId = '22222222-2222-4222-8222-222222222222';
+  await call(b.settings, `/admin/role-surveys/responses?script=%E7%8E%8B%E5%BA%A7&before=2026-10-01T00:00:00Z&beforeId=${lastId}`);
+  assert.deepEqual(b.rpcs.at(-1), ['admin_role_survey_responses', { p_actor: 'owner', p_script: '王座', p_limit: 30,
+    p_before: '2026-10-01T00:00:00Z', p_before_id: lastId }]);
   assert.equal((await call(b.settings, '/admin/role-surveys/responses?script=x&before=nope')).status, 400);
+  assert.equal((await call(b.settings, '/admin/role-surveys/responses?script=x&before=2026-10-01T00:00:00Z&beforeId=x')).status, 400);
   const id = '11111111-1111-4111-8111-111111111111';
   await call(b.settings, `/admin/role-surveys/responses/${id}`, { method: 'POST', body: JSON.stringify({ assignedRole: '雷神', storeNote: '備選洛基' }) });
   const last = name => b.rpcs.filter(r => r[0] === name).at(-1);
@@ -93,17 +105,26 @@ test('Sheets serial times are read in the spreadsheet time zone', () => {
   assert.equal(sheetSerialToIso(46306.5, 'America/New_York'), '2026-10-11T16:00:00.000Z');  // EDT
 });
 
-test('a sheet tab becomes answers with exact times and stable import keys', async () => {
-  const shown = [['時間戳記', 'Line名稱', '喜歡', '分配角色'], ['2026/10/7 下午 3:04:05', '阿明', '推理, 情感', ''], [], ['2026/10/8', '', '', ''],
-    ['亂打的時間', '小華', '', '']];
-  const serials = [['時間戳記'], [46302.6278], [], [46303], ['亂打的時間']];
+test('a sheet tab becomes answers: exact times, store columns, 送出編號, keys that survive edits', async () => {
+  const id = 'a1b2c3d4-0000-4000-8000-000000000001';
+  const shown = [['時間戳記', 'Line名稱', '喜歡', '送出編號', '分配角色', '備註'],
+    ['2026/10/7 下午 3:04:05', '阿明', '推理, 情感', id, '', ''], [], ['2026/10/8', '', '', '', '', ''],
+    ['亂打的時間', '小華', '', '', '', ''], ['2026/10/7 下午 3:04:05', '小華', '', '', '雷神', '同秒貼上的表單列']];
+  const serials = [['時間戳記'], [46302.6278], [], [46303], ['亂打的時間'], [46302.6278]];
   const first = await surveyRowsFromSheet('王座', shown, serials, 'Asia/Taipei');
-  assert.equal(first.rows.length, 1);
+  assert.equal(first.rows.length, 2);
   assert.equal(first.skipped, 1, 'a row without a readable time is skipped, not guessed');
   assert.deepEqual(first.rows[0].fields, [{ label: 'Line名稱', value: '阿明' }, { label: '喜歡', value: '推理, 情感' }]);
+  assert.equal(first.rows[0].client_id, id, 'the website fallback row is tied to its 送出編號');
   assert.equal(first.rows[0].submitted_at, sheetSerialToIso(46302.6278));
-  const again = await surveyRowsFromSheet('王座', shown, serials, 'Asia/Taipei');
-  assert.equal(again.rows[0].import_key, first.rows[0].import_key);
+  assert.deepEqual([first.rows[1].assigned_role, first.rows[1].store_note, first.rows[1].client_id], ['雷神', '同秒貼上的表單列', undefined],
+    'columns the store added become the assigned role and note, not player answers');
+  assert.deepEqual(first.rows[1].fields, [{ label: 'Line名稱', value: '小華' }]);
+  assert.notEqual(first.rows[0].import_key, first.rows[1].import_key, 'two rows from the same second stay apart');
+  // Fixing a typo or assigning a role in the sheet afterwards keeps the same key: no second copy on re-import.
+  const edited = shown.map(r => [...r]); edited[1][1] = '阿銘'; edited[1][4] = '洛基';
+  const again = await surveyRowsFromSheet('王座', edited, serials, 'Asia/Taipei');
+  assert.deepEqual(again.rows.map(r => r.import_key), first.rows.map(r => r.import_key));
   assert.match(first.rows[0].import_key, /^[0-9a-f]{64}$/);
 });
 
@@ -126,4 +147,23 @@ test('import reads every tab read-only and tells the store when the sheet is not
     const r = await call(denied.settings, '/admin/role-surveys/import', { method: 'POST' });
     assert.deepEqual([r.status, (await r.json()).error], [503, code]);
   }
+});
+
+test('the 5-minute tick imports answers the website left in the old sheet, at most every 6 hours', async () => {
+  const claims = [];
+  const b = backend({ answer: (name, args) => name === 'claim_scheduled_job' ? (claims.push(args), Response.json(claims.length === 1)) : undefined,
+    sheets: { meta: { properties: { timeZone: 'Asia/Taipei' }, sheets: [{ properties: { title: '王座' } }] },
+      shown: { valueRanges: [{ values: [['時間戳記', 'Line名稱'], ['x', '阿明']] }] },
+      serials: { valueRanges: [{ values: [['時間戳記'], [46302.5]] }] } } });
+  b.settings.google = google;
+  const { runScheduledWork } = await import('../supabase/functions/api/index.ts');
+  await runScheduledWork(b.settings);
+  await runScheduledWork(b.settings);
+  assert.deepEqual(claims[0], { p_name: 'role-survey-import', p_every: '6 hours' });
+  assert.equal(b.rpcs.filter(r => r[0] === 'system_import_role_surveys').length, 1, 'only the claimed run imports');
+  assert.equal(b.rpcs.filter(r => r[0] === 'admin_import_role_surveys').length, 0);
+  // Without Google configured nothing is attempted.
+  const none = backend();
+  await runScheduledWork(none.settings);
+  assert.ok(!none.rpcs.some(r => r[0] === 'claim_scheduled_job'));
 });

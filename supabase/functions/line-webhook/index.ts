@@ -115,11 +115,14 @@ export async function handleWebhook(req: Request, settings: Settings): Promise<R
           });
           try {
             let response = await push(viaAdmin ? settings.adminLineAccessToken! : settings.lineAccessToken!);
-            // Not a friend of the store's OA, or a user ID from another provider: use the players' OA.
-            if (viaAdmin && [400, 403, 404].includes(response.status) && n.friend_status !== 'blocked') {
+            let via: string | null = null;
+            // The store's OA cannot deliver (not its friend / another provider: 400 403 404; revoked token: 401;
+            // monthly free messages used up: 429): the players' OA sends it instead.
+            if (viaAdmin && [400, 401, 403, 404, 429].includes(response.status) && n.friend_status !== 'blocked') {
+              via = `VIA_PLAYER_OA_${response.status}`;
               response = await push(settings.lineAccessToken!);
             }
-            if (response.ok || response.status === 409) { result = 'sent'; error = null; }
+            if (response.ok || response.status === 409) { result = 'sent'; error = via; }
             else {
               result = response.status === 429 || response.status >= 500 ? 'failed' : 'skipped';
               error = `HTTP_${response.status}`;

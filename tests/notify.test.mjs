@@ -121,11 +121,13 @@ test('store notifications use the store OA; player notifications stay on the pla
 });
 
 test('a store OA that cannot reach the admin falls back to the players OA instead of dropping the message', async () => {
-  for (const status of [400, 403, 404]) {
+  // Not a friend / another provider (400 403 404), a revoked token (401), the monthly quota used up (429).
+  for (const status of [400, 401, 403, 404, 429]) {
     const run = twoOas({ adminStatus: status });
     assert.deepEqual(await deliverNotifications(run.settings), { sent: 3, skipped: 0, failed: 0 }, `HTTP ${status}`);
     assert.deepEqual(run.pushes.slice(0, 2).map(p => [p.token, p.key]), [['admin-token', 'k1'], ['player-token', 'k1']]);
-    assert.deepEqual(run.complete.slice(0, 2).map(c => c.slice(1)), [['sent', 'VIA_PLAYER_OA'], ['sent', 'VIA_PLAYER_OA']]);
+    assert.deepEqual(run.complete.slice(0, 2).map(c => c.slice(1)),
+      [['sent', `VIA_PLAYER_OA_${status}`], ['sent', `VIA_PLAYER_OA_${status}`]]);
   }
   // A temporary LINE failure is retried later, not rerouted.
   const busy = twoOas({ adminStatus: 503 });
