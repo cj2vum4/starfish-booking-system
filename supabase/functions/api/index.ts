@@ -549,6 +549,23 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
   return tally;
 }
 
+// The 5-minute schedule (pg_cron → POST /hooks/tick): work that must not wait for the next player's tap.
+// Groups past their start time are cancelled, and queued or failed notifications go out in batches
+// until the queue is empty, five batches have run, or 30 seconds have passed (the next tick continues).
+const TICK_BATCHES = 5, TICK_BUDGET_MS = 30_000, NOTIFY_BATCH = 20;
+export async function runScheduledWork(settings: Settings) {
+  const clock = settings.now ?? Date.now, started = clock();
+  const expired = await rpc<number>(settings, 'expire_stale_groups', {}).catch(() => null);
+  const total = { sent: 0, skipped: 0, failed: 0 };
+  for (let batch = 0; batch < TICK_BATCHES; batch++) {
+    const tally = await deliverNotifications(settings, NOTIFY_BATCH);
+    total.sent += tally.sent; total.skipped += tally.skipped; total.failed += tally.failed;
+    if (tally.sent + tally.skipped + tally.failed < NOTIFY_BATCH || clock() - started > TICK_BUDGET_MS) break;
+  }
+  console.log('tick', JSON.stringify({ expired, ...total }));  // counts only, for the Edge Function logs
+  return { expired, ...total };
+}
+
 // --- 玩本記錄 points (the website's Apps Script) ---------------------------------------
 // Points stay in the website's Google Sheet; this system only reads its public summary and asks
 // it to add the one-time 回歸禮 when the store approves a binding.
@@ -990,9 +1007,13 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const wanted = name.trim().toLowerCase();
     const taken = (records: RecordData) => records.summary.some(r => r.name.trim().toLowerCase() === wanted);
     // A name not in a recent copy is checked once more against the script itself before it is given away.
-    if (taken(await playRecordSummary(settings, 600_000)) || taken(await playRecordSummary(settings, 0))) {
-      throw new ApiError(409, 'NAME_EXISTS');
-    }
+    // A copy kept only because the script could not be read is not proof that a name is free: names added
+    // since then would be handed to the wrong player, so naming waits until the script answers again.
+    const recent = await playRecordSummary(settings, 600_000);
+    if (taken(recent)) throw new ApiError(409, 'NAME_EXISTS');
+    const latest = recent.stale ? recent : await playRecordSummary(settings, 0);
+    if (latest.stale) throw new ApiError(503, 'RECORDS_UNAVAILABLE');
+    if (taken(latest)) throw new ApiError(409, 'NAME_EXISTS');
     const claimed = await rpc<{ record_name: string }>(settings, 'claim_record_name', { p_actor: session.user_id, p_name: name });
     return [201, { recordName: claimed.record_name }];
   }
@@ -1148,6 +1169,17 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
     const games = await fetchCatalog(settings, settings.catalogUrl ?? CATALOG_URL);
     return [200, camel(await rpc(settings, 'admin_sync_games', { p_actor: session.user_id, p_games: games }))];
+  }
+  if (req.method === 'POST' && path === '/hooks/tick') {
+    // pg_cron calls this every 5 minutes with a one-time token that only the database can issue (0034).
+    const token = req.headers.get('x-tick-token') ?? '';
+    if (!/^[0-9a-f]{64}$/.test(token) ||
+        !(await rpc<boolean>(settings, 'consume_tick_token', { p_token_hash: await sha256Hex(token) }))) {
+      throw new ApiError(401, 'INVALID_TOKEN');
+    }
+    const work = runScheduledWork(settings).catch(() => undefined);
+    if (settings.background) settings.background(work); else await work;
+    return [202, { ok: true }];
   }
   if (req.method === 'POST' && path === '/hooks/richmenu-setup') {
     if (!settings.catalogSyncSecret) throw new ApiError(503, 'SYNC_NOT_CONFIGURED');

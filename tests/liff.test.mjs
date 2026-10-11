@@ -26,3 +26,11 @@ test('every Rich Menu view opens a page the LIFF app routes to', async () => {
     assert.ok(html.includes(`h === '#/${v}'`), `#/${v} has no route`);
   }
 });
+
+test('script filters are the website\'s 7 core tags, matched exactly (starfishlarp scripts-data.js FILTER_TYPES)', () => {
+  const inline = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const list = /const TAG_FILTERS = (\[[^\]]*\]);/.exec(inline);
+  assert.ok(list, 'TAG_FILTERS not found');
+  assert.deepEqual(JSON.parse(list[1].replace(/'/g, '"')), ['情感', '推理', '陣營', '歡樂', '微恐', '新手', '繁體']);
+  assert.match(inline, /const tagMatch = g => !state\.tag \|\| \(g\.genres \|\| \[\]\)\.includes\(state\.tag\);/);
+});

@@ -496,10 +496,9 @@
   }
 
   // ---- Create a group ---------------------------------------------------------------
-  // Tags in the catalog use several spellings for one idea; filters match all of them.
-  const TAG_FILTERS = [['推理', ['推理', '硬核推理', '日式推理', '本格']], ['情感', ['情感', '愛情', '遺憾']],
-    ['歡樂', ['歡樂', '搞笑']], ['驚悚', ['驚悚', '恐怖', '微恐', '微恐怖']], ['陣營', ['陣營']], ['機制', ['機制']],
-    ['新手', ['新手', '新手友善']]];
+  // The website's 7 core tags (starfishlarp scripts-data.js FILTER_TYPES, same order). Every script carries at
+  // least one, spelled exactly like this, so a filter is a plain match.
+  const TAG_FILTERS = ['情感', '推理', '陣營', '歡樂', '微恐', '新手', '繁體'];
   const hours = m => `${+(m / 60).toFixed(1)} 小時`;
   const stars = d => d == null || d === '' ? '' : '・難度 ' + '★'.repeat(Math.max(0, Math.min(5, +d))) + '☆'.repeat(5 - Math.max(0, Math.min(5, +d)));
 
@@ -553,13 +552,13 @@
     const chosenVenue = bindVenuePicker($('venueCard'));
     const game = () => games.find(g => g.gameId === state.gameId);
     const minutes = () => game()?.durationMinutes || 240;
-    const tagMatch = g => !state.tag || TAG_FILTERS.find(([t]) => t === state.tag)[1].some(t => (g.genres || []).includes(t));
+    const tagMatch = g => !state.tag || (g.genres || []).includes(state.tag);
     const fits = g => g.minPlayers <= state.capacity && state.capacity <= g.maxPlayers;
 
     function paintGames() {
       $('cap').textContent = state.capacity;
       $('minus').disabled = state.capacity <= 2; $('plus').disabled = state.capacity >= 12;
-      $('tags').innerHTML = [['', '全部'], ...TAG_FILTERS.map(([t]) => [t, t])].map(([v, label]) =>
+      $('tags').innerHTML = [['', '全部'], ...TAG_FILTERS.map(t => [t, t])].map(([v, label]) =>
         `<button class="chip" aria-pressed="${state.tag === v}" data-tag="${esc(v)}">${esc(label)}</button>`).join('');
       // Scripts the organizer has already played go to the end of the list.
       const list = games.filter(g => fits(g) && tagMatch(g))

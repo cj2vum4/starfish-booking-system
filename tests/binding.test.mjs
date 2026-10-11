@@ -227,6 +227,46 @@ test('a new player may claim only a brand-new name; existing 玩本記錄 names 
   assert.equal((await ok.json()).recordName, '小海星');
 });
 
+test('a new name is never handed out from an outdated copy: naming pauses while the Apps Script is unreachable', async () => {
+  // The saved copy is a week old; 「新來的」 joined the 玩本記錄 after it was taken.
+  const week = 7 * 86400_000, now = 3_000_000_000_000;  // clocks rise through this file: the summary cache is shared
+  let scriptUp = false, scriptReads = 0;
+  const calls = [];
+  const settings = { supabaseUrl: 'https://db.invalid', serviceKey: 'k', loginChannelId: '1', allowedOrigins: [],
+    playRecordUrl: SCRIPT, now: () => now,
+    fetcher: async (url, opts = {}) => {
+      calls.push(url);
+      if (url === `${SCRIPT}?action=summary`) {
+        scriptReads++;
+        if (!scriptUp) throw new TypeError('network');
+        return Response.json({ ok: true, summary: [...summary, { name: '新來的', agent: '#060', plays: 1, last: '2026/10/7' }], rewards });
+      }
+      switch (url.split('/rpc/')[1]) {
+        case 'resolve_session': return Response.json({ user_id: userId, display_name: 'QA', is_admin: false });
+        case 'get_record_snapshot': return Response.json({ payload: { ok: true, summary, rewards }, fetched_at: new Date(now - week).toISOString() });
+        case 'claim_record_name': return Response.json({ record_name: JSON.parse(opts.body).p_name.trim() });
+        default: return Response.json(null);
+      }
+    } };
+  const claim = name => call(settings, '/me/survey/name', 'POST', { name });
+
+  for (const name of ['新來的', '小海星']) {
+    const res = await claim(name);
+    assert.deepEqual([res.status, (await res.json()).error], [503, 'RECORDS_UNAVAILABLE'], name);
+  }
+  assert.ok(!calls.some(u => u.endsWith('/claim_record_name')), 'nothing is claimed from the outdated copy');
+  assert.equal(scriptReads, 4, 'one read and one retry per request, no second round once the script has failed');
+  // Names already in the old copy are still refused outright.
+  assert.equal((await claim('阿明')).status, 409);
+
+  scriptUp = true;
+  const taken = await claim('新來的');
+  assert.deepEqual([taken.status, (await taken.json()).error], [409, 'NAME_EXISTS'], 'the fresh list knows the newer name');
+  const ok = await claim('小海星');
+  assert.equal(ok.status, 201);
+  assert.ok(calls.some(u => u.endsWith('/claim_record_name')));
+});
+
 test('veteran pages never wait on the Apps Script: names come from the saved copy, the bonus is granted afterwards', async () => {
   const later = [], calls = [];
   let release; const scriptHeld = new Promise(r => { release = r; });  // the Apps Script answers only when released

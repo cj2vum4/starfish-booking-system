@@ -28,6 +28,12 @@
 - `/hooks/catalog-sync`、`/hooks/richmenu-setup`、`/hooks/selftest-race`：需 `X-Sync-Secret`（雜湊後定時比較）。
   自測只接受測試標記資料（LINE ID `Ufeedfacefeedface…`、劇本 `qa-stress-*`），且不產生通知。
 - `/health/calendar` 公開，只回 ok 與錯誤代碼，不回任何行程資料。
+- `/hooks/tick`（2026-10-11，0034）：只接受資料庫 pg_cron 每次產生的一次性通行碼（`X-Tick-Token`，64 個十六進位字元，
+  兩個 gen_random_uuid 共 244 位元隨機）。資料庫只存 SHA-256，10 分鐘內有效、核銷即刪；格式不符不查資料庫，錯誤或重用回 401。
+  通行碼在 pg_net 送出前會短暫留在 `net.http_request_queue`（Supabase 上任何資料庫登入角色可讀，但 net schema 不經 Data API 對外）；
+  就算被拿到，也只能提早觸發本來就會做的工作（送出已排隊的通知、取消已過開場時間的揪團），不回傳任何資料。
+  排程指令（`cron.job.command`、`cron.job_run_details`）只有 `select public._sf_tick()`，沒有任何密碼。
+  發碼與呼叫函式只有 postgres（排程擁有者）能執行，service_role 只能核銷。
 
 ## 外部資料
 

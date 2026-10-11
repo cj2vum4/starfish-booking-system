@@ -1,6 +1,6 @@
 # 交接文件：海星劇本殺 LINE 預約系統
 
-最後更新：2026-10-05。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
+最後更新：2026-10-11（定時排程、官網預約直達開團頁；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
 `docs/PROGRESS.md`（逐階段施工紀錄）、`docs/SECURITY.md`（安全設計）、`docs/PLAYER_GUIDE.md`（玩家說明）。
 
 店家（帳號持有人）只講中文，回覆請用繁體中文、白話、少術語。
@@ -21,9 +21,12 @@
                 │                                      └─► 網站 Apps Script（玩本記錄點數、回歸禮）
                 └─ LINE webhook ──► Edge Function `line-webhook`（好友加入／封鎖入庫；玩家私訊提醒店家 LINE）
 
+Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST /hooks/tick（一次性通行碼）
+                                                   └─ 取消過期揪團、分批重送待送／失敗的 LINE 通知
+
 海星網站 cj2vum4/starfishlarp（GitHub Pages）
   ├─ scripts.js（劇本資料唯一來源）──push──► GitHub Action ──► api /hooks/catalog-sync
-  ├─ 劇本頁最下方 CTA → LINE OA（2026-10-06 起 booking.js 已移除，不再直接帶劇本進 LIFF）
+  ├─ 劇本頁最下方 CTA → LIFF 開團頁 `?view=create&game=<scripts.js id>`（2026-10-11 起；booking.js 浮動按鈕已於 10-06 移除）
   └─ GoogleAppsScript_玩本記錄.gs（手動部署到 Apps Script）：玩本記錄、集點、榮譽牆資料、回歸禮
        └─ 每次重算 → POST api /hooks/records-changed → api 更新 play_record_snapshot
           網站（points.js／reviews.js／play-record.js）與 LINE 會員卡讀 api GET /public/records（約 0.3 秒），讀不到才走 Apps Script
@@ -87,7 +90,7 @@
 - 店家後台、Google Sheets 匯出、安全檢查（docs/SECURITY.md）。
 - 劇本自動同步（starfishlarp scripts.js push → hook）。
 - **圖文選單 v2**：新玩家（認識海星、劇本介紹、劇本預約、缺人場次、新手指南、我是老玩家）／老玩家（劇本預約、缺人場次、玩本記錄、會員卡・兌換、劇本介紹、榮譽牆）。有出席紀錄或綁定核准的玩家自動換老玩家選單。
-- **網站預約入口**：2026-10-06 starfishlarp 移除劇本頁「📅 預約這本」浮動按鈕與 booking.js，57 頁最下方 CTA 一律連 LINE OA（該 repo CLAUDE.md 規定不要再加預約浮動按鈕）。LIFF `?game=` 參數仍可用。
+- **網站預約入口**：2026-10-06 starfishlarp 移除劇本頁「📅 預約這本」浮動按鈕與 booking.js；2026-10-11 店家同意後，57 頁最下方 CTA 改連 `https://liff.line.me/2011840025-6cuU9x8P?view=create&game=<id>`，直接打開開團頁並選好劇本（該 repo CLAUDE.md 規定不要再加預約浮動按鈕；`tests/cta.test.js` 檢查每頁連結）。
 - **第 2 階段：老玩家綁定＋50 點回歸禮＋會員卡**。綁定只能選點數總覽裡的名字、一名一 LINE、店家核准；回歸禮由 Apps Script 發（每名一次、資格日 2026/10/06 前加入、重算不消失）。
 - 2026-10-05 店家回報「老玩家綁定 LINE OA 已測試成功」；50 點實際入帳、會員卡餘額與老玩家選單切換尚未在本次回報中逐項確認。
 - LINE Login channel 2011840025：Add friend option 已確認為 On (aggressive)，Linked OA 原本空白，已儲存為 @825gdzws／海星劇本殺（依聊天「Update aggressive channel option」完成紀錄）。
@@ -120,6 +123,10 @@
 4. LIFF 加好友設定已完成：依 2026-10-05 聊天「Update aggressive channel option」紀錄，Add friend option 為 On (aggressive)，Linked OA 已儲存為 @825gdzws；不再列為待設定。
 5. P12 試營運：20–50 位真人、10 團、5 場成團；招募文案與說明在 `docs/PLAYER_GUIDE.md`（2026-10-06 已補上新舊選單、玩後問卷、7 天補登、老玩家綁定與會員卡、過期揪團）。
 6. 已知限制：沒有每位使用者的請求頻率限制；Supabase CLI migration history 未同步（見第 5 節）。
+7. **同一天不接不同地區（2026-10-11 店家定案，尚未做進系統）**：只有一位主持人；南港與台北車站同一天可以，新竹交大不能和台北的場次同一天。
+   目前場地在選時間之後才選，且成團前可改；實作時需在開團、改場地、店家確認成團三處檢查同日其他場次的地區。
+8. LINE 訊息額度：店家是輕用量（每月 200 則），預計每月最多成團 4 場（約 72 則推播），目前足夠；新增任何推播（例如開場前提醒）前先估算。
+9. 《天才在左我在右》頁右下角固定的「線上開本」面板在手機上會蓋住預約按鈕中間（starfishlarp，改連結前就存在），待店家決定是否調整。
 
 ---
 
@@ -134,6 +141,16 @@
 - 新表一律 `enable row level security` 並 `revoke all … from public,anon,authenticated`；RPC 只 `grant execute … to service_role`。
 - 業務錯誤用 `raise exception 'CODE'`（P0001 + 大寫代碼），API `statusForCode` 對應 HTTP 狀態，LIFF `ERRORS` 對應中文訊息。三處要一起加。
 - 每個 migration 配一份 `tests/<name>.sql`（以 rollback 結束），並登記到 `tests/database.test.mjs` 的清單。
+
+### 定時排程（0034，2026-10-11）
+- pg_cron 工作 `starfish-tick`（`*/5 * * * *`）執行 `public._sf_tick()`：產生一次性通行碼（只存 SHA-256、10 分鐘有效），
+  以 pg_net 呼叫 `https://qrcpmxejhqrvvpnjehri.supabase.co/functions/v1/api/hooks/tick`（網址寫在函式裡，換專案要改）。
+  api 以 `consume_tick_token` 核銷後回 202，背景執行 `runScheduledWork`。排程指令裡沒有密碼，不必放 Vault。
+- `starfish-tick-cleanup` 每天台北 03:17 刪除本專案工作 7 天前的 `cron.job_run_details`（pg_cron 不會自己清）。
+- 檢查：Dashboard → Integrations → Cron；或 `select * from cron.job_run_details order by start_time desc limit 5;`、
+  `select status_code, timed_out, error_msg, created from net._http_response order by created desc limit 5;`（回應保留約 6 小時）。
+- 停用：`select cron.unschedule('starfish-tick'); select cron.unschedule('starfish-tick-cleanup');`。重跑 migration 會以同名更新工作，不會重複。
+- 本機 PGlite 沒有 pg_cron／pg_net：migration 會略過排程（NOTICE），`tests/tick_schedule.sql` 只在雲端檢查排程是否存在。
 
 ### 2026-10-08 成團日曆修正
 - 0032 已套用並通過 tests/confirm_calendar_recheck.sql 雲端回滾驗收；確認成團前即時查完整時段，資料庫檢查同長／縮短／延長的整段撞期。
@@ -178,6 +195,8 @@
 `POST /admin/games/sync`、`GET /admin/bindings`、`POST /admin/bindings/:userId/approve|reject|bonus`。
 
 維護（`X-Sync-Secret`）：`POST /hooks/catalog-sync`、`/hooks/richmenu-setup`、`/hooks/selftest-race`。
+
+排程（`X-Tick-Token`，資料庫每次產生的一次性通行碼）：`POST /hooks/tick`，回 202 後在背景取消過期揪團、分批送通知。
 
 公開健康檢查（只回狀態與代碼）：`GET /health/calendar`、`GET /health/records`。
 

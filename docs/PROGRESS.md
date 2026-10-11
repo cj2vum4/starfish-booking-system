@@ -1,5 +1,41 @@
 # 施工紀錄 2026-10-02
 
+## 定時排程、取名防呆、篩選標籤、官網預約直達開團頁（2026-10-11）
+
+依 10/11 優化建議，店家指定先做三項（第 5、10 點與排程），並同意改官網預約連結。
+
+- **定時排程（0034）**：pg_cron 每 5 分鐘執行 `public._sf_tick()`，以 pg_net 呼叫 api `POST /hooks/tick`；
+  api 立刻回 202，背景取消開場時間已過的揪團、分批送出待送／失敗的 LINE 通知（每批 20 則、最多 5 批或 30 秒，剩下的下一輪再送）。
+  修正 10/8 檢查報告第 2 項：以前失敗的通知要等下一位玩家按按鈕才會重送。
+  - 叫醒 api 用一次性通行碼：資料庫產生、只存 SHA-256、10 分鐘內有效、用過即刪；排程指令裡沒有任何密碼，不需要店家另外保管。
+    錯誤或重複使用的通行碼回 401 INVALID_TOKEN，不會送出任何東西。
+  - 另有每日清理 `starfish-tick-cleanup`（台北 03:17）：pg_cron 的執行紀錄只保留 7 天。
+  - 停用：SQL Editor 執行 `select cron.unschedule('starfish-tick'); select cron.unschedule('starfish-tick-cleanup');`
+  - 用量：每月約 8,600 次 Edge Function 呼叫（免費額度 50 萬次）；只有真的有通知要送時才計入 LINE 訊息額度。
+- **新玩家取名（10/8 報告第 3 項）**：`POST /me/survey/name` 讀不到網站最新名單、只剩舊副本時，回 503 RECORDS_UNAVAILABLE
+  （「暫時讀不到海星網站的玩本記錄，請稍後再試」），不再拿舊名單判斷名字沒人用；舊副本裡已有的名字照樣回 409。
+  第一次讀取已失敗時不再重讀第二輪，玩家少等一次。
+- **開團篩選標籤**：LIFF 改用網站的 7 個核心標籤（情感／推理／陣營／歡樂／微恐／新手／繁體，順序同網站），精確比對；
+  原本的「驚悚」「機制」移除。57 本每個標籤都至少對得到 11 本。
+- **官網預約連結**（starfishlarp）：57 個劇本頁最下方「立即預約」改連
+  `https://liff.line.me/2011840025-6cuU9x8P?view=create&game=<scripts.js id>`，在 LINE 直接打開開團頁並選好劇本（未加好友會先被引導加 OA）。
+  順手修好《眠夢不老泉》《瘋兔子白又白…》兩頁：按鈕原本只跳「即將跳轉至預約頁面...」不會跳轉。
+  starfishlarp 新增 `tests/cta.test.js` 檢查每頁連結與 id；CLAUDE.md 規則同步更新。
+- 已知（未處理，店家決定是否修）：《天才在左我在右》右下角固定的「線上開本」面板在手機上會蓋住預約按鈕的中間，改連結前就存在。
+- 店家回覆（記錄供後續規劃）：
+  - LINE OA 目前是輕用量（每月 200 則免費），每月最多成團約 4 場。估算一團 6 人從開團到成團約 18 則推播，4 場約 72 則，
+    加上未成團揪團與聊天提醒，目前額度足夠；若之後加「開場前一天提醒」等通知要再估一次。
+  - 只有一位主持人；同一天不接不同地區的場次（南港＋台北車站同一天可以，新竹交大不能和台北同一天）。尚未做成系統規則，見 HANDOFF 待辦。
+- npm test（Node 22.22，型別剝除）：125 passed、0 failed；新增 tests/tick.test.mjs（6 項）、tests/tick_schedule.sql、取名與標籤各 1 項。
+- **店家要做的事（依序）**：
+  1. Supabase → Edge Functions → api → Code：貼上 GitHub main 最新的 `supabase/functions/api/index.ts` → Deploy，比對 SHA-256。
+  2. SQL Editor：貼上 `supabase/migrations/202610110034_tick_schedule.sql` → Run（Success）。
+  3. SQL Editor：貼上 `tests/tick_schedule.sql` → Run，必須出現 PASS（會一併確認排程已建立）。
+  4. 約 5 分鐘後：Integrations → Cron → Jobs 看 `starfish-tick` 有成功紀錄；或執行
+     `select status_code, created from net._http_response order by created desc limit 3;` 應為 202。
+- 真人待驗收：玩家用一般瀏覽器與 LINE 內開官網劇本頁 → 按「立即預約」→ LINE 開團頁已選好該劇本；
+  新玩家（未加好友）同一路徑會先被要求加 OA。
+
 ## 部署版本對齊（2026-10-09）
 
 - 店家手動部署 api 時用了 f2e7d3b（會員頁效能），覆蓋掉 10/8 已上線的「成團前完整日曆重查」（e9ca0db）。0032 保留舊 RPC，期間確認成團仍可用但不重查日曆。
