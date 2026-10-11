@@ -83,3 +83,79 @@ test('nothing is claimed without a channel token; a successful change triggers d
   await Promise.all(pending);
   assert.equal(live.calls.claimed, 1);
 });
+
+// Store notifications go through the store's own OA when its token is set; players' notifications never do.
+function twoOas({ adminStatus = 200, playerStatus = 200, adminToken = 'admin-token', friendStatus = 'active' } = {}) {
+  const pushes = [], complete = [];
+  const batch = [
+    { id: 's1', line_user_id: 'Uadmin', friend_status: friendStatus, retry_key: 'k1', payload: { ...facts, kind: 'group_full' } },
+    { id: 's2', line_user_id: 'Uadmin', friend_status: friendStatus, retry_key: 'k2', payload: { kind: 'binding_requested', record_name: '阿明', display_name: '明' } },
+    { id: 'p1', line_user_id: 'Uplayer', friend_status: 'active', retry_key: 'k3', payload: { ...facts, kind: 'group_confirmed' } },
+  ];
+  let claimed = 0;
+  const fetcher = async (url, opts = {}) => {
+    if (url === 'https://api.line.me/v2/bot/message/push') {
+      const token = opts.headers.Authorization.slice(7);
+      pushes.push({ to: JSON.parse(opts.body).to, token, key: opts.headers['X-Line-Retry-Key'] });
+      return new Response('{}', { status: token === 'admin-token' ? adminStatus : playerStatus });
+    }
+    const name = url.split('/rpc/')[1], args = JSON.parse(opts.body);
+    if (name === 'claim_notifications') return Response.json(claimed++ ? [] : batch);
+    if (name === 'complete_notification') { complete.push([args.p_id, args.p_result, args.p_error]); return Response.json({ ok: true }); }
+    return Response.json({});
+  };
+  return { pushes, complete, settings: { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k', allowedOrigins: [],
+    lineAccessToken: 'player-token', adminLineAccessToken: adminToken, fetcher } };
+}
+
+test('store notifications use the store OA; player notifications stay on the players OA', async () => {
+  const run = twoOas();
+  assert.deepEqual(await deliverNotifications(run.settings), { sent: 3, skipped: 0, failed: 0 });
+  assert.deepEqual(run.pushes.map(p => [p.to, p.token]),
+    [['Uadmin', 'admin-token'], ['Uadmin', 'admin-token'], ['Uplayer', 'player-token']]);
+  assert.deepEqual(run.complete.map(c => c[2]), [null, null, null]);
+
+  const single = twoOas({ adminToken: null });
+  await deliverNotifications(single.settings);
+  assert.ok(single.pushes.every(p => p.token === 'player-token'), 'without a store OA everything goes through the players OA');
+});
+
+test('a store OA that cannot reach the admin falls back to the players OA instead of dropping the message', async () => {
+  for (const status of [400, 403, 404]) {
+    const run = twoOas({ adminStatus: status });
+    assert.deepEqual(await deliverNotifications(run.settings), { sent: 3, skipped: 0, failed: 0 }, `HTTP ${status}`);
+    assert.deepEqual(run.pushes.slice(0, 2).map(p => [p.token, p.key]), [['admin-token', 'k1'], ['player-token', 'k1']]);
+    assert.deepEqual(run.complete.slice(0, 2).map(c => c.slice(1)), [['sent', 'VIA_PLAYER_OA'], ['sent', 'VIA_PLAYER_OA']]);
+  }
+  // A temporary LINE failure is retried later, not rerouted.
+  const busy = twoOas({ adminStatus: 503 });
+  await deliverNotifications(busy.settings);
+  assert.deepEqual(busy.complete[0], ['s1', 'failed', 'HTTP_503']);
+  assert.equal(busy.pushes.filter(p => p.key === 'k1').length, 1);
+  // An admin who blocked the players OA still hears from the store OA, with no fallback to the blocked one.
+  const blocked = twoOas({ friendStatus: 'blocked', adminStatus: 404 });
+  await deliverNotifications(blocked.settings);
+  assert.deepEqual(blocked.pushes.filter(p => p.to === 'Uadmin').map(p => p.token), ['admin-token', 'admin-token']);
+  assert.deepEqual(blocked.complete[0], ['s1', 'skipped', 'HTTP_404']);
+});
+
+test('line-health tells the admin which OA can reach them', async () => {
+  const session = 'S'.repeat(43);
+  const probe = (adminProfile, playerProfile = 200, token = 'admin-token') => handleApi(new Request('https://x/functions/v1/api/admin/line-health',
+    { headers: { Authorization: `Bearer ${session}` } }), { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k',
+    allowedOrigins: [], lineAccessToken: 'player-token', adminLineAccessToken: token,
+    fetcher: async (url, opts = {}) => {
+      if (url.startsWith('https://api.line.me/v2/bot/profile/')) {
+        assert.ok(url.endsWith('/Uadmin'));
+        return new Response('{}', { status: opts.headers.Authorization === 'Bearer admin-token' ? adminProfile : playerProfile });
+      }
+      const name = url.split('/rpc/')[1];
+      if (name === 'resolve_session') return Response.json({ user_id: 'u', display_name: 'x', is_admin: true, expires_at: 'x' });
+      if (name === 'user_line_identity') return Response.json({ line_user_id: 'Uadmin', oa_friend_status: 'active' });
+      return Response.json(null);
+    } }).then(r => r.json());
+  assert.deepEqual(await probe(200), { playerOa: 'ok', adminOa: 'ok' });
+  assert.deepEqual(await probe(404), { playerOa: 'ok', adminOa: 'unreachable' });
+  assert.deepEqual(await probe(401, 404), { playerOa: 'unreachable', adminOa: 'bad_token' });
+  assert.deepEqual(await probe(200, 200, null), { playerOa: 'ok', adminOa: 'not_configured' });
+});

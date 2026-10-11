@@ -102,3 +102,21 @@ test('mixed follow and message persists friendship first and malformed direct us
   assert.equal((await handleWebhook(req([{...event,source:{type:'user',userId:'forged'}}]),invalid.settings)).status,400);
   assert.equal(invalid.calls.length,0);
 });
+test('alerts go out from the store OA when configured, falling back to the players OA when it cannot reach the admin', async () => {
+  for (const [adminStatus, expected] of [[200, ['store-token']], [404, ['store-token', 'test-token']], [400, ['store-token', 'test-token']]]) {
+    const tokens = [];
+    const { settings } = setup();
+    const base = settings.fetcher;
+    settings.adminLineAccessToken = 'store-token';
+    settings.fetcher = async (url, opts) => {
+      if (url.endsWith('/push')) {
+        const token = opts.headers.Authorization.slice(7);
+        tokens.push(token);
+        return new Response('', { status: token === 'store-token' ? adminStatus : 200 });
+      }
+      return base(url, opts);
+    };
+    assert.equal((await handleWebhook(req(), settings)).status, 200);
+    assert.deepEqual(tokens, expected, `store OA answered ${adminStatus}`);
+  }
+});

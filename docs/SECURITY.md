@@ -45,7 +45,23 @@
 - 劇本：GitHub `scripts.js` 只以 JSON 解析，不執行程式碼；固定讀取推送的 commit。
 - Google 日曆／Outlook：只存忙碌起訖，不存標題或內容；讀不到時列時段與開團一律拒絕（fail closed）。
   列時段可沿用 60 秒內涵蓋相同區間的同步結果（避免灌請求耗盡 Google 配額）；開團一律即時查詢。
-- Google Sheets：以 RAW 寫入，玩家名字不會被當成公式執行。
+- Google Sheets：2026-10-11 起不再寫入（報表匯出移除），服務帳戶權限降為 `spreadsheets.readonly`，只用來讀店家共用的舊試算表做一次性匯入。
+
+## 角色分配問卷（2026-10-11，0035）
+
+- 回覆含性別、戀愛取向、感情狀況、「同行玩家中你喜歡的人」等敏感個資，存在 `role_survey_responses`：RLS 開啟、
+  anon／authenticated 無任何權限；讀、改、刪、匯入只有 `admin_*` RPC，函式內檢查 `admin_users`。
+- 網站送出走 `POST /public/role-survey`（不需登入，與原本 Apps Script 相同）：CORS 只回應網站來源；內容在資料庫清理
+  （最多 80 題、題目 200 字、答案 5000 字、多選以「, 」串接），只存純文字、畫面一律 `esc()`；蜜罐欄位有值就丟棄；
+  10 分鐘內全站超過 200 份暫停收件（429）。
+- 稽核只記「哪一筆被改／刪、分配了什麼角色、匯入幾筆」，不記答案內容。店家可刪除單份回覆（玩家要求刪除個資時用）。
+- 匯入舊「角色問卷總表」：店家把試算表共用給服務帳戶（檢視者），由店家在 LINE 後台按匯入；不會寫回 Google。
+
+## 管理員 OA（2026-10-11）
+
+- 店家通知可改由第二個 LINE OA 發送（`LINE_ADMIN_CHANNEL_ACCESS_TOKEN`）。兩個 OA 的 Messaging API channel 須在同一個
+  Provider，同一人的 LINE user ID 才相同；不同時管理員 OA 推不到（400/403/404），系統自動改用玩家 OA 送給**同一個** user ID，
+  不會送到別人。店家後台「LINE 通知」以 LINE profile API 檢查兩個 OA 是否傳得到自己。
 - Outlook 已發布行事曆網址等同讀取權限，只存放在 Supabase Secrets（`BUSY_ICS_URLS`）。
 
 ## 老玩家綁定與點數

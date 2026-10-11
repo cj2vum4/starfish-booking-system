@@ -16,8 +16,8 @@
                 │     └─► Supabase Edge Function `api`  ──► Postgres（RPC，僅 service_role）
                 │                                      ├─► Google Calendar（忙碌時段、寫入成團行程）
                 │                                      ├─► Outlook 發布的 .ics（忙碌時段）
-                │                                      ├─► Google Sheets（店家報表匯出）
-                │                                      ├─► LINE Messaging API（推播、圖文選單）
+                │                                      ├─► Google Sheets（唯讀：一次性匯入店家共用的舊試算表）
+                │                                      ├─► LINE Messaging API：玩家 OA（推播、圖文選單）＋管理員 OA（店家通知）
                 │                                      └─► 網站 Apps Script（玩本記錄點數、回歸禮）
                 └─ LINE webhook ──► Edge Function `line-webhook`（好友加入／封鎖入庫；玩家私訊提醒店家 LINE）
 
@@ -63,9 +63,10 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 | 名稱 | 存放位置 | 用途 |
 |---|---|---|
 | `LINE_CHANNEL_SECRET` | Supabase Edge Function Secrets | webhook HMAC 驗證 |
-| `LINE_CHANNEL_ACCESS_TOKEN` | Supabase Secrets | 推播、圖文選單、好友即時確認 |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Supabase Secrets | Calendar／Sheets |
-| `GOOGLE_CALENDAR_ID`、`GOOGLE_EVENTS_CALENDAR_ID`、`GOOGLE_SHEET_ID` | Supabase Secrets | 店家行事曆、成團行程日曆、報表試算表 |
+| `LINE_CHANNEL_ACCESS_TOKEN` | Supabase Secrets | 玩家 OA：推播、圖文選單、好友即時確認 |
+| `LINE_ADMIN_CHANNEL_ACCESS_TOKEN` | Supabase Secrets（api 與 line-webhook 都要讀到） | 管理員 OA：店家通知（新揪團、滿團、綁定申請、玩家私訊提醒）。沒設定或傳不到時改由玩家 OA 送出 |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Supabase Secrets | Calendar；唯讀讀取店家共用的試算表（一次性匯入） |
+| `GOOGLE_CALENDAR_ID`、`GOOGLE_EVENTS_CALENDAR_ID` | Supabase Secrets | 店家行事曆、成團行程日曆（`GOOGLE_SHEET_ID` 已隨報表匯出移除，可從 Secrets 刪掉） |
 | `BUSY_ICS_URLS` | Supabase Secrets | Outlook 發布網址（等同讀取權限） |
 | `CATALOG_SYNC_SECRET` | Supabase Secrets ＝ starfishlarp GitHub Secret `BOOKING_SYNC_SECRET` ＝ 本機 `.env.sync-secret` | 維護用 hooks（劇本同步、圖文選單、壓測） |
 | `PLAY_RECORD_SECRET` | Supabase Secrets ＝ Apps Script 指令碼屬性 `BOOKING_SECRET` ＝ 本機 `.env.play-record-secret` | 回歸禮 |
@@ -87,7 +88,7 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - LINE 通知（新揪團、有人加入、滿團〔全員〕、成團、取消、解散、綁定申請／結果），outbox＋重試；只送得到 OA 好友。
 - 開團／加入／認領必須是 OA 好友（前端面板＋後端即時問 LINE）。
 - 缺人場次（公開揪團）、主揪可切換公開／私人。
-- 店家後台、Google Sheets 匯出、安全檢查（docs/SECURITY.md）。
+- 店家後台、安全檢查（docs/SECURITY.md）。Google Sheets 報表匯出店家沒在用，2026-10-11 移除（後台直接看場次）。
 - 劇本自動同步（starfishlarp scripts.js push → hook）。
 - **圖文選單 v2**：新玩家（認識海星、劇本介紹、劇本預約、缺人場次、新手指南、我是老玩家）／老玩家（劇本預約、缺人場次、玩本記錄、會員卡・兌換、劇本介紹、榮譽牆）。有出席紀錄或綁定核准的玩家自動換老玩家選單。
 - **網站預約入口**：2026-10-06 starfishlarp 移除劇本頁「📅 預約這本」浮動按鈕與 booking.js；2026-10-11 店家同意後，57 頁最下方 CTA 改連 `https://liff.line.me/2011840025-6cuU9x8P?view=create&game=<id>`，直接打開開團頁並選好劇本（該 repo CLAUDE.md 規定不要再加預約浮動按鈕；`tests/cta.test.js` 檢查每頁連結）。
@@ -194,14 +195,18 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 `POST /seats/:id/leave`、`POST /invites/preview|claim`、`GET /records/names`、`GET|POST /me/binding`。
 
 店家（session＋admin）：`GET /admin/groups`、`POST /admin/groups/:id/confirm`、`POST /admin/events/:id/cancel|calendar|complete`、
-`GET /admin/events/:id/participants`、`GET /admin/report`、`POST /admin/sheets/export`、`GET /admin/google-account`、
-`POST /admin/games/sync`、`GET /admin/bindings`、`POST /admin/bindings/:userId/approve|reject|bonus`。
+`GET /admin/events/:id/participants`、`GET /admin/report`、`GET /admin/google-account`、`GET /admin/line-health`、
+`POST /admin/games/sync`、`GET /admin/bindings`、`POST /admin/bindings/:userId/approve|reject|bonus`、
+`GET /admin/role-surveys`、`GET /admin/role-surveys/responses?script=&before=`、`POST /admin/role-surveys/responses/:id[/delete]`、
+`POST /admin/role-surveys/import`（服務帳戶唯讀讀「角色問卷總表」）。
 
 維護（`X-Sync-Secret`）：`POST /hooks/catalog-sync`、`/hooks/richmenu-setup`、`/hooks/selftest-race`。
 
 排程（`X-Tick-Token`，資料庫每次產生的一次性通行碼）：`POST /hooks/tick`，回 202 後在背景取消過期揪團、分批送通知。
 
 公開健康檢查（只回狀態與代碼）：`GET /health/calendar`、`GET /health/records`。
+
+網站角色問卷（公開，CORS 只限網站來源）：`POST /public/role-survey`（text/plain JSON，蜜罐欄位 `website`）。
 
 公開資料：`GET /public/records`（點數總覽副本，任何來源可讀，快取 30 秒）。Apps Script 專用：`POST /hooks/records-changed`（`X-Play-Record-Secret`）。
 

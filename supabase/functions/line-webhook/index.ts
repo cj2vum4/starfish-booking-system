@@ -4,6 +4,7 @@ type Settings = {
   supabaseUrl?: string;
   serviceKey?: string;
   lineAccessToken?: string;
+  adminLineAccessToken?: string;  // the store's own OA; alerts fall back to the players' OA if it cannot reach the admin
   fetcher?: typeof fetch;
 };
 type LineEvent = { type: string; webhookEventId: string; timestamp: number;
@@ -101,16 +102,23 @@ export async function handleWebhook(req: Request, settings: Settings): Promise<R
       const results = await Promise.all(batch.alerts.map(async (n: {
         id: string; retry_key: string; line_user_id: string; friend_status: string;
       }) => {
+        // friend_status is about the players' OA; the store's own OA is tried regardless.
+        const viaAdmin = Boolean(settings.adminLineAccessToken);
         let result = 'skipped', error: string | null = 'BLOCKED';
-        if (n.friend_status !== 'blocked') {
+        if (viaAdmin || n.friend_status !== 'blocked') {
+          const push = (token: string) => fetcher('https://api.line.me/v2/bot/message/push', {
+            method: 'POST', signal: AbortSignal.timeout(8000),
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`,
+              'X-Line-Retry-Key': n.retry_key },
+            body: JSON.stringify({ to: n.line_user_id, messages: [{ type: 'text', text: ALERT_TEXT }],
+              notificationDisabled: false }),
+          });
           try {
-            const response = await fetcher('https://api.line.me/v2/bot/message/push', {
-              method: 'POST', signal: AbortSignal.timeout(8000),
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.lineAccessToken}`,
-                'X-Line-Retry-Key': n.retry_key },
-              body: JSON.stringify({ to: n.line_user_id, messages: [{ type: 'text', text: ALERT_TEXT }],
-                notificationDisabled: false }),
-            });
+            let response = await push(viaAdmin ? settings.adminLineAccessToken! : settings.lineAccessToken!);
+            // Not a friend of the store's OA, or a user ID from another provider: use the players' OA.
+            if (viaAdmin && [400, 403, 404].includes(response.status) && n.friend_status !== 'blocked') {
+              response = await push(settings.lineAccessToken!);
+            }
             if (response.ok || response.status === 409) { result = 'sent'; error = null; }
             else {
               result = response.status === 429 || response.status >= 500 ? 'failed' : 'skipped';
@@ -138,5 +146,6 @@ if (typeof Deno !== 'undefined') {
     supabaseUrl: Deno.env.get('SUPABASE_URL'),
     serviceKey: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
     lineAccessToken: Deno.env.get('LINE_CHANNEL_ACCESS_TOKEN'),
+    adminLineAccessToken: Deno.env.get('LINE_ADMIN_CHANNEL_ACCESS_TOKEN') || undefined,
   }));
 }

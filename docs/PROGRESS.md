@@ -1,5 +1,30 @@
 # 施工紀錄 2026-10-02
 
+## 移除 GAS：第 0 階段（管理員 OA）＋第 1 階段（角色問卷）（2026-10-11）
+
+整體計畫與店家定案見 `docs/GAS_MIGRATION.md`。
+
+- **第 0 階段：店家通知走管理員 OA。** 新揪團、滿團待確認、老玩家綁定申請，以及 line-webhook 的「玩家私訊提醒」，
+  在設定 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN` 後改由管理員 OA 發送，用它自己的免費額度；
+  管理員 OA 回 400／403／404（店家沒加它好友，或兩個 OA 不在同一個 Provider）時自動改由玩家 OA 送出，記錄 `VIA_PLAYER_OA`，不會漏。
+  玩家通知（加入、滿團、成團、取消、解散、綁定結果）一律走玩家 OA。店家後台新增「LINE 通知」卡，用 LINE profile API 檢查兩個 OA 傳不傳得到自己。
+- **移除 Google 試算表報表匯出**（店家沒在用）：`/admin/sheets/export`、`GOOGLE_SHEET_ID` 移除，服務帳戶權限降為 `spreadsheets.readonly`（只供一次性匯入）。
+- **第 1 階段：角色問卷。** 0035 `role_survey_responses`（RLS、只有店家 RPC 能讀改刪）；
+  `POST /public/role-survey`（網站送出，CORS 只限網站、蜜罐、全站 10 分鐘 200 份上限）；
+  LINE 店家後台「角色問卷回覆」：依劇本看回覆、填分配的角色與備註、刪除、匯入舊「角色問卷總表」（服務帳戶唯讀、可重複匯入不重複）。
+  網站 `survey.js` 先送預約系統，連不上／還沒部署（404／5xx／網路錯誤）才改送舊 GAS，所以網站可先上線。
+- 測試：npm test 133 passed（新增 OA 分流 6 項、問卷 API 6 項、tests/role_survey.sql）；網站 tests/run.sh 新增問卷送出 5 種情況 20 項。
+  LINE 店家畫面以假 LINE SDK＋假 API 在 390 寬實際截圖檢查（問卷列表、回覆展開、店家後台通知卡）。
+- **店家要做的事（依序）**：
+  1. 管理員 OA：確認它的 Messaging API channel 和玩家 OA 在同一個 Provider（劇本殺玩家通知 2005594335）；
+     發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；用自己的 LINE 加管理員 OA 好友。
+  2. SQL Editor：套用 `supabase/migrations/202610110035_role_survey.sql`，再跑 `tests/role_survey.sql`（須 PASS）。
+  3. 部署 api 與 line-webhook 兩支 Edge Function（貼 GitHub main 最新檔案，比對 SHA-256）。
+  4. Supabase Secrets 可刪除 `GOOGLE_SHEET_ID`。
+  5. LINE 店家後台 →「店家後台」看「LINE 通知」卡應顯示「✅ 店家通知由管理員 OA 發送」。
+  6. 舊角色問卷：把 Google 試算表「角色問卷總表」共用給服務帳戶（檢視者），在「角色問卷回覆」按「匯入舊回覆」。
+- 真人待驗收：玩家填一份網站角色問卷 → 店家在 LINE「角色問卷回覆」看得到；另一個帳號私訊玩家 OA → 提醒從管理員 OA 收到。
+
 ## 定時排程、取名防呆、篩選標籤、官網預約直達開團頁（2026-10-11）
 
 依 10/11 優化建議，店家指定先做三項（第 5、10 點與排程），並同意改官網預約連結。

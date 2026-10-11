@@ -6,19 +6,20 @@ type Settings = {
   allowedOrigins?: string[];
   // Google service account: "See only free/busy" on the owner's calendar (calendarId) and
   // "Make changes to events" on a dedicated store calendar (eventsCalendarId).
-  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string; sheetId?: string;
-    projectId?: string };
+  google?: { clientEmail: string; privateKey: string; calendarId: string; eventsCalendarId?: string; projectId?: string };
   icsUrls?: string[];  // published busy calendars, e.g. the owner's Outlook (capability URLs: keep secret)
   catalogUrl?: string;  // raw scripts.js in the Starfish site repo
   catalogSiteBase?: string;  // where that repo's pages are published
   catalogCommitUrl?: string;  // raw file URL template with {commit}, for the GitHub hook
   catalogSyncSecret?: string;  // shared with the starfishlarp GitHub Action
   lineAccessToken?: string;  // Messaging API channel access token, for push notifications
+  adminLineAccessToken?: string;  // the store's own OA: store notifications use its separate free quota
   liffId?: string;  // links in notifications open this LIFF app
   richMenuImageUrls?: Record<string, string>;
   // The website's 玩本記錄 Apps Script: public summary (points) and the secret-protected 回歸禮.
   playRecordUrl?: string;
   playRecordSecret?: string;  // shared with the Apps Script property BOOKING_SECRET
+  roleSurveySheetId?: string;  // the old 角色問卷總表, imported once (defaults to the known sheet)
   background?: (work: Promise<unknown>) => void;  // run after the response (EdgeRuntime.waitUntil)
   fetcher?: typeof fetch;
   now?: () => number;
@@ -41,6 +42,7 @@ export function statusForCode(code: string) {
   if (NOT_FOUND.test(code)) return 404;
   if (CONFLICT.has(code)) return 409;
   if (code === 'NOT_ADMIN' || code === 'NOT_FRIEND') return 403;
+  if (code === 'TOO_MANY_REQUESTS') return 429;
   return 400;
 }
 
@@ -353,7 +355,7 @@ async function googleAccessToken(settings: Settings) {
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
   const unsigned = `${b64urlJson({ alg: 'RS256', typ: 'JWT' })}.${b64urlJson({ iss: google.clientEmail,
     scope: 'https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events'
-      + ' https://www.googleapis.com/auth/spreadsheets',
+      + ' https://www.googleapis.com/auth/spreadsheets.readonly',
     aud: 'https://oauth2.googleapis.com/token',
     iat: now, exp: now + 3600 })}`;
   const signature = new Uint8Array(await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(unsigned)));
@@ -519,6 +521,19 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
   }
 }
 
+// Store-facing notifications go out from the store's own OA (a second LINE OA with its own free message
+// quota) when LINE_ADMIN_CHANNEL_ACCESS_TOKEN is set. If that OA cannot reach the admin (not its friend yet,
+// or its channel sits under another provider, where LINE user IDs differ), the players' OA sends it instead.
+export const ADMIN_NOTIFICATION_KINDS = new Set(['group_created', 'group_full', 'binding_requested']);
+function pushText(settings: Settings, token: string, to: string, text: string, retryKey: string) {
+  return (settings.fetcher ?? fetch)('https://api.line.me/v2/bot/message/push', {
+    method: 'POST', signal: AbortSignal.timeout(8000),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, 'X-Line-Retry-Key': retryKey },
+    body: JSON.stringify({ to, messages: [{ type: 'text', text: text.slice(0, 5000) }] }),
+  });
+}
+const UNREACHABLE = new Set([400, 403, 404]);  // not a friend of that OA / unknown user ID
+
 // Sends queued notifications. LINE's retry key makes a resend after a timeout a no-op.
 export async function deliverNotifications(settings: Settings, limit = 20) {
   if (!settings.lineAccessToken) return { sent: 0, skipped: 0, failed: 0 };
@@ -526,17 +541,19 @@ export async function deliverNotifications(settings: Settings, limit = 20) {
   const tally = { sent: 0, skipped: 0, failed: 0 };
   for (const n of batch) {
     const text = notificationText(n.payload, settings.liffId ?? DEFAULT_LIFF_ID);
+    // friend_status is about the players' OA; the store's OA is tried regardless.
+    const viaAdmin = Boolean(settings.adminLineAccessToken) && ADMIN_NOTIFICATION_KINDS.has(n.payload?.kind);
     let result: 'sent' | 'skipped' | 'failed', error: string | null = null;
     if (!text) { result = 'skipped'; error = 'UNKNOWN_KIND'; }
-    else if (n.friend_status === 'blocked') { result = 'skipped'; error = 'BLOCKED'; }
+    else if (!viaAdmin && n.friend_status === 'blocked') { result = 'skipped'; error = 'BLOCKED'; }
     else {
       try {
-        const response = await (settings.fetcher ?? fetch)('https://api.line.me/v2/bot/message/push', {
-          method: 'POST', signal: AbortSignal.timeout(8000),
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.lineAccessToken}`,
-            'X-Line-Retry-Key': n.retry_key },
-          body: JSON.stringify({ to: n.line_user_id, messages: [{ type: 'text', text: text.slice(0, 5000) }] }),
-        });
+        let response = await pushText(settings, viaAdmin ? settings.adminLineAccessToken! : settings.lineAccessToken,
+          n.line_user_id, text, n.retry_key);
+        if (viaAdmin && UNREACHABLE.has(response.status) && n.friend_status !== 'blocked') {
+          response = await pushText(settings, settings.lineAccessToken, n.line_user_id, text, n.retry_key);
+          error = 'VIA_PLAYER_OA';  // delivered, but the store's OA could not reach this admin
+        }
         // 409: this retry key was already accepted, i.e. the message went out earlier.
         if (response.ok || response.status === 409) result = 'sent';
         else if (response.status === 429 || response.status >= 500) { result = 'failed'; error = `HTTP_${response.status}`; }
@@ -676,6 +693,88 @@ async function publicRecordsPayload(settings: Settings): Promise<Record<string, 
 
 const publicRecord = (r: RecordSummary) => ({ name: r.name, agent: r.agent, plays: r.plays, last: r.last });
 
+// --- Google Sheets import (read-only, service account) --------------------------------------
+// The store shares an old spreadsheet with the service account (Viewer) and imports it once. Nothing is
+// written back to Google. Used for the 角色問卷總表; the 玩本記錄 spreadsheet follows the same path.
+const ROLE_SURVEY_SHEET_ID = '1NrmyrSq3UqoU0m-2JWVJsvF18VKwW18n-P-w-iyYb5M';  // GoogleAppsScript_角色問卷.gs
+async function sheetsGet(settings: Settings, sheetId: string, query: string) {
+  if (!settings.google) throw new ApiError(503, 'GOOGLE_NOT_CONFIGURED');
+  let token: string;
+  try { token = await googleAccessToken(settings); } catch { throw new ApiError(503, 'GOOGLE_KEY_INVALID'); }
+  const response = await (settings.fetcher ?? fetch)(
+    `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}${query}`,
+    { signal: AbortSignal.timeout(20000), headers: { Authorization: `Bearer ${token}` } });
+  if (response.status === 403 || response.status === 404) {
+    // Tell the store which setup step is missing; these come from Google's error body.
+    const err = (await response.json().catch(() => null))?.error ?? {};
+    const disabled = (err.details ?? []).some((d: any) => d.reason === 'SERVICE_DISABLED')
+      || /has not been used|is disabled/i.test(err.message ?? '');
+    throw new ApiError(503, response.status === 404 ? 'SHEET_NOT_FOUND' : disabled ? 'SHEETS_API_DISABLED' : 'SHEET_NOT_SHARED');
+  }
+  if (!response.ok) throw new ApiError(502, 'SHEETS_FAILED');
+  return response.json();
+}
+
+// A Sheets date serial counts days from 1899-12-30 in the spreadsheet's own time zone.
+function zoneOffsetMs(timeZone: string, utcMs: number) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(utcMs));
+  const get = (t: string) => Number(parts.find(p => p.type === t)?.value);
+  return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')) - utcMs;
+}
+export function sheetSerialToIso(serial: number, timeZone = 'Asia/Taipei') {
+  const local = Math.round((serial - 25569) * 86400000);
+  let utc = local - zoneOffsetMs(timeZone, local);
+  utc = local - zoneOffsetMs(timeZone, utc);  // second pass settles the offset at the true instant
+  return new Date(utc).toISOString();
+}
+
+// One tab of the 角色問卷總表 → answers. Column A is 時間戳記 (read as a serial for an exact time);
+// every other column with a header becomes {label, value} using the text the store sees.
+// import_key = SHA-256 of tab, time and the row, so importing again never duplicates.
+export async function surveyRowsFromSheet(tab: string, shown: unknown[][], serials: unknown[][], timeZone: string) {
+  const header = (shown[0] ?? []).map(h => String(h ?? '').trim());
+  const rows: Record<string, unknown>[] = [];
+  let skipped = 0;
+  for (let i = 1; i < shown.length; i++) {
+    const cells = shown[i] ?? [];
+    const serial = Number((serials[i] ?? [])[0]);
+    const fields = header.map((label, c) => ({ label, value: String(cells[c] ?? '').trim() }))
+      .filter((f, c) => c > 0 && f.label && f.value);
+    if (!fields.length) continue;  // an empty row is not an answer
+    if (!Number.isFinite(serial) || serial < 1) { skipped++; continue; }
+    rows.push({ script: tab, submitted_at: sheetSerialToIso(serial, timeZone), fields,
+      import_key: await sha256Hex(JSON.stringify([tab, serial, cells])) });
+  }
+  return { rows, skipped };
+}
+
+async function importRoleSurveys(settings: Settings, actor: string) {
+  const sheetId = settings.roleSurveySheetId ?? ROLE_SURVEY_SHEET_ID;
+  const meta = await sheetsGet(settings, sheetId, '?fields=properties.timeZone,sheets.properties.title');
+  const timeZone = meta?.properties?.timeZone || 'Asia/Taipei';
+  const tabs: string[] = (meta?.sheets ?? []).map((x: any) => String(x.properties?.title ?? '')).filter(Boolean);
+  if (!tabs.length) return { tabs: [], imported: 0, skipped: 0 };
+  const ranges = (cols: string) => tabs.map(t => `ranges=${encodeURIComponent(`'${t.replace(/'/g, "''")}'!${cols}`)}`).join('&');
+  const [shown, serials] = await Promise.all([
+    sheetsGet(settings, sheetId, `/values:batchGet?${ranges('A1:CZ')}&valueRenderOption=FORMATTED_VALUE`),
+    sheetsGet(settings, sheetId, `/values:batchGet?${ranges('A1:A')}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`),
+  ]);
+  const rows: Record<string, unknown>[] = [];
+  const perTab: { script: string; rows: number }[] = [];
+  let skipped = 0;
+  for (let t = 0; t < tabs.length; t++) {
+    const got = await surveyRowsFromSheet(tabs[t], shown?.valueRanges?.[t]?.values ?? [], serials?.valueRanges?.[t]?.values ?? [], timeZone);
+    skipped += got.skipped;
+    if (got.rows.length) perTab.push({ script: tabs[t], rows: got.rows.length });
+    rows.push(...got.rows);
+  }
+  if (rows.length > 5000) throw new ApiError(400, 'IMPORT_TOO_LARGE');
+  const done = rows.length ? await rpc<{ imported: number; skipped: number }>(settings, 'admin_import_role_surveys',
+    { p_actor: actor, p_rows: rows }) : { imported: 0, skipped: 0 };
+  return { tabs: perTab, imported: done.imported, skipped: done.skipped + skipped };
+}
+
 // --- Rich Menu -------------------------------------------------------------------
 // Two 2500x1686 menus of six cells. New players get the default one (getting to know
 // Starfish, then booking); players with a recorded play are linked to the member one.
@@ -761,63 +860,6 @@ async function setupRichMenu(settings: Settings) {
     ours.includes(m.name) && m.richMenuId !== ids.new && m.richMenuId !== ids.member);
   for (const m of old) await call(`https://api.line.me/v2/bot/richmenu/${m.richMenuId}`, { method: 'DELETE' });
   return { newMenuId: ids.new, memberMenuId: ids.member, membersLinked: linked, replaced: old.length };
-}
-
-// --- Google Sheets export (one-way, whole sheets rewritten each time) ------------------
-const SHEET_TABS = ['場次', '出席', '玩家'];
-const taipeiStamp = (iso?: string | null) => iso
-  ? new Date(new Date(iso).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 16).replace('T', ' ') : '';
-const yesNo = (v: unknown) => v ? '是' : '否';
-const STATUS_ZH: Record<string, string> = { open: '已成團', confirmed: '已成團', completed: '已結束', cancelled: '已取消' };
-const ATTEND_ZH: Record<string, string> = { attended: '出席', absent: '缺席', unknown: '' };
-
-export function reportToSheets(r: Record<string, any>) {
-  const sessions = [['日期時間', '結束', '劇本', '來源', '主揪', '狀態', '人數上限', '報名', '出席', '缺席', '場地', 'DM', '每人(元)', '取消原因'],
-    ...r.sessions.map((x: any) => [taipeiStamp(x.starts_at), taipeiStamp(x.ends_at), x.title, x.source, x.organizer ?? '',
-      STATUS_ZH[x.status] ?? x.status, x.capacity, x.booked, x.attended, x.absent, x.venue, x.dm_name,
-      x.price_cents == null ? '' : Math.round(x.price_cents / 100), x.cancel_reason ?? ''])];
-  const attendance = [['日期時間', '劇本', '玩家', '有 LINE', '報名狀態', '出席'],
-    ...r.attendance.map((x: any) => [taipeiStamp(x.starts_at), x.title, x.player, yesNo(x.has_line), x.status, ATTEND_ZH[x.attendance] ?? ''])];
-  const players = [['玩家', '有 LINE', 'OA 好友', '累積場次', '最後一場', '建立時間'],
-    ...r.players.map((x: any) => [x.player, yesNo(x.has_line), x.oa_friend === 'active' ? '是' : x.oa_friend === 'blocked' ? '已封鎖' : '否',
-      x.played, taipeiStamp(x.last_played), taipeiStamp(x.joined_at)])];
-  return { 場次: sessions, 出席: attendance, 玩家: players } as Record<string, (string | number)[][]>;
-}
-
-async function exportToSheets(settings: Settings, actor: string) {
-  const sheetId = settings.google?.sheetId;
-  if (!settings.google || !sheetId) throw new ApiError(503, 'SHEETS_NOT_CONFIGURED');
-  const now = (settings.now ?? Date.now)();
-  const report = await rpc<Record<string, any>>(settings, 'admin_report', { p_actor: actor,
-    p_from: new Date(now - 365 * 86400000).toISOString(), p_to: new Date(now + 90 * 86400000).toISOString() });
-  const tables = reportToSheets(report);
-  let token: string;
-  try { token = await googleAccessToken(settings); } catch { throw new ApiError(503, 'GOOGLE_KEY_INVALID'); }
-  const f = settings.fetcher ?? fetch;
-  const base = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(sheetId)}`;
-  const call = async (url: string, method: string, body?: unknown) => {
-    const response = await f(url, { method, signal: AbortSignal.timeout(15000),
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
-    if (response.status === 403 || response.status === 404) {
-      // Tell the store which setup step is wrong; these come from Google's error body.
-      const err = (await response.json().catch(() => null))?.error ?? {};
-      const disabled = (err.details ?? []).some((d: any) => d.reason === 'SERVICE_DISABLED')
-        || /has not been used|is disabled/i.test(err.message ?? '');
-      throw new ApiError(503, response.status === 404 ? 'SHEET_NOT_FOUND' : disabled ? 'SHEETS_API_DISABLED' : 'SHEET_NOT_SHARED');
-    }
-    if (!response.ok) throw new ApiError(502, 'SHEETS_FAILED');
-    return response.json().catch(() => null);
-  };
-  const meta = await call(`${base}?fields=sheets.properties.title`, 'GET');
-  const existing = new Set((meta?.sheets ?? []).map((x: any) => x.properties.title));
-  const missing = SHEET_TABS.filter(t => !existing.has(t));
-  if (missing.length) await call(`${base}:batchUpdate`, 'POST', { requests: missing.map(title => ({ addSheet: { properties: { title } } })) });
-  await call(`${base}/values:batchClear`, 'POST', { ranges: SHEET_TABS.map(t => `'${t}'`) });
-  // RAW: names like "=1+1" stay text, never formulas.
-  await call(`${base}/values:batchUpdate`, 'POST', { valueInputOption: 'RAW',
-    data: SHEET_TABS.map(t => ({ range: `'${t}'!A1`, values: tables[t] })) });
-  return { sessions: tables['場次'].length - 1, attendance: tables['出席'].length - 1, players: tables['玩家'].length - 1,
-    url: `https://docs.google.com/spreadsheets/d/${sheetId}` };
 }
 
 const TAIPEI_OFFSET_MS = 8 * 3600 * 1000;  // Taiwan has no daylight saving time.
@@ -1153,17 +1195,63 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const to = params.get('to') ? new Date(taipeiDayStart(params.get('to')!).getTime() + 86400000) : new Date(nowMs + 60 * 86400000);
     return [200, camel(await rpc(settings, 'admin_report', { p_actor: session.user_id, p_from: from.toISOString(), p_to: to.toISOString() }))];
   }
-  if (req.method === 'GET' && path === '/admin/google-account') {
-    // Which service account and Cloud project the store must share with / enable APIs in.
-    const { session } = await requireSession(req, settings);
-    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
-    return [200, { serviceAccountEmail: settings.google?.clientEmail ?? null, projectId: settings.google?.projectId ?? null,
-      sheetId: settings.google?.sheetId ?? null }];
+  // ---- 角色分配問卷（網站問卷送出；店家在 LINE 看回覆、分配角色）----
+  if (req.method === 'POST' && path === '/public/role-survey') {
+    // The website posts text/plain JSON (a simple request: no CORS preflight), like it did to the Apps Script.
+    const body = await readJson(req);
+    if (typeof body.website === 'string' && body.website) return [200, { ok: true }];  // honeypot: drop silently
+    await rpc(settings, 'submit_role_survey', { p_script: typeof body.script === 'string' ? body.script : '',
+      p_fields: Array.isArray(body.fields) ? body.fields : [] });
+    return [201, { ok: true }];
   }
-  if (req.method === 'POST' && path === '/admin/sheets/export') {
+  if (req.method === 'GET' && path === '/admin/role-surveys') {
+    const { session } = await requireSession(req, settings);
+    return [200, { scripts: camel(await rpc(settings, 'admin_role_survey_scripts', { p_actor: session.user_id })) }];
+  }
+  if (req.method === 'GET' && path === '/admin/role-surveys/responses') {
+    const { session } = await requireSession(req, settings);
+    const params = new URL(req.url).searchParams;
+    const before = params.get('before');
+    if (before && Number.isNaN(Date.parse(before))) throw new ApiError(400, 'INVALID_RANGE');
+    return [200, { responses: camel(await rpc(settings, 'admin_role_survey_responses', { p_actor: session.user_id,
+      p_script: params.get('script') ?? '', p_limit: 30, p_before: before || null })) }];
+  }
+  if (req.method === 'POST' && path === '/admin/role-surveys/import') {
     const { session } = await requireSession(req, settings);
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
-    return [200, await exportToSheets(settings, session.user_id)];
+    return [200, await importRoleSurveys(settings, session.user_id)];
+  }
+  const surveyRoute = /^\/admin\/role-surveys\/responses\/([0-9a-f-]{36})(\/delete)?$/.exec(path);
+  if (req.method === 'POST' && surveyRoute && UUID.test(surveyRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    if (surveyRoute[2]) return [200, await rpc(settings, 'admin_delete_role_survey', { p_actor: session.user_id, p_id: surveyRoute[1] })];
+    const { assignedRole, storeNote } = await readJson(req);
+    return [200, camel(await rpc(settings, 'admin_update_role_survey', { p_actor: session.user_id, p_id: surveyRoute[1],
+      p_assigned_role: typeof assignedRole === 'string' ? assignedRole : '', p_store_note: typeof storeNote === 'string' ? storeNote : '' }))];
+  }
+  if (req.method === 'GET' && path === '/admin/google-account') {
+    // Which service account a spreadsheet must be shared with before it can be imported.
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    return [200, { serviceAccountEmail: settings.google?.clientEmail ?? null, projectId: settings.google?.projectId ?? null }];
+  }
+  if (req.method === 'GET' && path === '/admin/line-health') {
+    // Can each OA reach this admin? LINE's profile API answers 200 only for a friend of that OA whose
+    // user ID belongs to the same provider.
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    const identity = await rpc<{ line_user_id?: string } | null>(settings, 'user_line_identity', { p_user_id: session.user_id });
+    const probe = async (token?: string) => {
+      if (!token) return 'not_configured';
+      if (!identity?.line_user_id) return 'unreachable';
+      try {
+        const r = await (settings.fetcher ?? fetch)(`https://api.line.me/v2/bot/profile/${identity.line_user_id}`,
+          { signal: AbortSignal.timeout(8000), headers: { Authorization: `Bearer ${token}` } });
+        return r.ok ? 'ok' : r.status === 404 ? 'unreachable' : r.status === 401 ? 'bad_token' : 'error';
+      } catch { return 'error'; }
+    };
+    const [playerOa, adminOa] = await Promise.all([probe(settings.lineAccessToken), probe(settings.adminLineAccessToken)]);
+    return [200, { playerOa, adminOa }];
   }
   if (req.method === 'POST' && path === '/admin/games/sync') {
     const { session } = await requireSession(req, settings);
@@ -1344,7 +1432,7 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   }
   try {
     const [status, data] = await route(req, path, settings);
-    if (req.method === 'POST' && status < 300 && settings.lineAccessToken && !path.startsWith('/hooks/')) {
+    if (req.method === 'POST' && status < 300 && settings.lineAccessToken && !/^\/(hooks|public)\//.test(path)) {
       const work = deliverNotifications(settings).catch(() => undefined);
       if (settings.background) settings.background(work); else await work;
     }
@@ -1367,6 +1455,7 @@ if (typeof Deno !== 'undefined') {
     playRecordUrl: Deno.env.get('PLAY_RECORD_URL') || undefined,
     playRecordSecret: Deno.env.get('PLAY_RECORD_SECRET') || undefined,
     lineAccessToken: Deno.env.get('LINE_CHANNEL_ACCESS_TOKEN') || undefined,
+    adminLineAccessToken: Deno.env.get('LINE_ADMIN_CHANNEL_ACCESS_TOKEN') || undefined,
     liffId: Deno.env.get('LIFF_ID') || undefined,
     // deno-lint-ignore no-explicit-any
     background: (work: Promise<unknown>) => (globalThis as any).EdgeRuntime?.waitUntil?.(work),
@@ -1379,7 +1468,6 @@ function googleFromEnv() {
     const calendarId = Deno.env.get('GOOGLE_CALENDAR_ID');
     if (!account.client_email || !account.private_key || !calendarId) return undefined;
     return { clientEmail: account.client_email, privateKey: account.private_key, calendarId, projectId: account.project_id,
-      eventsCalendarId: Deno.env.get('GOOGLE_EVENTS_CALENDAR_ID') || undefined,
-      sheetId: Deno.env.get('GOOGLE_SHEET_ID') || undefined };
+      eventsCalendarId: Deno.env.get('GOOGLE_EVENTS_CALENDAR_ID') || undefined };
   } catch { return undefined; }
 }
