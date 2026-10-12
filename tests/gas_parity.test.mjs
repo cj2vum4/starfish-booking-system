@@ -60,6 +60,12 @@ cases.forEach((c, i) => test(`${c.kind} case ${i + 1}: ${c.sheet['表單回應 1
     await json(db, 'select public.admin_import_play_records($1,$2) v',
       [adm, { ...sheet, players: [], responses: [], ledger: [], interactions: [] }]);
     await db.exec(`update public.record_state set source='supabase'`);
+    // New submissions must name a catalog script.
+    const scripts = [...new Set(sheet.responses.map((r) => r.script).filter(Boolean))];
+    for (const [i, title] of scripts.entries()) {
+      await db.query(`insert into public.games(slug,title,min_players,max_players,price_cents,review_key) values ($1,$2,1,8,0,$3)`,
+        [`parity-${i}`, `parity ${i}`, title]);
+    }
     for (const r of sheet.responses) {
       await db.query('select public._sf_add_play_record($1, $2, $3)', [r, 'sheet', r.stamp]);
     }

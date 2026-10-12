@@ -7,12 +7,25 @@
 - **第 0／1 階段已部署**：0034（排程）、0035（角色問卷）由 Claude 用連接器套用；api v42、line-webhook v14 由連接器部署，
   取回雲端內容比對 SHA-256 與 GitHub `630b995` 相同。`/hooks/tick` 從 02:30 UTC 起每 5 分鐘回 202。
   連接器遇到含 `delete` 的 SQL 要店家在 App 按確認、60 秒沒按就逾時（整批回滾），所以 0035 的 `admin_delete_role_survey`
-  與 `tests/role_survey.sql` 留給店家在 SQL Editor 貼上（重試兩次仍逾時）。
+  與 `tests/role_survey.sql` 留給店家在 SQL Editor 貼上（重試三次仍逾時）。
 - **第 2 階段（0036＋api＋LIFF＋網站）**：細節與「哪些地方刻意和 Apps Script 不同」見 `docs/GAS_MIGRATION.md`「第 2 階段實作」。
   - 資料庫照 Apps Script 規則在送出當下算點並固定；`record_state.source` 是切換開關，切換前所有新路由回 503 `{live:false}`，
     網站、會員卡、取名、回歸禮都照舊走 Apps Script——**部署後、切換前，玩家看不到任何差別**。
   - 店家畫面「玩本記錄與點數（搬家）」：共用試算表 → 匯入（整批取代，可重來）→ 對帳（逐人比對 6 欄）→ 切換；切換後可「補匯入新記錄」與「緊急切回」。
   - 店家定案：介紹人必須是已有玩家；按讚維持一個瀏覽器一次；作廢只作廢那筆點數；首探依送出順序。
+- 多角度審查（規則、安全、出錯情境、上線維運四個角度＋逐項反證；部分反證因用量上限沒跑完，其餘由我逐項重現確認）後修正：
+  - **權限**：內部 `_sf_*` 函式原本連 `service_role` 都收回，api 呼叫的每個玩本記錄函式在正式環境都會「permission denied」；
+    改成和以前的 migration 一樣授權給 `service_role`，SQL 測試改以 `service_role` 執行（本機測試以前是超級使用者，所以沒抓到）。
+  - **緊急切回後整批匯入會刪掉切換後的資料**：記下第一次切換時間 `went_live_at`，之後拒絕整批匯入、帳本不能刪；
+    店家畫面多一個「已緊急切回」狀態，只給「切回預約系統」。
+  - 新送出的記錄：劇本必須在劇本目錄、日期不在未來；公開回應不帶歸戶名；按讚先查心得存在再鎖。
+  - 匯入照 Apps Script：沒有時間戳記的舊列不算補登、文字時間戳記照 `parseDate_` 讀、帳本沒填歸戶名的列不算（列為需要留意）、
+    雙倍日填數字 6（星期六）不會被當成日期、同名的多個「角色」欄都讀得到。
+  - 切換後出錯：資料庫暫時出錯回 503 而不是舊資料或「還沒切換」；讀不到切換狀態時回歸禮與取名等下次重試；
+    寫入排隊超過 4 秒就放棄（避免事後又寫進來變兩筆）；補匯入改每 10 分鐘，結果與失敗代碼顯示在店家畫面；
+    第一次切換前重讀 Apps Script 總覽（10 分鐘內）；匯入時每個時區只建一個日期格式器（省 Edge CPU）。
+  - 網站：記住預約系統上次的回答（已切換／還沒），還沒切換時不久等、心得與 CSV 同時讀；已切換時讀不到就沿用快取、
+    按讚失敗收回、改送 Apps Script 的記錄說明約 10 分鐘內入帳；修好偶發失敗的計時測試。
 - 測試：`tests/play_records.sql`（規則、匯入、對帳、切換、權限）PASS；`tests/gas_parity.test.mjs` 用真正的 .gs 產生 14 份試算表，
   匯入結果與逐筆送出結果都和 Apps Script 相同；api 新增 8 項；npm test 全過。網站 tests/run.sh 新增「切換之後」情境全過；
   順手修好送出結果卡在「重複」「每日上限」時說明文字不顯示（`.award-card` 的 `display:flex` 蓋過 `hidden`）。
@@ -20,8 +33,9 @@
   1. SQL Editor 貼上 Claude 給的兩段：角色問卷最後一段（`admin_delete_role_survey`）＋ `tests/role_survey.sql`（須 PASS）。
   2. 管理員 OA：發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；Secrets 刪除 `GOOGLE_SHEET_ID`。
   3. 「角色問卷總表」與「玩本記錄」兩份試算表共用給服務帳戶 `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（檢視者）。
-  4. 0036 套用與 api 部署（Claude 代為執行；含 `delete` 的部分同第 1 點由店家貼）。
-  5. LINE 店家後台「玩本記錄與點數（搬家）」：匯入 → 對帳。**第 3 階段做好之前先不要按切換。**
+  4. SQL Editor 貼上 `supabase/migrations/202610120036_play_records.sql` 整份，再貼 `tests/play_records.sql`（須 PASS）；
+     之後 Claude 部署 api（見 `docs/GAS_MIGRATION.md`「部署 0036」）。
+  5. 試算表「重算所有點數」→ LINE 店家後台「玩本記錄與點數（搬家）」：匯入 → 對帳。**第 3 階段做好之前先不要按切換。**
 
 ## 移除 GAS：第 0 階段（管理員 OA）＋第 1 階段（角色問卷）（2026-10-11）
 

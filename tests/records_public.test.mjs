@@ -35,7 +35,7 @@ test('the website reads a fresh copy without waiting on the Apps Script; any ori
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('access-control-allow-origin'), '*');
   assert.match(res.headers.get('cache-control'), /max-age=30/);
-  assert.deepEqual(await res.json(), payload);
+  assert.deepEqual(await res.json(), { ...payload, live: false }, 'live:false: still the Apps Script copy');
   assert.equal(b.later.length, 0);
   assert.deepEqual(b.calls, []);
 });

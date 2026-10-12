@@ -1,6 +1,8 @@
 -- Run in Supabase SQL Editor after 202610120036_play_records.sql. All synthetic records are rolled back.
 -- Checks the Apps Script rules carried over (fixed at submit time), the import, reconcile and the cutover switch.
 begin;
+-- The api calls every RPC with the service key: run as that role so missing grants fail here, not in production.
+set local role service_role;
 do $$
 declare
   adm uuid; u1 uuid; u2 uuid; r jsonb; s jsonb; pid uuid; n integer; t text; f text;
@@ -28,6 +30,9 @@ begin
   insert into public.users(line_user_id,display_name,oa_friend_status) values ('U00000000000000000000000000006b02','老玩家','active') returning id into u1;
   insert into public.users(line_user_id,display_name,oa_friend_status) values ('U00000000000000000000000000006b03','新玩家','active') returning id into u2;
   insert into public.admin_users(user_id) values (adm);
+  -- New submissions must name a script from the catalog (games.review_key).
+  insert into public.games(slug,title,min_players,max_players,price_cents,review_key)
+    select 'pr-test-'||lower(k), 'pr-test '||k, 1, 8, 0, k from unnest(array['X','Y','Y2','Y3','Y4','Z','W','V','Q']) k;
 
   -- ---- before cutover: the website keeps using the Apps Script ----
   if (select source from public.record_state) <> 'gas' then raise exception 'default source'; end if;
@@ -61,7 +66,9 @@ begin
       jsonb_build_object('key',repeat('1',64),'stamp','2026-09-01T12:00:00Z','name','阿明','date','2026/9/1','script','X','role','偵探','rating','5','comment','這是一段超過十五個字的心得內容真的很好玩','referrer',''),
       jsonb_build_object('key',repeat('2',64),'stamp','2026-09-01T12:05:00Z','name','ming','date','2026/9/1','script','X','role','偵探','rating','4','comment','','referrer',''),
       jsonb_build_object('key',repeat('3',64),'stamp','2026-09-02T12:00:00Z','name','小美','date','2026/9/2','script','X','role','兇手','rating','5','comment','短','referrer','Ming'),
-      jsonb_build_object('key',repeat('4',64),'stamp','2026-09-03T12:00:00Z','name','','date','2026/9/3','script','X')),
+      jsonb_build_object('key',repeat('4',64),'stamp','2026-09-03T12:00:00Z','name','','date','2026/9/3','script','X'),
+      -- No 時間戳記 (typed by hand long ago): never 補登, as in the Apps Script.
+      jsonb_build_object('key',repeat('7',64),'stamp',null,'name','老手','date','2025/1/1','script','S0','role','甲','rating','5')),
     'ledger', jsonb_build_array(
       jsonb_build_object('player','阿明','type','earn','points',50,'detail','基本10＋心得5＋首玩5＋首探10＋新手好運20','script','X','date','2026/9/1','source','表單','status','有效','key','阿明|X|2026/9/1'),
       jsonb_build_object('player','阿明','type','skip','points',0,'detail','','script','X','date','2026/9/1','source','表單','status','有效','note','重複記錄','key','阿明|X|2026/9/1'),
@@ -73,9 +80,14 @@ begin
       jsonb_build_object('player','阿明','type','bonus','points',50,'detail','老玩家回歸禮（LINE 綁定）','script','','date','','source','LINE','status','有效','key','return-bonus|阿明'),
       jsonb_build_object('player','小美','type','redeem','points',-30,'detail','神秘盒','script','','date','2026/9/5','source','手動','status','有效','note','開出：免費飲料一杯','key',''),
       jsonb_build_object('player','小美','type','adjust','points',99,'detail','打錯','script','','date','2026/9/5','source','手動','status','作廢','key',''),
-      jsonb_build_object('player','路人','type','adjust','points',5,'detail','手動補點','script','','date','2026/9/6','source','手動','status','有效','key','')),
+      jsonb_build_object('player','路人','type','adjust','points',5,'detail','手動補點','script','','date','2026/9/6','source','手動','status','有效','key',''),
+      -- 歸戶名 left blank: the Apps Script does not count the row at all.
+      jsonb_build_object('name','路人乙','player','','type','redeem','points',-7,'detail','手動','script','','date','2026/9/6','source','手動','status','有效','key','')),
     'interactions', jsonb_build_array(jsonb_build_object('script','X','date','2026/9/1','author','阿明','likes',3,'featured',true,'updated','2026-09-03T00:00:00Z'))));
-  if (r->>'records')::int <> 3 or (r->>'players')::int <> 3 then raise exception 'import counts %', r; end if;
+  if (r->>'records')::int <> 4 or (r->>'players')::int <> 4 then raise exception 'import counts %', r; end if;
+  if (select status from public.play_records where name='老手') <> 'earn' then raise exception 'stampless row became backfill'; end if;
+  if not exists(select 1 from jsonb_array_elements(r->'anomalies') a where a->>'type'='ledger_row_without_account' and a->>'name'='路人乙')
+     or exists(select 1 from public.record_players where name='路人乙') then raise exception 'ledger row without 歸戶名 %', r->'anomalies'; end if;
   if not exists(select 1 from jsonb_array_elements(r->'anomalies') a where a->>'type'='duplicate_player')
      or not exists(select 1 from jsonb_array_elements(r->'anomalies') a where a->>'type'='ledger_only_player' and a->>'name'='路人') then
     raise exception 'anomalies %', r->'anomalies'; end if;
@@ -115,6 +127,11 @@ begin
   begin perform public.admin_set_records_source(adm,'supabase'); raise exception 'switched with differences';
   exception when others then if sqlerrm <> 'RECONCILE_MISMATCH' then raise; end if; end;
   update public.play_record_snapshot set payload = jsonb_build_object('ok',true,'summary',public._sf_records_summary());
+  -- The first switch only trusts an Apps Script summary read in the last 10 minutes (the api re-reads it first).
+  update public.play_record_snapshot set fetched_at = now() - interval '1 hour';
+  begin perform public.admin_set_records_source(adm,'supabase'); raise exception 'switched on an old summary';
+  exception when others then if sqlerrm <> 'RECONCILE_STALE' then raise; end if; end;
+  update public.play_record_snapshot set fetched_at = now();
 
   -- ---- cutover ----
   r := public.admin_set_records_source(adm,'supabase');
@@ -133,7 +150,7 @@ begin
   if r->>'status' <> 'earn' or (r->'award'->>'points')::int <> 45 or r->'award'->>'detail' <> '基本10＋首玩5＋首探10＋新手好運20' then
     raise exception 'new player award %', r; end if;
   select id into pid from public.record_players where name='阿華';
-  if (select agent from public.record_players where id=pid) <> '#003' then raise exception 'agent number'; end if;
+  if (select agent from public.record_players where id=pid) <> '#004' then raise exception 'agent number'; end if;  -- #003 is 老手 (replayed)
   -- Referral by an existing player: both +10, not doubled; 小美 completes 揪團 for this month (+30, once).
   if (select sum(points) from public.point_ledger where player_id=pid) <> 55
      or (select count(*) from public.point_ledger l join public.record_players p on p.id=l.player_id where p.name='小美' and l.kind in ('referrer','quest')) <> 2 then
@@ -179,6 +196,17 @@ begin
     begin perform public.submit_play_record(t::jsonb); raise exception 'invalid accepted %', t;
     exception when others then if sqlerrm <> 'INVALID_RECORD' then raise; end if; end;
   end loop;
+  -- New rules (points are fixed now, no store review): a script outside the catalog, a date in the future or one that
+  -- cannot be read would farm 首探／首玩 and reset the daily cap.
+  foreach t in array array[jsonb_build_object('name','A','date',today,'script','亂填的劇本','role','A','rating','5')::text,
+      jsonb_build_object('name','A','date',to_char(now() at time zone 'Asia/Taipei' + interval '1 day','YYYY/FMMM/FMDD'),'script','Y','role','A','rating','5')::text,
+      '{"name":"A","date":"昨天","script":"Y","role":"A","rating":"5"}'] loop
+    begin perform public.submit_play_record(t::jsonb); raise exception 'invalid accepted %', t;
+    exception when others then if sqlerrm <> 'INVALID_RECORD' then raise; end if; end;
+  end loop;
+  -- The reply carries the canonical name only inside the database (the api drops it); a catalog name with other spacing is fine.
+  if public.submit_play_record(jsonb_build_object('name','空白君','date',today,'script',' Y 2 ','role','A','rating','5'))->>'status' <> 'earn' then
+    raise exception 'catalog match ignores spaces'; end if;
 
   -- ---- likes ----
   r := public.submit_review_like('Y',today,'阿華','00000000-0000-4000-8000-0000000000a1');
@@ -219,10 +247,30 @@ begin
   r := public.admin_import_new_play_records(adm, jsonb_build_array(
     jsonb_build_object('key',repeat('5',64),'stamp','2026-08-01T00:00:00Z','name','舊','date','2026/8/1','script','X'),
     jsonb_build_object('key',repeat('6',64),'stamp',to_char(now(),'YYYY-MM-DD"T"HH24:MI:SS"Z"'),'name','補進來','date',today,'script','V','role','A','rating','5'),
-    jsonb_build_object('key',repeat('1',64),'stamp','2026-09-01T12:00:00Z','name','阿明','date','2026/9/1','script','X')));
-  if (r->>'added')::int <> 1 or (r->>'skipped')::int <> 2 then raise exception 'catch-up %', r; end if;
+    jsonb_build_object('key',repeat('1',64),'stamp','2026-09-01T12:00:00Z','name','阿明','date','2026/9/1','script','X'),
+    jsonb_build_object('key',repeat('8',64),'stamp',to_char(now(),'YYYY-MM-DD"T"HH24:MI:SS"Z"'),'name','亂','date',today,'script','不在目錄','role','A','rating','5')));
+  if (r->>'added')::int <> 1 or (r->>'skipped')::int <> 2 or (r->>'failed')::int <> 1 then raise exception 'catch-up %', r; end if;
+  s := public.admin_records_status(adm);
+  if (s->'catchUpResult'->>'failed')::int <> 1 or s->'catchUpResult'->>'by' <> 'store' or s->>'catchUpAt' is null then
+    raise exception 'catch-up result shown %', s; end if;
+  perform public.system_records_catch_up_failed('SHEET_FORBIDDEN');
+  if public.admin_records_status(adm)->'catchUpResult'->>'error' <> 'SHEET_FORBIDDEN' then raise exception 'catch-up error shown'; end if;
   if (public.admin_import_new_play_records(adm, jsonb_build_array(jsonb_build_object('key',repeat('6',64),'stamp',to_char(now(),'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
       'name','補進來','date',today,'script','V')))->>'added')::int <> 0 then raise exception 'catch-up twice'; end if;
+
+  -- ---- emergency switch back: no full re-import (it would delete everything since the cutover); back again without reconcile ----
+  perform public.admin_set_records_source(adm,'gas');
+  begin perform public.submit_play_record(jsonb_build_object('name','A','date',today,'script','Y','role','R','rating','5'));
+    raise exception 'accepted after switching back';
+  exception when others then if sqlerrm <> 'RECORDS_NOT_LIVE' then raise; end if; end;
+  begin perform public.admin_import_play_records(adm,'{"responses":[],"ledger":[]}'); raise exception 'reimport after switching back';
+  exception when others then if sqlerrm <> 'RECORDS_WENT_LIVE' then raise; end if; end;
+  begin delete from public.point_ledger where kind='adjust'; raise exception 'ledger delete after switching back';
+  exception when others then if sqlerrm <> 'LEDGER_APPEND_ONLY' then raise; end if; end;
+  update public.play_record_snapshot set payload = jsonb_set(payload, '{summary,0,balance}', '999');  -- would not reconcile
+  r := public.admin_set_records_source(adm,'supabase');
+  if r->>'source' <> 'supabase' or r->>'wentLiveAt' is null then raise exception 'back to supabase %', r; end if;
+  if (select count(*) from public.play_records where source='web') < 10 then raise exception 'records kept'; end if;
 
   -- ---- flood guard ----
   for n in 1..40 loop
@@ -247,9 +295,14 @@ begin
     if has_function_privilege('anon',t,'EXECUTE') or has_function_privilege('authenticated',t,'EXECUTE') then raise exception '% exposed', t; end if;
     if not has_function_privilege('service_role',t,'EXECUTE') then raise exception '% not granted', t; end if;
   end loop;
-  if has_function_privilege('service_role','public._sf_add_play_record(jsonb,text,timestamptz,boolean)','EXECUTE')
-     or has_function_privilege('service_role','public._sf_import_play_records(uuid,jsonb)','EXECUTE') then
-    raise exception 'internal function exposed'; end if;
+  -- Internals stay callable by service_role (the public RPCs run as their caller), never by anon/authenticated.
+  foreach t in array array['public._sf_add_play_record(jsonb,text,timestamptz,boolean)','public._sf_import_play_records(uuid,jsonb)',
+      'public._sf_records_lock()','public._sf_records_payload()'] loop
+    if has_function_privilege('anon',t,'EXECUTE') or has_function_privilege('authenticated',t,'EXECUTE') then
+      raise exception 'internal function % exposed', t; end if;
+    if not has_function_privilege('service_role',t,'EXECUTE') then raise exception 'internal function % not granted', t; end if;
+  end loop;
 end $$;
+reset role;
 select 'PASS: Apps Script rules fixed at submit time (duplicate, daily cap, backfill, firsts, double day, referral, quests, likes, return bonus), import as-is, reconcile, cutover, catch-up import, flood guard, privileges' as result;
 rollback;

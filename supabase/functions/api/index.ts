@@ -31,6 +31,7 @@ const MAX_BODY = 64 * 1024;
 
 class ApiError extends Error {
   status: number;
+  missing = false;  // PostgREST has no such function (a migration not applied yet)
   constructor(status: number, code: string) { super(code); this.status = status; }
 }
 
@@ -39,7 +40,7 @@ const NOT_FOUND = /_NOT_FOUND$/;
 const CONFLICT = new Set(['IDENTITY_MERGE_REQUIRED', 'NAME_EXISTS', 'BINDING_PENDING', 'NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
   'SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
   'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE',
-  'RECORDS_LIVE', 'IMPORT_REQUIRED', 'RECONCILE_MISMATCH', 'LEDGER_APPEND_ONLY']);
+  'RECORDS_LIVE', 'RECORDS_WENT_LIVE', 'IMPORT_REQUIRED', 'RECONCILE_MISMATCH', 'RECONCILE_STALE', 'LEDGER_APPEND_ONLY']);
 export function statusForCode(code: string) {
   if (NOT_FOUND.test(code)) return 404;
   if (CONFLICT.has(code)) return 409;
@@ -92,7 +93,11 @@ async function rpc<T>(settings: Settings, name: string, args: Record<string, unk
   if (data?.code === 'P0001' && /^[A-Z_]{3,40}$/.test(data.message ?? '')) {
     throw new ApiError(statusForCode(data.message), data.message);
   }
-  throw new ApiError(500, 'DATABASE_ERROR');
+  const error = new ApiError(500, 'DATABASE_ERROR');
+  error.missing = response.status === 404;  // /rest/v1/rpc answers 404 (PGRST202) only for a function that does not exist
+  // For the Edge Function logs: which function and which PostgreSQL/PostgREST code (42501, 57014…), never the data.
+  console.error(JSON.stringify({ rpc: name, status: response.status, code: typeof data?.code === 'string' ? data.code : null }));
+  throw error;
 }
 
 // Opening, joining or claiming a seat requires OA friendship so the player can be notified.
@@ -594,9 +599,14 @@ export async function runScheduledWork(settings: Settings) {
   }
   // After the cutover, records the website sent to the Apps Script while the booking system was unreachable.
   let records: unknown = null;
-  if (settings.google && await recordsLive(settings) &&
-      await rpc<boolean>(settings, 'claim_scheduled_job', { p_name: 'records-catch-up', p_every: '6 hours' }).catch(() => false)) {
-    records = await importPlayRecords(settings, null, 'new').then(r => (r as any)?.added ?? null, () => null);
+  if (settings.google && await recordsLive(settings).catch(() => false) &&
+      await rpc<boolean>(settings, 'claim_scheduled_job', { p_name: 'records-catch-up', p_every: '10 minutes' }).catch(() => false)) {
+    records = await importPlayRecords(settings, null, 'new').then(r => (r as any)?.added ?? null, async e => {
+      // Shown on the store's screen (e.g. the spreadsheet is no longer shared with the service account).
+      await rpc(settings, 'system_records_catch_up_failed', { p_code: e instanceof ApiError ? e.message : 'CATCH_UP_FAILED' })
+        .catch(() => undefined);
+      return null;
+    });
   }
   console.log('tick', JSON.stringify({ expired, ...total, surveys, records }));  // counts only, for the Edge Function logs
   return { expired, ...total };
@@ -667,9 +677,17 @@ async function playRecordSummary(settings: Settings, maxAgeMs = 60_000, preferCo
 
 // After the cutover the points live here: the 回歸禮 is one ledger row, written with the eligibility check
 // (once per player, joined before 回歸禮資格日) in the database.
-// Anything but a clear 'supabase' (including a database without migration 0036 yet) keeps the Apps Script path.
+// A database without migration 0036 (the function is missing) is still on the Apps Script. Any other failure is
+// no answer: guessing 'Apps Script' after the cutover would send a 回歸禮 there or check a new name against its
+// stale copy, so callers fail with 503 and are retried instead.
 const recordsLive = (settings: Settings) =>
-  rpc<string>(settings, 'records_source', {}).then(v => v === 'supabase', () => false);
+  rpc<string>(settings, 'records_source', {}).then(v => v === 'supabase', e => {
+    if (e instanceof ApiError && e.missing) return false;
+    throw new ApiError(503, 'RECORDS_UNAVAILABLE');
+  });
+// The stage-2 functions, read where a missing migration means "still on the Apps Script" (null).
+const unlessMissing = <T>(work: Promise<T>) =>
+  work.catch(e => { if (e instanceof ApiError && e.missing) return null; throw e; });
 
 // Before the cutover: asks the Apps Script for the 回歸禮. It is idempotent per 歸戶名 and checks eligibility itself.
 async function grantReturnBonus(settings: Settings, binding: Binding): Promise<Binding> {
@@ -704,8 +722,10 @@ function refreshRecordCopy(settings: Settings) {
 }
 async function publicRecordsPayload(settings: Settings): Promise<Record<string, unknown>> {
   // After the cutover the summary is computed by the database (same JSON shape); before it, null.
-  const live = await rpc<Record<string, unknown> | null>(settings, 'public_records_payload', {}).catch(() => null);
-  if (live) return live;
+  // After the cutover a failure is a 503, never the Apps Script copy: that copy lacks every point earned since.
+  // live tells the website which side it is reading (it keeps its own copy rather than fall back once it was live).
+  const live = await unlessMissing(rpc<Record<string, unknown> | null>(settings, 'public_records_payload', {}));
+  if (live) return { ...live, live: true };
   const saved = await rpc<{ payload: any; fetched_at: string } | null>(settings, 'get_record_snapshot', {}).catch(() => null);
   const savedAt = saved ? Date.parse(saved.fetched_at) : NaN;
   // Copies saved before the whole payload was kept have no updatedAt; read the script for those.
@@ -714,11 +734,11 @@ async function publicRecordsPayload(settings: Settings): Promise<Record<string, 
       const work = refreshRecordCopy(settings);
       if (settings.background) settings.background(work); else await work;
     }
-    return saved.payload;
+    return { ...saved.payload, live: false };
   }
   await refreshRecordCopy(settings);
   const fresh = await rpc<{ payload: any } | null>(settings, 'get_record_snapshot', {}).catch(() => null);
-  if (fresh?.payload?.ok) return fresh.payload;
+  if (fresh?.payload?.ok) return { ...fresh.payload, live: false };
   throw new ApiError(503, 'RECORDS_UNAVAILABLE');
 }
 
@@ -747,9 +767,16 @@ async function sheetsGet(settings: Settings, sheetId: string, query: string) {
 }
 
 // A Sheets date serial counts days from 1899-12-30 in the spreadsheet's own time zone.
+// One formatter per zone: building it is most of the cost, and an import converts thousands of times (Edge CPU limit).
+const zoneFormats = new Map<string, Intl.DateTimeFormat>();
 function zoneOffsetMs(timeZone: string, utcMs: number) {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit',
-    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date(utcMs));
+  let format = zoneFormats.get(timeZone);
+  if (!format) {
+    format = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    zoneFormats.set(timeZone, format);
+  }
+  const parts = format.formatToParts(new Date(utcMs));
   const get = (t: string) => Number(parts.find(p => p.type === t)?.value);
   return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second')) - utcMs;
 }
@@ -846,18 +873,29 @@ function sheetRows(values: unknown[][] | undefined) {
 }
 
 export async function playRecordsFromSheet(tabs: Record<string, unknown[][]>, responseTab: string, timeZone: string) {
-  const stamp = (v: unknown) => typeof v === 'number' && v > 0 ? sheetSerialToIso(v, timeZone) : null;
+  const stamp = (v: unknown) => {
+    if (typeof v === 'number') return v > 0 ? sheetSerialToIso(v, timeZone) : null;
+    // parseDate_: a typed text stamp ('2025/3/1 下午 3:04:05') counts as that day at midnight; anything else as none.
+    const parts = asText(v).trim().split(/[\/\-.]/).map(x => parseInt(x, 10));
+    if (parts.length < 3 || parts.some(Number.isNaN)) return null;
+    return sheetSerialToIso(Date.UTC(parts[0], parts[1] - 1, parts[2]) / 86400000 + 25569, timeZone);
+  };
   const seen = new Map<string, number>();
   const responses = [];
+  // Old Google Form rows may hold the role in any of several 角色… columns (some with the very same header);
+  // the honour wall joins them with ', '. Read them by position: a keyed row keeps only the last of equal headers.
+  const head = (tabs[responseTab]?.[0] ?? []).map(h => asText(h).trim());
+  const roleColumns = head.flatMap((h, i) => h.startsWith('角色') ? [i] : []);
+  const rawRows = (tabs[responseTab] ?? []).slice(1).filter(r => (r ?? []).some(c => asText(c).trim()));
   let index = 0;
   for (const r of sheetRows(tabs[responseTab])) {
+    const cells = rawRows[index] ?? [];
     index++;
     const raw = r['時間戳記'];
     const id = typeof raw === 'number' ? String(raw) : `row-${index}`;
     const nth = seen.get(id) ?? 0;
     seen.set(id, nth + 1);
-    // Old Google Form rows may hold the role in any of several 角色… columns; the honour wall joins them with ', '.
-    const role = Object.keys(r).filter(k => k.startsWith('角色')).map(k => asText(r[k]).trim()).filter(Boolean).join(', ');
+    const role = roleColumns.map(i => asText(cells[i]).trim()).filter(Boolean).join(', ');
     responses.push({ key: await sha256Hex(JSON.stringify(['玩本記錄', id, nth])), stamp: stamp(raw),
       name: asText(r['怎麼稱呼你呢']), date: asDate(r['日期']), script: asText(r['劇本']), role,
       rating: asText(r['給予評價']), comment: asText(r['50字以內的心得推薦']), referrer: asText(r['介紹人']) });
@@ -874,7 +912,10 @@ export async function playRecordsFromSheet(tabs: Record<string, unknown[][]>, re
     // Only the date settings may be date cells; the point settings are plain numbers.
     config: sheetRows(tabs['設定']).map(r => {
       const key = asText(r['設定項']).trim();
-      return { key, value: ['回歸禮資格日', 'LINE上線日', '雙倍日'].includes(key) ? asDate(r['值']) : asText(r['值']) };
+      const v = r['值'];
+      // 雙倍日 may also be a weekday digit (6 = Saturday), which is a number cell but not a date.
+      if (key === '雙倍日' && typeof v === 'number' && v < 367) return { key, value: String(v) };
+      return { key, value: ['回歸禮資格日', 'LINE上線日', '雙倍日'].includes(key) ? asDate(v) : asText(v) };
     }),
     rewards: sheetRows(tabs['獎勵']).map(r => ({ track: asText(r['軌道']), name: asText(r['品項']), cost: asNumber(r['所需點數']),
       note: asText(r['說明']), active: asActive(r['是否上架']) })),
@@ -1162,7 +1203,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   if (req.method === 'GET' && path === '/records/names') {
     await requireSession(req, settings);
     // After the cutover the names come from the database; before it, from the Apps Script copy.
-    const [live, bound] = await Promise.all([rpc<RecordSummary[] | null>(settings, 'record_names', {}).catch(() => null),
+    const [live, bound] = await Promise.all([unlessMissing(rpc<RecordSummary[] | null>(settings, 'record_names', {})),
       rpc<string[]>(settings, 'bound_record_names', {})]);
     if (live) return [200, { names: live, bound }];
     // The saved copy answers at once; a copy older than 10 minutes is refreshed after the response.
@@ -1208,7 +1249,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (req.method === 'POST') {
       const { name, note } = await readJson(req);
       if (typeof name !== 'string' || (note != null && typeof note !== 'string')) throw new ApiError(400, 'INVALID_NAME');
-      const live = await rpc<RecordSummary[] | null>(settings, 'record_names', {}).catch(() => null);
+      const live = await unlessMissing(rpc<RecordSummary[] | null>(settings, 'record_names', {}));
       const listed = (records: RecordData) => records.summary.some(r => r.name === name.trim());
       if (live ? !live.some(r => r.name === name.trim())
           : !listed(await playRecordSummary(settings, 600_000)) && !listed(await playRecordSummary(settings, 0))) {
@@ -1388,25 +1429,30 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
       p_assigned_role: typeof assignedRole === 'string' ? assignedRole : '', p_store_note: typeof storeNote === 'string' ? storeNote : '' }))];
   }
   // ---- 玩本記錄（網站送出、按讚；店家匯入、對帳、切換）----
+  // Without migration 0036 the website should go straight to the Apps Script, as before the cutover.
+  const notLiveIfMissing = <T>(work: Promise<T>) =>
+    work.catch(e => { throw e instanceof ApiError && e.missing ? new ApiError(503, 'RECORDS_NOT_LIVE') : e; });
   if (req.method === 'POST' && path === '/public/play-records') {
     // The website form (no login, like the Apps Script). body.id is its 送出編號: a resend is recognised.
     // Before the cutover this answers 503 RECORDS_NOT_LIVE and the website posts to the Apps Script instead.
     const body = await readJson(req, 8 * 1024);
     if (typeof body.website === 'string' && body.website) return [200, { ok: true }];  // honeypot: drop silently
     const text = (v: unknown) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
-    const result = await rpc<Record<string, unknown>>(settings, 'submit_play_record', {
+    const result = await notLiveIfMissing(rpc<Record<string, unknown>>(settings, 'submit_play_record', {
       p_record: { name: text(body.name), date: text(body.date), script: text(body.script), role: text(body.role ?? body.character),
         rating: text(body.rating), comment: text(body.comment), referrer: text(body.referrer) },
-      p_client_id: typeof body.id === 'string' && UUID_ANY.test(body.id) ? body.id.toLowerCase() : null });
-    return [result.duplicate ? 200 : 201, { ok: true, live: true, ...result }];
+      p_client_id: typeof body.id === 'string' && UUID_ANY.test(body.id) ? body.id.toLowerCase() : null }));
+    // Only what the form shows: the canonical player name would tell anyone which leaderboard name an alias belongs to.
+    return [result.duplicate ? 200 : 201, { ok: true, live: true, status: result.status, award: result.award ?? null,
+      ...(result.duplicate ? { duplicate: true } : {}) }];
   }
   if (req.method === 'POST' && path === '/public/likes') {
     // liker: a random ID the browser keeps, so one browser counts once per review (no login, as before).
     const body = await readJson(req, 4 * 1024);
     const text = (v: unknown) => typeof v === 'string' ? v : '';
     if (typeof body.liker !== 'string' || !UUID_ANY.test(body.liker)) throw new ApiError(400, 'INVALID_RECORD');
-    return [200, { ...(await rpc<Record<string, unknown>>(settings, 'submit_review_like', { p_script: text(body.script),
-      p_date: text(body.date), p_author: text(body.author), p_liker: body.liker.toLowerCase() })), live: true }];
+    return [200, { ...(await notLiveIfMissing(rpc<Record<string, unknown>>(settings, 'submit_review_like', { p_script: text(body.script),
+      p_date: text(body.date), p_author: text(body.author), p_liker: body.liker.toLowerCase() }))), live: true }];
   }
   if (req.method === 'GET' && path === '/admin/records') {
     const { session } = await requireSession(req, settings);
@@ -1430,6 +1476,9 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     const { source, force } = await readJson(req);
     if (source !== 'gas' && source !== 'supabase') throw new ApiError(400, 'INVALID_SOURCE');
+    // The first switch compares against the Apps Script's summary as it is now (RECONCILE_STALE if it cannot be read):
+    // a 兌換 typed into the sheet after the import would otherwise be lost.
+    if (source === 'supabase' && force !== true) await playRecordSummary(settings, 0).catch(() => undefined);
     recordCache = null;
     return [200, camel(await rpc(settings, 'admin_set_records_source', { p_actor: session.user_id, p_source: source,
       p_force: force === true }))];
@@ -1606,8 +1655,12 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
   }
   if (req.method === 'GET' && path === '/health/records') {
     // Public like /health/calendar: says whether the website's 玩本記錄 summary is readable, never its content.
-    if (settings.supabaseUrl && settings.serviceKey && await recordsLive(settings)) {
-      return reply(200, { ok: true, source: 'supabase' });
+    // Diagnostic only: when the switch cannot be read, report on the Apps Script as before. After the switch,
+    // actually read the points (a missing grant or a broken function shows here, not only in the website).
+    if (settings.supabaseUrl && settings.serviceKey && await recordsLive(settings).catch(() => false)) {
+      const payload = await rpc<{ summary?: unknown[] } | null>(settings, 'public_records_payload', {}).catch(() => null);
+      return payload?.summary ? reply(200, { ok: true, source: 'supabase', players: payload.summary.length })
+        : reply(503, { ok: false, source: 'supabase', error: 'RECORDS_UNAVAILABLE' });
     }
     try {
       const { summary, rewards, stale } = await playRecordSummary(settings, 0);
@@ -1620,12 +1673,16 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
     // 503 {live:false} and the website reads the CSV. Only the columns the pages show; no times or referrers.
     if (!settings.supabaseUrl || !settings.serviceKey) return reply(503, { ok: false, live: false, error: 'API_NOT_CONFIGURED' });
     const script = new URL(req.url).searchParams.get('script');
+    let records: unknown[] | null;
     try {
-      const records = await rpc<unknown[] | null>(settings, 'public_play_records', { p_script: script ? script.slice(0, 100) : null });
-      if (!records) return reply(503, { ok: false, live: false, error: 'RECORDS_NOT_LIVE' });
-      return new Response(JSON.stringify({ ok: true, live: true, updatedAt: new Date((settings.now ?? Date.now)()).toISOString(), records }),
-        { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' } });
-    } catch { return reply(503, { ok: false, live: false, error: 'RECORDS_UNAVAILABLE' }); }
+      records = await unlessMissing(rpc<unknown[] | null>(settings, 'public_play_records', { p_script: script ? script.slice(0, 100) : null }));
+    } catch {
+      // Not live:false: after the cutover the website must not take this for "use the CSV" (it lacks every new review).
+      return reply(503, { ok: false, error: 'RECORDS_UNAVAILABLE' });
+    }
+    if (!records) return reply(503, { ok: false, live: false, error: 'RECORDS_NOT_LIVE' });
+    return new Response(JSON.stringify({ ok: true, live: true, updatedAt: new Date((settings.now ?? Date.now)()).toISOString(), records }),
+      { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' } });
   }
   if (path === '/public/records' && req.method === 'GET') {
     const open = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET', Vary: 'Origin' };

@@ -95,6 +95,9 @@ create table public.record_state (
   source text not null default 'gas' check (source in ('gas','supabase')),
   switched_at timestamptz,
   switched_by uuid references public.users(id) on delete set null,
+  went_live_at timestamptz,  -- 第一次切到 supabase 的時間；之後就算緊急切回，也不能再整批匯入（會刪掉切換後的資料）
+  catch_up_at timestamptz,   -- 最近一次補匯入（排程或店家按）的時間與結果 {added,skipped,failed} 或 {error}
+  catch_up_result jsonb,
   imported_at timestamptz,
   imported_by uuid references public.users(id) on delete set null,
   import_summary jsonb,
@@ -183,6 +186,7 @@ create table public.play_records (
 );
 create index play_records_player on public.play_records(player_id, script, date_text);
 create index play_records_script on public.play_records(script, status);
+create index play_records_review on public.play_records(script, date_text);
 create index play_records_recent on public.play_records(submitted_at) where source='web';
 
 -- 心得互動：每則心得（劇本＋日期＋作者）的讚數與精選。
@@ -235,12 +239,14 @@ create index point_ledger_player on public.point_ledger(player_id) where voided_
 create index point_ledger_record on public.point_ledger(record_id);
 create index point_ledger_interaction on public.point_ledger(interaction_id);
 
--- 帳本只增不改：只能填作廢欄位；刪除只在切換前的整批重新匯入時允許。
+-- 帳本只增不改：只能填作廢欄位；刪除只在「從來沒切換過」時的整批重新匯入允許。
 create function public._sf_guard_ledger() returns trigger
 language plpgsql set search_path='' as $$
 begin
   if tg_op = 'DELETE' then
-    if (select source from public.record_state) <> 'gas' then raise exception 'LEDGER_APPEND_ONLY' using errcode='P0001'; end if;
+    if (select source <> 'gas' or went_live_at is not null from public.record_state) then
+      raise exception 'LEDGER_APPEND_ONLY' using errcode='P0001';
+    end if;
     return old;
   end if;
   if (new.player_id, new.kind, new.points, new.detail, new.script, new.date_text, new.earned_on, new.note, new.record_id,
@@ -371,7 +377,7 @@ declare
   v_referrer text := public._sf_clean_text(p->>'referrer', case when web then 30 else 60 end);
   v_played date := public._sf_parse_play_date(v_raw_date);
   v_date text := public._sf_date_text(v_raw_date);
-  v_day date := (p_submitted_at at time zone 'Asia/Taipei')::date;
+  v_day date := (p_submitted_at at time zone 'Asia/Taipei')::date;  -- null：舊表單沒有時間戳記的列（永遠不算補登，同 Apps Script）
   launch date := public._sf_parse_play_date(c->>'LINE上線日');
   pid uuid; rid uuid := gen_random_uuid(); ref_id uuid;
   v_status text; fp boolean := false; ever boolean := false; long_c boolean := false; dbl boolean := false;
@@ -382,10 +388,17 @@ begin
      or (web and (v_raw_date = '' or v_role = '' or v_rating !~ '^[1-5]$')) then
     raise exception 'INVALID_RECORD' using errcode='P0001';
   end if;
+  -- 新送出的記錄（網站、切換後補匯入的試算表列；不含重播舊資料）：劇本要在劇本目錄裡、遊玩日期要認得出來且不在未來。
+  -- Apps Script 時代靠店家人工審核；點數固定之後，亂填劇本名或未來日期就能無限拿首探、首玩與每日上限。
+  if not p_legacy and (v_played is null or v_played > v_day
+      or not exists(select 1 from public.games g
+                    where public._sf_name_norm(coalesce(g.review_key, g.title)) = public._sf_name_norm(v_script))) then
+    raise exception 'INVALID_RECORD' using errcode='P0001';
+  end if;
   if v_date = '' then v_date := '—'; end if;  -- 舊表單偶有空白日期：照樣記錄（不會進任何月份）
   pid := public._sf_ensure_player(v_name, v_played, p_source);
 
-  if launch is not null and v_played is not null and v_day >= launch
+  if launch is not null and v_played is not null and v_day is not null and v_day >= launch
      and v_day - v_played > (c->>'補登寬限天數')::int then
     v_status := 'backfill';  -- 只記錄不給點，也不佔首玩、首探、介紹、每日上限、任務
   elsif exists(select 1 from public.play_records where player_id=pid and script=v_script and date_text=v_date
@@ -426,7 +439,7 @@ begin
 
   insert into public.play_records(id,submitted_at,name,player_id,script,date_text,played_on,role,rating,comment,referrer,referrer_id,
       status,first_play,long_comment,points,detail,source,client_id,import_key)
-    values (rid,p_submitted_at,v_name,pid,v_script,v_date,v_played,v_role,
+    values (rid,coalesce(p_submitted_at,'1970-01-01Z'),v_name,pid,v_script,v_date,v_played,v_role,
       case when v_rating ~ '^[1-5]$' then v_rating::smallint end,v_comment,v_referrer,ref_id,v_status,fp,long_c,
       pts+referred,array_to_string(parts,'＋'),p_source,
       case when coalesce(p->>'client_id','') ~ '^[0-9a-fA-F-]{36}$' then (p->>'client_id')::uuid end,
@@ -458,8 +471,10 @@ end $$;
 
 -- 網站送出（不需登入，與 Apps Script 相同）。切換前回 RECORDS_NOT_LIVE，網站改送 Apps Script。
 -- p_client_id：網站的送出編號，同一份重送不會記兩次。防灌：全站 10 分鐘 30 筆、一天 200 筆。
+-- lock_timeout：比 api 的 8 秒短。排隊太久就放棄（整筆不寫），api 回錯誤、網站用同一個送出編號重試；
+-- 否則 api 已經逾時、網站改送 Apps Script 之後，這筆才寫進來，補匯入時就會變成兩筆。
 create function public.submit_play_record(p_record jsonb, p_client_id uuid default null) returns jsonb
-language plpgsql set search_path='' as $$
+language plpgsql set search_path='' set lock_timeout='4s' as $$
 declare r public.play_records;
 begin
   if jsonb_typeof(p_record) is distinct from 'object' then raise exception 'INVALID_RECORD' using errcode='P0001'; end if;
@@ -482,15 +497,17 @@ end $$;
 -- 心得按讚（recordLike_）：每讚給作者 2 點、每則最多 10 點；同一個瀏覽器（liker）對同一則只算一次。
 -- 修掉舊問題：必須真的有這則記錄才算（以前對不存在的心得按讚也加點）；只有補登的記錄得讚不給點（與舊規則相同）。
 create function public.submit_review_like(p_script text, p_date text, p_author text, p_liker uuid) returns jsonb
-language plpgsql set search_path='' as $$
+language plpgsql set search_path='' set lock_timeout='4s' as $$
 declare c jsonb; s text := public._sf_clean_text(p_script,100); d text := public._sf_date_text(public._sf_clean_text(p_date,20));
   a text := public._sf_clean_text(p_author,30); i public.review_interactions; pid uuid; given integer; add integer; n integer;
 begin
   if s = '' or d = '' or public._sf_name_norm(a) = '' or p_liker is null then raise exception 'INVALID_RECORD' using errcode='P0001'; end if;
-  if public._sf_records_lock() <> 'supabase' then raise exception 'RECORDS_NOT_LIVE' using errcode='P0001'; end if;
+  if (select source from public.record_state) <> 'supabase' then raise exception 'RECORDS_NOT_LIVE' using errcode='P0001'; end if;
+  -- 先確認有這則心得（索引查詢、不鎖），亂按不存在的心得不會卡住其他人的送出
   if not exists(select 1 from public.play_records r where r.script=s and r.date_text=d and public._sf_name_norm(r.name)=public._sf_name_norm(a)) then
     raise exception 'REVIEW_NOT_FOUND' using errcode='P0001';
   end if;
+  if public._sf_records_lock() <> 'supabase' then raise exception 'RECORDS_NOT_LIVE' using errcode='P0001'; end if;
   if (select count(*) from public.review_likes where created_at > now()-interval '1 hour') >= 300 then
     raise exception 'TOO_MANY_REQUESTS' using errcode='P0001';
   end if;
@@ -519,7 +536,7 @@ end $$;
 -- 回歸禮（店家核准老玩家綁定時）：每個歸戶名一次（含已作廢的也不再發），加入日期早於「回歸禮資格日」才發。
 -- 日期留空：不算進榮譽牆的「本月點數」。取代 Apps Script 的 grant_bonus，結果寫回綁定的 bonus_status。
 create function public.grant_record_return_bonus(p_user_id uuid, p_points integer) returns jsonb
-language plpgsql set search_path='' as $$
+language plpgsql set search_path='' set lock_timeout='4s' as $$
 declare b public.player_bindings; pl public.record_players; c jsonb; cutoff date; st text;
 begin
   if p_points is null or p_points not between 1 and 500 then raise exception 'INVALID_POINTS' using errcode='P0001'; end if;
@@ -673,7 +690,7 @@ $$;
 -- 店家：匯入、對帳、切換
 -- ---------------------------------------------------------------------------------------------
 
--- 從「玩本記錄」試算表整批匯入（只在切換前；每次都整批取代，可以重複匯入到對帳一致為止）。
+-- 從「玩本記錄」試算表整批匯入（只在第一次切換前；每次都整批取代，可以重複匯入到對帳一致為止）。
 -- api 以服務帳戶讀取試算表後整理成：
 --   config [{key,value}]、rewards [{track,name,cost,note,active}]、quests [{id,label,goal,points,active}]、
 --   players [{name,aliases[],agent,joined,note,gilded,title,legend}]、
@@ -693,6 +710,7 @@ begin
     raise exception 'INVALID_IMPORT' using errcode='P0001';
   end if;
   if public._sf_records_lock() <> 'gas' then raise exception 'RECORDS_LIVE' using errcode='P0001'; end if;
+  if (select went_live_at from public.record_state) is not null then raise exception 'RECORDS_WENT_LIVE' using errcode='P0001'; end if;
 
   delete from public.point_ledger; delete from public.review_likes; delete from public.review_interactions;
   delete from public.play_records; delete from public.record_aliases; delete from public.record_players;
@@ -783,14 +801,21 @@ begin
     if coalesce(x->>'key','') !~ '^[0-9a-f]{64}$' then raise exception 'INVALID_IMPORT' using errcode='P0001'; end if;
     perform public._sf_add_play_record(jsonb_build_object('name',x->>'name','date',x->>'date','script',x->>'script','role',x->>'role',
       'rating',x->>'rating','comment',x->>'comment','referrer',x->>'referrer','import_key',x->>'key'), 'sheet',
-      coalesce((x->>'stamp')::timestamptz, now()), true);
+      (x->>'stamp')::timestamptz, true);
     n_records := n_records + 1;
   end loop;
 
-  -- 點數帳本：原樣搬。玩家以「歸戶名」（空白時用玩家名）的顯示名對應（點數總覽就是這樣分人）；找不到就建一位。
+  -- 點數帳本：原樣搬。玩家以「歸戶名」的顯示名對應（點數總覽就是這樣分人）；找不到就建一位。
+  -- 歸戶名空白的列（店家手動加、只填玩家名）Apps Script 完全不算：一樣略過，列在需要留意的清單讓店家補上再匯入。
   for x, i in select e, o from jsonb_array_elements(p->'ledger') with ordinality t(e,o) loop
-    k := left(public._sf_js_trim(coalesce(nullif(public._sf_js_trim(x->>'player'),''), x->>'name')),60);
-    if public._sf_name_norm(k) = '' then continue; end if;
+    k := left(public._sf_js_trim(x->>'player'),60);
+    if public._sf_name_norm(k) = '' then
+      if public._sf_name_norm(x->>'name') <> '' and coalesce(round((x->>'points')::numeric),0) <> 0 then
+        anomalies := anomalies || jsonb_build_array(jsonb_build_object('type','ledger_row_without_account',
+          'name',left(public._sf_js_trim(x->>'name'),60)));
+      end if;
+      continue;
+    end if;
     pts := coalesce(round((x->>'points')::numeric),0);
     if public._sf_js_trim(x->>'type') = 'skip' and pts = 0 then continue; end if;
     select id into pid from public.record_players where name_norm = public._sf_name_norm(k);
@@ -874,7 +899,8 @@ begin
     detail = coalesce((select left(l.detail,200) from public.point_ledger l where l.record_id=pr.id and l.kind='record' limit 1), '')
     where pr.status='earn';
 
-  select max((e->>'stamp')::timestamptz) into cutoff from jsonb_array_elements(p->'responses') e;
+  -- 手打成未來時間的列不能把分界推到未來（之後真正的新列會被當成已匯入而略過）
+  select least(max((e->>'stamp')::timestamptz), now()) into cutoff from jsonb_array_elements(p->'responses') e;
   update public.record_state set imported_at=now(), imported_by=p_actor, sheet_cutoff=cutoff,
     import_summary=jsonb_build_object('players',(select count(*) from public.record_players),'records',n_records,
       'ledger',n_ledger,'interactions',n_inter,'anomalies',jsonb_array_length(anomalies));
@@ -895,7 +921,7 @@ end $$;
 -- 依送出時間順序；已匯入過的列（去重鍵）略過。
 create function public._sf_import_new_play_records(p_actor uuid, p_rows jsonb) returns jsonb
 language plpgsql set search_path='' as $$
-declare x jsonb; st public.record_state; added integer := 0; skipped integer := 0; res jsonb;
+declare x jsonb; st public.record_state; added integer := 0; skipped integer := 0; failed integer := 0; res jsonb;
 begin
   if jsonb_typeof(p_rows) is distinct from 'array' or jsonb_array_length(p_rows) > 20000 then
     raise exception 'INVALID_IMPORT' using errcode='P0001'; end if;
@@ -912,13 +938,16 @@ begin
       res := public._sf_add_play_record(jsonb_build_object('name',x->>'name','date',x->>'date','script',x->>'script','role',x->>'role',
         'rating',x->>'rating','comment',x->>'comment','referrer',x->>'referrer','import_key',x->>'key'), 'sheet', (x->>'stamp')::timestamptz);
       added := added + 1;
-    exception when others then skipped := skipped + 1;  -- 一列壞掉不擋其他列
+    exception when others then failed := failed + 1;  -- 一列不合格（例如劇本不在目錄裡）不擋其他列；分開計數
     end;
   end loop;
   if added > 0 then
-    perform public._sf_audit(p_actor,'records.import_new','record_state',null,jsonb_build_object('added',added,'skipped',skipped));
+    perform public._sf_audit(p_actor,'records.import_new','record_state',null,
+      jsonb_build_object('added',added,'skipped',skipped,'failed',failed));
   end if;
-  return jsonb_build_object('added',added,'skipped',skipped);
+  update public.record_state set catch_up_at=now(),
+    catch_up_result=jsonb_build_object('added',added,'skipped',skipped,'failed',failed,'by',case when p_actor is null then 'schedule' else 'store' end);
+  return jsonb_build_object('added',added,'skipped',skipped,'failed',failed);
 end $$;
 
 create function public.admin_import_new_play_records(p_actor uuid, p_rows jsonb) returns jsonb
@@ -930,6 +959,12 @@ end $$;
 
 create function public.system_import_new_play_records(p_rows jsonb) returns jsonb
 language sql set search_path='' as $$ select public._sf_import_new_play_records(null, p_rows) $$;
+
+-- 排程的補匯入在讀試算表時就失敗（例如試算表取消共用）：記下代碼，店家畫面看得到。
+create function public.system_records_catch_up_failed(p_code text) returns void
+language sql set search_path='' as $$
+  update public.record_state set catch_up_at=now(), catch_up_result=jsonb_build_object('error',left(coalesce(p_code,''),60))
+$$;
 
 -- 對帳：每位玩家的累積、已兌換、餘額、場次、最後遊玩日、探員編號，與 Apps Script 最後一次的點數總覽（play_record_snapshot）逐一比對。
 create function public.admin_records_reconcile(p_actor uuid) returns jsonb
@@ -965,14 +1000,16 @@ declare st public.record_state;
 begin
   if not public._sf_is_admin(p_actor) then raise exception 'NOT_ADMIN' using errcode='P0001'; end if;
   select * into st from public.record_state;
-  return jsonb_build_object('source',st.source,'switchedAt',st.switched_at,'importedAt',st.imported_at,'importSummary',st.import_summary,
+  return jsonb_build_object('source',st.source,'switchedAt',st.switched_at,'wentLiveAt',st.went_live_at,'importedAt',st.imported_at,
+    'catchUpAt',st.catch_up_at,'catchUpResult',st.catch_up_result,'importSummary',st.import_summary,
     'sheetCutoff',st.sheet_cutoff,'players',(select count(*) from public.record_players),'records',(select count(*) from public.play_records),
     'webRecords',(select count(*) from public.play_records where source='web'),
     'ledger',(select count(*) from public.point_ledger),'snapshotAt',(select fetched_at from public.play_record_snapshot where id=1));
 end $$;
 
 -- 切換：'supabase' 之後網站讀寫這裡；切回 'gas' 只用於緊急退回（切換後在這裡新增的記錄不會出現在試算表）。
--- 切到 supabase 前必須匯入過，並且對帳一致（p_force 可略過對帳，例如差異已確認是試算表的錯）。
+-- 第一次切到 supabase 前必須匯入過，並且對帳一致（p_force 可略過對帳，例如差異已確認是試算表的錯）。
+-- 緊急切回之後再切回來不必對帳（這裡多了切換後的記錄，本來就對不上）：切回期間送到 Apps Script 的列由補匯入以新規則計點。
 create function public.admin_set_records_source(p_actor uuid, p_source text, p_force boolean default false) returns jsonb
 language plpgsql set search_path='' as $$
 declare st public.record_state;
@@ -982,10 +1019,17 @@ begin
   perform public._sf_records_lock();
   select * into st from public.record_state;
   if p_source = 'supabase' and st.imported_at is null then raise exception 'IMPORT_REQUIRED' using errcode='P0001'; end if;
-  if p_source = 'supabase' and not coalesce(p_force,false) and not (public.admin_records_reconcile(p_actor)->>'matched')::boolean then
-    raise exception 'RECONCILE_MISMATCH' using errcode='P0001';
+  -- 比對的必須是剛讀到的 Apps Script 總覽（api 切換前會先重讀一次）：舊的副本可能漏掉匯入之後才手動加的兌換、補點。
+  if p_source = 'supabase' and st.went_live_at is null and not coalesce(p_force,false) then
+    if coalesce((select fetched_at from public.play_record_snapshot where id=1), '-infinity') < now() - interval '10 minutes' then
+      raise exception 'RECONCILE_STALE' using errcode='P0001';
+    end if;
+    if not (public.admin_records_reconcile(p_actor)->>'matched')::boolean then
+      raise exception 'RECONCILE_MISMATCH' using errcode='P0001';
+    end if;
   end if;
-  update public.record_state set source=p_source, switched_at=now(), switched_by=p_actor;
+  update public.record_state set source=p_source, switched_at=now(), switched_by=p_actor,
+    went_live_at=coalesce(went_live_at, case when p_source='supabase' then now() end);
   perform public._sf_audit(p_actor,'records.source','record_state',null,jsonb_build_object('source',p_source,'force',coalesce(p_force,false)));
   return public.admin_records_status(p_actor);
 end $$;
@@ -997,12 +1041,13 @@ begin
       '_sf_is_double_day','_sf_char_count','_sf_guard_ledger','_sf_record_config','_sf_find_player','_sf_next_agent','_sf_ensure_player',
       '_sf_records_lock','_sf_award_quests','_sf_add_play_record','_sf_records_summary','_sf_records_payload','_sf_import_play_records',
       '_sf_import_new_play_records') loop
-    execute format('revoke all on function %s from public,anon,authenticated,service_role',f);
+    execute format('revoke all on function %s from public,anon,authenticated',f);
+    execute format('grant execute on function %s to service_role',f);
   end loop;
   for f in select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid=p.pronamespace
     where n.nspname='public' and p.proname in ('submit_play_record','submit_review_like','grant_record_return_bonus',
       'public_records_payload','public_play_records','record_names','record_card','record_name_taken','records_source',
-      'admin_import_play_records','admin_import_new_play_records','system_import_new_play_records',
+      'admin_import_play_records','admin_import_new_play_records','system_import_new_play_records','system_records_catch_up_failed',
       'admin_records_reconcile','admin_records_status','admin_set_records_source') loop
     execute format('revoke all on function %s from public,anon,authenticated',f);
     execute format('grant execute on function %s to service_role',f);

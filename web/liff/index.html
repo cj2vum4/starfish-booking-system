@@ -130,6 +130,8 @@
     BONUS_NOT_CONFIGURED: '已核准，但還沒設定 PLAY_RECORD_SECRET，回歸禮沒有發。',
     BONUS_FAILED: '已核准，但回歸禮暫時沒發成功，請稍後按「重試發回歸禮」。', INVALID_REASON: '取消原因最多 500 字。',
     RECORDS_NOT_LIVE: '玩本記錄還沒切換到預約系統。', RECORDS_LIVE: '已經切換到預約系統，不能再整批匯入；請改用「補匯入新記錄」。',
+    RECORDS_WENT_LIVE: '曾經切換到預約系統，不能再整批匯入（會刪掉切換後的記錄）；切回預約系統後用「補匯入新記錄」。',
+    RECONCILE_STALE: '讀不到 Apps Script 最新的點數總覽，不能確認一致，請稍後再按一次切換。',
     IMPORT_REQUIRED: '請先匯入玩本記錄。', RECONCILE_MISMATCH: '對帳還有差異。請先處理，或確認差異沒問題後按「仍要切換」。',
     INVALID_IMPORT: '試算表的內容無法辨識，請聯絡維護者。', INVALID_RECORD: '記錄內容不完整。', REVIEW_NOT_FOUND: '找不到這則心得。',
     LEDGER_APPEND_ONLY: '點數帳本只能新增，不能修改或刪除。', INVALID_SOURCE: '切換的目標不正確。', INVALID_POINTS: '點數不正確。',
@@ -1100,41 +1102,58 @@
   // 1 share the spreadsheet, 2 import, 3 reconcile with the Apps Script's 點數總覽, 4 switch the website over.
   // Until the switch the website keeps using the Apps Script, so importing and checking can be repeated freely.
   const ANOMALY_ZH = { duplicate_player: '「玩家」分頁有重複的名字（以後面那列為準）', duplicate_agent: '探員編號重複',
+    ledger_row_without_account: '點數帳本有列沒填「歸戶名」（Apps Script 也不算這些列；要算的話補上歸戶名再匯入）',
     ledger_only_player: '帳本裡有、「玩家」分頁沒有的名字（已建立這位玩家）',
     ledger_name_is_alias: '帳本的「歸戶名」是別人的別名（照試算表當成另一位玩家）',
     duplicate_interaction: '「心得互動」有重複的列', repeated_key: '帳本有重複的去重鍵（照原樣保留）' };
   const FIELD_ZH = { earned: '累積', redeemed: '已兌換', balance: '餘額', plays: '場次', last: '最後遊玩日', agent: '探員編號' };
+  function catchUpText(st) {
+    const r = st.catchUpResult;
+    if (!st.catchUpAt || !r) return '還沒有補匯入過。';
+    const when = esc(fmtRange(st.catchUpAt));
+    if (r.error) return `⚠️ 上次補匯入（${when}）失敗：${esc(message(r.error))}（${esc(r.error)}）`;
+    return `上次補匯入 ${when}：補進 ${r.added} 筆` + (r.failed ? `・⚠️ ${r.failed} 列不合格沒有補進來（例如劇本名稱不在劇本目錄）` : '');
+  }
   async function showRecords() {
     render(`<h2>玩本記錄與點數</h2><div class="card">讀取中…</div>`);
     let st;
     try { st = await api('/admin/records'); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>玩本記錄與點數</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
-    const live = st.source === 'supabase', sum = st.importSummary || {};
+    // reverted：曾經切換、之後緊急切回 Apps Script。不能再整批匯入（會刪掉切換後的記錄），直接切回來即可。
+    const live = st.source === 'supabase', reverted = !live && !!st.wentLiveAt, sum = st.importSummary || {};
     render(`<h2>玩本記錄與點數</h2>
       <p class="muted">把網站「玩本記錄」的點數從 Google Apps Script 搬到預約系統。切換前網站照舊使用 Apps Script，
         匯入、對帳可以重複做，直到完全一致再切換。</p>
       <div class="card stack"><b>目前</b>
-        <div>${live ? `✅ 網站已改用預約系統（${esc(fmtRange(st.switchedAt))} 切換）` : '網站仍使用 Apps Script（試算表）'}</div>
+        <div>${live ? `✅ 網站已改用預約系統（${esc(fmtRange(st.switchedAt))} 切換）`
+          : reverted ? `⚠️ 已緊急切回 Apps Script（${esc(fmtRange(st.switchedAt))}）` : '網站仍使用 Apps Script（試算表）'}</div>
         <div class="muted">${st.importedAt ? `上次匯入 ${esc(fmtRange(st.importedAt))}：玩家 ${st.players}・記錄 ${st.records}・帳本 ${st.ledger} 筆`
           + (sum.anomalies ? `・需要留意 ${sum.anomalies} 項` : '') : '還沒有匯入過。'}${st.webRecords ? `・切換後網站新增 ${st.webRecords} 筆` : ''}</div></div>
-      ${live ? '' : `<div class="card stack"><b>1. 共用試算表</b>
+      ${live || reverted ? '' : `<div class="card stack"><b>1. 共用試算表</b>
         <div class="muted">打開「玩本記錄」試算表 → 共用 → 加入下面這個服務帳戶，權限選「檢視者」。</div>
         <div style="word-break:break-all"><b>${esc(st.serviceAccountEmail || '（還沒設定 Google 服務帳戶）')}</b></div>
         <a class="link" target="_blank" rel="noopener" href="https://docs.google.com/spreadsheets/d/${esc(st.sheetId)}/edit">開啟試算表</a></div>
       <div class="card stack"><b>2. 匯入</b>
+        <div class="muted">先在試算表上方選單按「🌟 海星集點 → 重算所有點數」，等它跑完再匯入（手動加在點數帳本的列要重算後，
+          Apps Script 的點數總覽才會算進去，否則對帳會有差異）。</div>
         <div class="muted">整批讀入表單回應、點數帳本、玩家、設定、獎勵、任務、心得互動。點數照 Apps Script 已算好的原樣搬，
           每次匯入都會取代上一次的匯入。</div>
         <button id="importBtn">匯入玩本記錄</button><div id="importMsg" class="muted"></div></div>`}
-      <div class="card stack"><b>${live ? '對帳' : '3. 對帳'}</b>
+      ${reverted ? '' : `<div class="card stack"><b>${live ? '對帳' : '3. 對帳'}</b>
         <div class="muted">先重新讀一次 Apps Script 的點數總覽，再逐位玩家比對累積、已兌換、餘額、場次、最後遊玩日、探員編號。</div>
-        <button class="secondary" id="reconcileBtn">開始對帳</button><div id="reconcileMsg"></div></div>
+        <button class="secondary" id="reconcileBtn">開始對帳</button><div id="reconcileMsg"></div></div>`}
       ${live ? `<div class="card stack"><b>補匯入新記錄</b>
-          <div class="muted">網站連不上預約系統時，會改送到 Apps Script。系統每 6 小時會自動把這些新記錄補進來（以新規則計點）；
-            也可以現在按一次。</div>
+          <div class="muted">網站連不上預約系統時，會改送到 Apps Script。系統每 10 分鐘會自動把這些新記錄補進來（以新規則計點）；
+            也可以現在按一次。試算表與服務帳戶的共用請保留到第 4 階段。</div>
+          <div class="muted">${catchUpText(st)}</div>
           <button class="secondary" id="importNewBtn">補匯入新記錄</button><div id="importNewMsg" class="muted"></div></div>
         <div class="card stack"><b>緊急切回 Apps Script</b>
           <div class="muted">只在預約系統出問題時使用。切回後，切換期間在這裡新增的記錄、按讚、回歸禮不會出現在試算表裡。</div>
           <button class="secondary" id="backBtn">切回 Apps Script</button><div id="backMsg" class="muted"></div></div>`
+      : reverted ? `<div class="card stack"><b>切回預約系統</b>
+          <div class="muted">預約系統的問題排除後按這裡（不必再匯入、對帳）。切回期間送到 Apps Script 的玩本記錄，
+            切回後會自動補進來（以新規則計點）；這段期間的按讚、以及在試算表手動調整的點數不會帶過來。</div>
+          <button id="returnBtn">切回預約系統</button><div id="switchMsg" class="muted"></div></div>`
       : `<div class="card stack"><b>4. 切換</b>
           <div class="muted">對帳一致後才能切換。切換後：網站送出玩本記錄、按讚、榮譽牆與劇本頁的心得都改走預約系統，
             點數在送出當下算好就固定；LINE 會員卡、老玩家綁定的回歸禮也改由預約系統處理。
@@ -1156,22 +1175,24 @@
       } catch (x) { fail('importMsg', x); }
       busy(e.target, false);
     });
-    document.getElementById('reconcileBtn').addEventListener('click', async e => {
+    document.getElementById('reconcileBtn')?.addEventListener('click', async e => {
       busy(e.target, true);
       try {
         const r = await api('/admin/records/reconcile');
         const stale = r.snapshotFresh ? '' : '<div class="error">⚠️ 這次沒讀到 Apps Script 的最新總覽，是和之前存的副本比對。</div>';
         if (r.matched) {
-          out('reconcileMsg', `${stale}<div>✅ 一致：${r.supabasePlayers} 位玩家的點數、場次、探員編號都相同。</div>`);
+          out('reconcileMsg', `${stale}<div>✅ 一致：${r.supabasePlayers} 位玩家的點數、場次、探員編號都相同。</div>`
+            + (r.snapshotFresh ? '' : '<div class="muted">等讀得到 Apps Script 的最新總覽再對帳一次，才能切換。</div>'));
           const sw = document.getElementById('switchBtn');
-          if (sw) sw.disabled = false;
+          if (sw) sw.disabled = !r.snapshotFresh;
         } else {
           const rows = (r.differences || []).slice(0, 50).map(d => `<div>${esc(d.name)}：${esc(FIELD_ZH[d.field] || d.field)} 試算表 ${esc(d.gas)}／預約系統 ${esc(d.supabase)}</div>`).join('');
           out('reconcileMsg', `${stale}<div class="error">有差異（Apps Script ${r.gasPlayers} 位、預約系統 ${r.supabasePlayers} 位）</div>${rows}`
             + (r.differences?.length > 50 ? `<div class="muted">…還有 ${r.differences.length - 50} 項</div>` : '')
             + (r.onlyGas?.length ? `<div>只在試算表：${esc(r.onlyGas.join('、'))}</div>` : '')
             + (r.onlySupabase?.length ? `<div>只在預約系統：${esc(r.onlySupabase.join('、'))}</div>` : '')
-            + (live ? '' : '<div class="muted">修正試算表後重新匯入、再對帳。確認差異沒問題（例如試算表本身的錯）也可以按下面「仍要切換」。</div>'
+            + (live ? '' : '<div class="muted">先確認試算表已經「重算所有點數」（最常見的原因）；其次是手動列的名字和別名不一致。'
+              + '修正試算表、重算後重新匯入、再對帳。確認差異沒問題（例如試算表本身的錯）也可以按下面「仍要切換」。</div>'
               + '<button class="secondary" id="forceBtn">差異已確認，仍要切換</button>'));
           document.getElementById('forceBtn')?.addEventListener('click', ev => doSwitch(ev.target, true));
         }
@@ -1179,21 +1200,24 @@
       busy(e.target, false);
     });
     async function doSwitch(btn, force) {
-      if (!confirm(force ? '對帳還有差異。確定仍要把網站切換到預約系統嗎？' : '確定把網站的玩本記錄與點數切換到預約系統嗎？')) return;
+      if (!confirm(force ? '對帳還有差異。確定仍要把網站切換到預約系統嗎？'
+        : reverted ? '確定切回預約系統嗎？' : '確定把網站的玩本記錄與點數切換到預約系統嗎？')) return;
       busy(btn, true);
       try { await api('/admin/records/source', { method: 'POST', body: { source: 'supabase', force } }); await showRecords(); }
       catch (x) { busy(btn, false); fail(force ? 'reconcileMsg' : 'switchMsg', x); }
     }
     document.getElementById('switchBtn')?.addEventListener('click', e => doSwitch(e.target, false));
+    document.getElementById('returnBtn')?.addEventListener('click', e => doSwitch(e.target, false));
     document.getElementById('importNewBtn')?.addEventListener('click', async e => {
       busy(e.target, true);
       try { const r = await api('/admin/records/import-new', { method: 'POST' });
-        out('importNewMsg', `補進 ${r.added} 筆${r.skipped ? `（${r.skipped} 列已匯入或較舊，略過）` : ''}。`); }
+        out('importNewMsg', `補進 ${r.added} 筆${r.skipped ? `（${r.skipped} 列已匯入或較舊，略過）` : ''}`
+          + `${r.failed ? `・⚠️ ${r.failed} 列不合格沒有補進來` : ''}。`); }
       catch (x) { fail('importNewMsg', x); }
       busy(e.target, false);
     });
     document.getElementById('backBtn')?.addEventListener('click', async e => {
-      if (!confirm('確定切回 Apps Script？切換期間在預約系統新增的記錄不會出現在試算表。')) return;
+      if (!confirm('確定切回 Apps Script？切換期間在預約系統新增的記錄不會出現在試算表，之後也不能再整批匯入；問題排除後請在這頁「切回預約系統」。')) return;
       busy(e.target, true);
       try { await api('/admin/records/source', { method: 'POST', body: { source: 'gas' } }); await showRecords(); }
       catch (x) { busy(e.target, false); fail('backMsg', x); }

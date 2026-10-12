@@ -44,7 +44,7 @@ function backend({ live = false, isAdmin = true, binding = null, answer = () => 
       case 'public_play_records': return Response.json(live ? [{ name: '阿明', date: '2026/9/1', script: '年輪', character: '甲',
         rating: '5', comment: '好玩' }] : null);
       case 'public_records_payload': return Response.json(live ? PAYLOAD : null);
-      case 'get_record_snapshot': return Response.json({ payload: PAYLOAD, fetched_at: new Date().toISOString() });
+      case 'get_record_snapshot': return Response.json({ payload: PAYLOAD, fetched_at: new Date(Date.now() - 1000).toISOString() });
       case 'record_names': return Response.json(live ? [{ name: '阿明', agent: '#001', plays: 9, last: '2026/9/20' }] : null);
       case 'record_card': return Response.json(live ? { card: PAYLOAD.summary[0], rewards: [{ track: '保底', name: '折抵', cost: 50, note: '' }] } : null);
       case 'record_name_taken': return Response.json(args.p_name.includes('明'));
@@ -105,6 +105,8 @@ test('after the cutover the website writes and reads the booking system', async 
   assert.equal(res.status, 201);
   const data = await res.json();
   assert.deepEqual([data.ok, data.live, data.status, data.award.points], [true, true, 'earn', 45]);
+  // The canonical name would reveal which leaderboard name an alias belongs to.
+  assert.deepEqual(Object.keys(data).sort(), ['award', 'live', 'ok', 'status']);
   assert.deepEqual(rpcArgs(b, 'submit_play_record')[0], { p_record: { name: ' 阿明 ', date: '2026/10/5', script: '年輪', role: '甲',
     rating: '5', comment: '好玩', referrer: '小美' }, p_client_id: 'a1b2c3d4-0000-4000-8000-000000000001' });
   assert.ok(!rpcArgs(b, 'claim_notifications').length, 'no notification run after a public post');
@@ -125,9 +127,9 @@ test('after the cutover the website writes and reads the booking system', async 
   assert.deepEqual([body.ok, body.live, body.records[0].character, body.records[0].rating], [true, true, '甲', '5']);
   assert.equal(rpcArgs(b, 'public_play_records')[0].p_script, '年輪');
   const records = await call(b.settings, '/public/records', { auth: false });
-  assert.deepEqual(await records.json(), PAYLOAD);
+  assert.deepEqual(await records.json(), { ...PAYLOAD, live: true });
   assert.ok(!rpcArgs(b, 'get_record_snapshot').length, 'not served from the Apps Script copy');
-  assert.deepEqual(await (await call(b.settings, '/health/records', { auth: false })).json(), { ok: true, source: 'supabase' });
+  assert.deepEqual(await (await call(b.settings, '/health/records', { auth: false })).json(), { ok: true, source: 'supabase', players: 1 });
 });
 
 test('after the cutover names, naming and the member card come from the database', async () => {
@@ -174,6 +176,37 @@ test('a database without the stage-2 migration keeps every Apps Script path', as
   assert.equal((await call(b.settings, '/me/survey/name', { method: 'POST', body: { name: '新朋友' } })).status, 201);
 });
 
+test('after the cutover a database failure is never answered with Apps Script data or "not switched yet"', async () => {
+  const broken = (names) => (name) => names.includes(name) ? Response.json({ code: 'XX000', message: 'boom' }, { status: 500 }) : undefined;
+  const b = backend({ live: true, answer: broken(['public_play_records', 'public_records_payload']) });
+  const list = await call(b.settings, '/public/play-records', { auth: false });
+  assert.equal(list.status, 503);
+  assert.deepEqual(await list.json(), { ok: false, error: 'RECORDS_UNAVAILABLE' }, 'no live:false, so the website keeps its copy');
+  const sum = await call(b.settings, '/public/records', { auth: false });
+  assert.equal(sum.status, 503, 'not the Apps Script snapshot');
+  assert.ok(!rpcArgs(b, 'get_record_snapshot').length);
+  // The switch itself unreadable: no 回歸禮 to the Apps Script, no name check against its stale copy.
+  const c = backend({ live: true, binding: { user_id: userId, record_name: '阿明', status: 'pending', bonus_status: 'none' },
+    answer: broken(['records_source']) });
+  assert.equal((await call(c.settings, '/me/survey/name', { method: 'POST', body: { name: '新朋友' } })).status, 503);
+  const approve = await call(c.settings, `/admin/bindings/${userId}/approve`, { method: 'POST' });
+  assert.equal(approve.status, 200);
+  assert.equal(c.posts.length, 0, 'nothing sent to the Apps Script');
+  assert.equal((await approve.json()).bonusError, 'RECORDS_UNAVAILABLE');
+});
+
+test('without migration 0036 the website goes straight to the Apps Script', async () => {
+  const missing = (name) => ['submit_play_record', 'submit_review_like', 'public_play_records'].includes(name)
+    ? Response.json({ code: 'PGRST202', message: 'Could not find the function' }, { status: 404 }) : undefined;
+  const b = backend({ answer: missing });
+  const post = await call(b.settings, '/public/play-records', { method: 'POST', auth: false, body: { name: 'A' } });
+  assert.deepEqual([post.status, (await post.json()).live], [503, false]);
+  const like = await call(b.settings, '/public/likes', { method: 'POST', auth: false,
+    body: { script: 'X', date: '2026/9/1', author: 'A', liker: '00000000-0000-4000-8000-000000000001' } });
+  assert.deepEqual([like.status, (await like.json()).live], [503, false]);
+  assert.equal((await (await call(b.settings, '/public/play-records', { auth: false })).json()).live, false);
+});
+
 const SHEET = {
   meta: { properties: { timeZone: 'Asia/Taipei' }, sheets: [{ properties: { title: '表單回應 1', sheetId: 463584243 } },
     ...['點數帳本', '玩家', '設定', '獎勵', '任務', '心得互動', '月報'].map((title, i) => ({ properties: { title, sheetId: i + 1 } }))] },
@@ -210,6 +243,15 @@ test('the 玩本記錄 spreadsheet is read as the Apps Script saw it', async () 
   assert.deepEqual(data.quests[0], { id: '場次', label: '本月完成 {目標} 場', goal: 3, points: 20, active: false });
   assert.deepEqual(data.interactions[0], { script: '年輪', date: '2026/10/1', author: '阿明', likes: 3, featured: true,
     updated: '2026-10-01T22:00:00.000Z' });
+  // Review fixes: identical 角色 headers keep every column; a typed text stamp is that day (parseDate_); none stays none;
+  // 雙倍日 typed as a weekday digit is that digit, not 1900/1/5.
+  const odd = await playRecordsFromSheet({
+    '表單回應 1': [['時間戳記', '怎麼稱呼你呢', '日期', '劇本', '角色', '角色', '給予評價'],
+      ['2025/3/1 下午 3:04:05', '阿明', '2025/3/1', '年輪', '甲', '', 5],
+      ['', '小美', '2025/3/2', '青樓', '', '莫懷', 4]],
+    '設定': [['設定項', '值'], ['雙倍日', 6], ['LINE上線日', 46301]] }, '表單回應 1', 'Asia/Taipei');
+  assert.deepEqual(odd.responses.map(r => [r.stamp, r.role]), [['2025-02-28T16:00:00.000Z', '甲'], [null, '莫懷']]);
+  assert.deepEqual(odd.config, [{ key: '雙倍日', value: '6' }, { key: 'LINE上線日', value: '2026/10/6' }]);
 });
 
 test('the store imports, reconciles and switches; only the store may', async () => {
@@ -221,8 +263,10 @@ test('the store imports, reconciles and switches; only the store may', async () 
   const reconcile = await (await call(b.settings, '/admin/records/reconcile')).json();
   assert.deepEqual([reconcile.matched, reconcile.snapshotFresh], [true, true]);
   assert.ok(rpcArgs(b, 'put_record_snapshot').length, 'compared against the Apps Script summary read just now');
+  const snapshotsBefore = rpcArgs(b, 'put_record_snapshot').length;
   const switched = await (await call(b.settings, '/admin/records/source', { method: 'POST', body: { source: 'supabase' } })).json();
   assert.equal(switched.source, 'supabase');
+  assert.equal(rpcArgs(b, 'put_record_snapshot').length, snapshotsBefore + 1, 'the Apps Script summary is read again right before switching');
   assert.deepEqual(rpcArgs(b, 'admin_set_records_source')[0], { p_actor: userId, p_source: 'supabase', p_force: false });
   assert.equal((await call(b.settings, '/admin/records/source', { method: 'POST', body: { source: 'x' } })).status, 400);
   const newRows = await (await call(b.settings, '/admin/records/import-new', { method: 'POST' })).json();
@@ -239,4 +283,12 @@ test('after the cutover the 5-minute schedule brings in records the website sent
   const before = backend({ live: false, sheets: SHEET });
   await runScheduledWork(before.settings);
   assert.ok(!rpcArgs(before, 'system_import_new_play_records').length, 'nothing to catch up before the cutover');
+  // The spreadsheet no longer shared: the store's screen gets the code instead of silence.
+  const unshared = backend({ live: true, sheets: SHEET, answer: () => undefined });
+  const fetcher = unshared.settings.fetcher;
+  unshared.settings.fetcher = (url, opts) => url.startsWith('https://sheets.googleapis.com/')
+    ? Promise.resolve(new Response('{}', { status: 403 })) : fetcher(url, opts);
+  await runScheduledWork(unshared.settings);
+  assert.equal(rpcArgs(unshared, 'system_records_catch_up_failed').length, 1);
+  assert.match(rpcArgs(unshared, 'system_records_catch_up_failed')[0].p_code, /^[A-Z_]+$/);
 });

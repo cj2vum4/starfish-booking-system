@@ -223,6 +223,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 
 網站玩本記錄（第 2 階段，公開、任何來源；切換前回 503 `{live:false,error:'RECORDS_NOT_LIVE'}`）：`POST /public/play-records`（text/plain JSON，`id`＝送出編號、蜜罐 `website`）、
 `POST /public/likes`（`liker`＝瀏覽器編號）、`GET /public/play-records?script=`（心得清單，快取 30 秒）。
+切換後資料庫出錯回 503 `RECORDS_UNAVAILABLE`（不帶 `live:false`，網站不會改用舊資料）；只有函式不存在（0036 未套用，PostgREST 404）才當作還沒切換。
+`GET /public/records` 的回應帶 `live`（true＝資料庫算的、false＝Apps Script 副本）。排程每 10 分鐘補匯入（`records-catch-up`），結果存在 `record_state.catch_up_*`。
 
 店家玩本記錄搬家（session＋admin）：`GET /admin/records`、`POST /admin/records/import|import-new`、`GET /admin/records/reconcile`、`POST /admin/records/source`（`{source:'gas'|'supabase', force?}`）。
 
