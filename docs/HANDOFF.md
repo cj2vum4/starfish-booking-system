@@ -1,6 +1,6 @@
 # 交接文件：海星劇本殺 LINE 預約系統
 
-最後更新：2026-10-11（定時排程、官網預約直達開團頁、移除 GAS 第 0／1 階段；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準，GAS 移除計畫見 `docs/GAS_MIGRATION.md`）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
+最後更新：2026-10-12（GAS 第 0／1 階段已部署、第 2 階段玩本記錄搬家程式完成；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準，GAS 移除計畫見 `docs/GAS_MIGRATION.md`）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
 `docs/PROGRESS.md`（逐階段施工紀錄）、`docs/SECURITY.md`（安全設計）、`docs/PLAYER_GUIDE.md`（玩家說明）。
 
 店家（帳號持有人）只講中文，回覆請用繁體中文、白話、少術語。
@@ -30,6 +30,9 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
   └─ GoogleAppsScript_玩本記錄.gs（手動部署到 Apps Script）：玩本記錄、集點、榮譽牆資料、回歸禮
        └─ 每次重算 → POST api /hooks/records-changed → api 更新 play_record_snapshot
           網站（points.js／reviews.js／play-record.js）與 LINE 會員卡讀 api GET /public/records（約 0.3 秒），讀不到才走 Apps Script
+  第 2 階段（0036，2026-10-12）：玩本記錄與點數搬進 Postgres，由 record_state.source 切換（'gas'｜'supabase'）
+       網站一律先問 api（/public/play-records、/public/likes、/public/records）；切換前 api 回 503 {live:false}，網站照舊走 Apps Script／CSV
+       店家在 LIFF「玩本記錄與點數（搬家）」匯入 → 對帳 → 切換（docs/GAS_MIGRATION.md）
 ```
 
 ### 兩個 repo
@@ -139,7 +142,7 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 
 ### 資料庫 migration
 - **一律新增檔案**（`supabase/migrations/YYYYMMDDNNNN_name.sql`，以 `begin; … commit;` 包住），不改已套用的檔案。
-- 目前全部 35 個 migration 都是在 **Supabase Dashboard SQL Editor 手動套用**。CLI 的 migration history 是空的：
+- 0001–0033 在 **Supabase Dashboard SQL Editor 手動套用**；0034、0035 於 2026-10-12 由 Claude 透過 Supabase 連接器（MCP `execute_sql`）套用（含 `delete` 的那段需店家在 SQL Editor 補）。0036 尚未套用。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）
@@ -170,6 +173,10 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - 單一檔案 `supabase/functions/api/index.ts`，無外部相依，可直接在 Node 24 測試（`handleApi(req, settings)`）。`verify_jwt` 關閉（自己驗 session）。
 - 部署：目前是在 Dashboard → Edge Functions → api → Code，把 GitHub 上該 commit 的檔案貼進編輯器並 Deploy，
   部署前後比對 SHA-256（以 LF 換行計算）確認雲端與 GitHub 一致。也可改用 `supabase functions deploy api --no-verify-jwt`。
+- 2026-10-12 起也可由 Claude 透過 Supabase 連接器部署（MCP `deploy_edge_function`，`verify_jwt:false`），部署後用 `get_edge_function`
+  取回內容比對 SHA-256。目前雲端：api v42＝GitHub `630b995` 的 index.ts（fd4e6597…），line-webhook v14＝同 commit。
+- 連接器的 `execute_sql` 遇到含 `delete`／某些修改的 SQL 會要求店家在 Claude App 按確認，60 秒內沒按就逾時（資料庫會整批回滾，不會半套）；
+  這類 SQL 改請店家在 SQL Editor 貼上執行。整份測試 SQL（`tests/*.sql`）同理。
 - 成功的 POST（`/hooks/*`、`/public/*` 除外）結束後會在背景送通知；另外每 5 分鐘的排程也會送（0034）。
 
 ### LIFF 頁
@@ -212,7 +219,12 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 
 網站角色問卷（公開，CORS 只限網站來源）：`POST /public/role-survey`（text/plain JSON，蜜罐欄位 `website`）。
 
-公開資料：`GET /public/records`（點數總覽副本，任何來源可讀，快取 30 秒）。Apps Script 專用：`POST /hooks/records-changed`（`X-Play-Record-Secret`）。
+公開資料：`GET /public/records`（點數總覽：切換前是 Apps Script 的副本，切換後由資料庫產生；任何來源可讀，快取 30 秒）。Apps Script 專用：`POST /hooks/records-changed`（`X-Play-Record-Secret`）。
+
+網站玩本記錄（第 2 階段，公開、任何來源；切換前回 503 `{live:false,error:'RECORDS_NOT_LIVE'}`）：`POST /public/play-records`（text/plain JSON，`id`＝送出編號、蜜罐 `website`）、
+`POST /public/likes`（`liker`＝瀏覽器編號）、`GET /public/play-records?script=`（心得清單，快取 30 秒）。
+
+店家玩本記錄搬家（session＋admin）：`GET /admin/records`、`POST /admin/records/import|import-new`、`GET /admin/records/reconcile`、`POST /admin/records/source`（`{source:'gas'|'supabase', force?}`）。
 
 ---
 

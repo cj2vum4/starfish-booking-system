@@ -81,6 +81,24 @@
   Apps Script 以鎖避免同時重算、以去重鍵確保每個名字只發一次，並檢查「回歸禮資格日」。密碼只存在兩邊的 Secrets，不經前端。
 - 會員卡只顯示自己已核准綁定的名字；名字清單只回傳網站榮譽牆本來就公開的名字、探員編號與場次，不回傳別人的點數。
 
+## 玩本記錄與點數（2026-10-12，0036）
+
+- 新表 `record_state`、`record_settings`、`record_rewards`、`record_quests`、`record_players`、`record_aliases`、`play_records`、
+  `review_interactions`、`review_likes`、`point_ledger` 全部 RLS、anon／authenticated 無權限；內部函式（`_sf_*`，含計分與匯入）
+  連 service_role 都不能直接呼叫，只能透過公開 RPC（`submit_play_record` 等）與店家 RPC（`admin_*`，函式內檢查 `admin_users`）。
+- 點數帳本只增不改：觸發器擋住任何修改（只能填作廢欄位，作廢後也不能改回）；刪除只在切換前的整批重新匯入時允許。
+  每件事有去重鍵（例：每月任務＝玩家＋月份＋任務、回歸禮＝玩家），同一件事只會發一次。所有寫帳本的動作先鎖同一列，同時送出不會互相蓋掉。
+- 網站公開路由（不需登入，與原本 Apps Script 相同）：`POST /public/play-records`、`POST /public/likes`、`GET /public/play-records`、
+  `GET /public/records`，回應對任何來源開放 CORS（簡單請求本來就不受 CORS 保護；開放是為了讓頁面讀得到結果、不會重送到舊 Apps Script）。
+  防濫用：單次 8 KB／4 KB；全站 10 分鐘 30 筆、一天 200 筆記錄，按讚每小時 300 個；同一筆送出編號只記一次；同一個瀏覽器編號對同一則心得只算一次讚；
+  對不存在的心得按讚會被拒絕（以前也會加點）；介紹人必須是已有玩家（以前亂填也拿點）；名字去空白、大小寫後撞到既有玩家或別名，
+  新玩家在 LINE 取名時會被擋（避免把點數記到別人身上）。沒有依 IP 限流（理由同角色問卷）；按讚與送出不需登入是店家定案，
+  有人刻意灌讚最多讓一則心得拿到上限 10 點。
+- 公開的心得清單只給榮譽牆本來就公開的欄位（名字、日期、劇本、角色、評價、心得），不給填寫時間與介紹人；點數總覽格式與以前相同。
+- 匯入：api 以服務帳戶**唯讀**讀店家共用的「玩本記錄」試算表；只有店家能觸發，切換後不能整批覆蓋（只能補新列）。
+- 切換開關只有店家能動（`admin_set_records_source`）；對帳不一致時要店家確認才能強制切換。切換前所有公開寫入一律回 `RECORDS_NOT_LIVE`，不會寫進資料庫。
+- 回歸禮切換後由資料庫發放，不再呼叫 Apps Script，也不再需要 `PLAY_RECORD_SECRET`（第 4 階段移除）。
+
 ## 前端
 
 - 所有使用者輸入與 LINE 暱稱以 `esc()` 輸出，不以 HTML 解讀；`tests/liff.test.mjs` 檢查頁面程式可解析且只載入 LINE SDK 與自身設定。

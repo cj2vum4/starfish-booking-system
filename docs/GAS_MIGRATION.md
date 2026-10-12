@@ -20,13 +20,50 @@
 
 | 階段 | 內容 | 狀態 |
 |---|---|---|
-| 0 | 店家通知走管理員 OA（傳不到自動退回玩家 OA）；移除試算表匯出 | 程式完成（2026-10-11），待店家設定管理員 OA token 並部署 |
-| 1 | 角色問卷：網站送進 Supabase（`role_survey_responses`），LINE 店家「角色問卷回覆」；舊總表可匯入（共用給服務帳戶後每 6 小時自動匯入過渡期落在舊表的回覆） | 程式完成（2026-10-11），待部署 0035＋api |
-| 2 | 玩本記錄與點數搬進 Supabase（固定制計分、公開資料、網站改讀寫 Supabase、匯入與對帳） | 設計如下，待店家確認第 2 階段的預設規則 |
+| 0 | 店家通知走管理員 OA（傳不到自動退回玩家 OA）；移除試算表匯出 | 2026-10-12 已部署（api v42、line-webhook v14）；待店家設定 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN` |
+| 1 | 角色問卷：網站送進 Supabase（`role_survey_responses`），LINE 店家「角色問卷回覆」；舊總表可匯入（共用給服務帳戶後每 6 小時自動匯入過渡期落在舊表的回覆） | 2026-10-12 已部署 0034、0035（`admin_delete_role_survey` 待店家在 SQL Editor 補一段）、api |
+| 2 | 玩本記錄與點數搬進 Supabase（固定制計分、公開資料、網站改讀寫 Supabase、匯入與對帳） | 程式完成（2026-10-12，0036＋api＋LIFF＋網站）；店家 2026-10-12 確認預設規則（下方四點照建議）。待部署、匯入、對帳；切換建議等第 3 階段 |
 | 3 | 店家點數管理：兌換申請與審核、補點／扣點、作廢、別名歸戶、精選心得、獎勵／任務／規則設定、月報、店家圖文選單 | 待做 |
 | 4 | 對帳一致一段時間後關閉：見下方「第 4 階段步驟」 | 待做 |
 
-## 第 2 階段設計
+## 第 2 階段實作（2026-10-12）
+
+### 做了什麼
+- **0036**（`supabase/migrations/202610120036_play_records.sql`）：`record_state`（切換開關 `source`='gas'|'supabase'）、
+  `record_settings`／`record_rewards`／`record_quests`（試算表的設定、獎勵、任務）、`record_players`＋`record_aliases`（歸戶，名字比對＝去空白＋小寫）、
+  `play_records`、`point_ledger`（只增不改，觸發器擋修改；刪除只在切換前整批重新匯入時允許）、`review_interactions`＋`review_likes`。
+  計分 `_sf_add_play_record` 照 `rebuildPoints_` 的規則（順序：補登 → 重複 → 每日上限 → 基本／心得／首玩／首探／新手好運 → 雙倍日 → 介紹 → 每月任務），
+  全部寫操作先鎖 `record_state` 那一列。
+- **公開路由**（api，任何來源可讀；切換前回 503 `{live:false, error:'RECORDS_NOT_LIVE'}`，網站改走 Apps Script）：
+  `POST /public/play-records`（`id`＝網站送出編號，重送只記一次；全站 10 分鐘 30 筆、一天 200 筆）、`POST /public/likes`（`liker`＝瀏覽器編號）、
+  `GET /public/play-records?script=`（心得清單，取代 CSV，不含時間與介紹人）、`GET /public/records`（切換後由 SQL 產生，格式與 Apps Script 相同）。
+- **依開關分流**：`/records/names`、`/me/survey/name`（切換後名字只要去空白／大小寫後撞到玩家或別名就擋）、`/me/binding`（會員卡）、回歸禮
+  （切換後 `grant_record_return_bonus` 在資料庫發，不再需要 `PLAY_RECORD_SECRET`）、`/health/records`。讀不到開關（0036 還沒套用）一律走舊路。
+- **店家（LINE「玩本記錄與點數（搬家）」）**：`GET /admin/records`、`POST /admin/records/import`（服務帳戶唯讀讀試算表 7 個分頁，整批取代）、
+  `GET /admin/records/reconcile`（先重讀 Apps Script 的總覽，再逐人比對累積／已兌換／餘額／場次／最後遊玩日／探員編號）、
+  `POST /admin/records/source`（切換；對帳不一致要 `force`）、`POST /admin/records/import-new`（切換後補匯入）。
+  切換後每 6 小時排程自動補匯入「網站暫時連不上時送到 Apps Script」的新列（以新規則計點）。
+- **網站**（starfishlarp）：`play-record-config.js`、`play-record.js`、`reviews.js`、`points.js`、`榮譽牆.html` 一律先問預約系統，
+  回「還沒切換」或連不上才走 Apps Script／CSV。說明在 starfishlarp `CLAUDE.md` 第八節。
+
+### 怎麼確認規則一樣
+- `tests/play_records.sql`：逐條規則、匯入、對帳、切換、權限。
+- `tests/gas_parity.test.mjs`＋`tests/fixtures/gas_parity.json`：用 starfishlarp 的 `tests/gas-mock.js` 跑**真正的 .gs**，
+  產生 14 份隨機試算表（`node scripts/gas_parity_vectors.cjs <starfishlarp 路徑>` 重新產生）：
+  - 匯入 8 份（含別名、重複玩家列、讚＋精選、手動兌換、神秘盒、作廢、回歸禮）：從試算表原始格子經 api 的讀取程式匯入後，
+    點數總覽每人每欄、心得互動、神秘盒、任務、規則都與 Apps Script 完全相同。
+  - 逐筆 6 份（依遊玩日順序送出、介紹人都是已玩過的人）：送出當下計分的結果與 Apps Script 全部重算相同（含按讚）。
+- 與 Apps Script 不同、且是刻意的（店家定案）：介紹人必須是已有玩家；點數不回頭重算（晚補的舊日期不會搶走別人的首探）；
+  本月任務進度修好了（Apps Script 的月份格式對不上，一直是 0）；送出畫面顯示的是這一筆的點數（Apps Script 有時是上一筆）。
+
+### 切換前店家要做的事
+1. 套用 0036、部署 api（見 `docs/HANDOFF.md`），網站推上線（切換前不影響玩家）。
+2. 把「玩本記錄」試算表共用給服務帳戶（檢視者）。
+3. LINE 店家後台「玩本記錄與點數（搬家）」：匯入 → 對帳。有差異時看清單：多半是試算表手動列的名字和別名不一致；修正試算表後重新匯入。
+4. **第 3 階段（兌換扣點、補點、精選、作廢）做好之前先不要切換**：切換後試算表的手動操作不會再進來。
+5. 切換。之後觀察一段時間，進第 4 階段。
+
+## 第 2 階段設計（實作前的版本，保留供對照）
 
 ### 資料表（新 migration）
 - `record_players`：歸戶名（唯一，另存正規化名稱：去空白、小寫）、探員編號（唯一，第一筆計點紀錄時給號）、加入日期、
@@ -88,7 +125,7 @@
    以及 Supabase Secrets 的 `PLAY_RECORD_SECRET`、`PLAY_RECORD_URL` 與 Apps Script 指令碼屬性 `BOOKING_SECRET`。
 4. starfishlarp 刪除 .gs 與 JSONP／CSV 讀取程式、`tests/gas.test.js`（規則已移到預約系統的測試）。
 
-### 第 2 階段開工前請店家確認（我的建議）
+### 第 2 階段開工前請店家確認（我的建議）——2026-10-12 店家：都照建議
 1. 介紹人：只接受已存在的玩家名字（建議），亂填的不給點、只記錄。
 2. 按讚：同一則心得、同一個瀏覽器只算一次（現況）；要不要改成必須 LINE 登入才能按讚（建議先維持現況）。
 3. 作廢一筆玩本記錄：只作廢那筆的點數；它原本拿到的「首探／首玩」不轉給別人（建議，固定制下最單純）。

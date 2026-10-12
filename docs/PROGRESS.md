@@ -1,5 +1,28 @@
 # 施工紀錄 2026-10-02
 
+## 移除 GAS：第 0／1 階段上線、第 2 階段（玩本記錄與點數）程式完成（2026-10-12）
+
+店家授權 Claude 透過 Supabase 連接器代為部署（秘密仍由店家自己貼）；第 2 階段的預設規則店家回覆「都照建議」。
+
+- **第 0／1 階段已部署**：0034（排程）、0035（角色問卷）由 Claude 用連接器套用；api v42、line-webhook v14 由連接器部署，
+  取回雲端內容比對 SHA-256 與 GitHub `630b995` 相同。`/hooks/tick` 從 02:30 UTC 起每 5 分鐘回 202。
+  連接器遇到含 `delete` 的 SQL 要店家在 App 按確認、60 秒沒按就逾時（整批回滾），所以 0035 的 `admin_delete_role_survey`
+  與 `tests/role_survey.sql` 留給店家在 SQL Editor 貼上（重試兩次仍逾時）。
+- **第 2 階段（0036＋api＋LIFF＋網站）**：細節與「哪些地方刻意和 Apps Script 不同」見 `docs/GAS_MIGRATION.md`「第 2 階段實作」。
+  - 資料庫照 Apps Script 規則在送出當下算點並固定；`record_state.source` 是切換開關，切換前所有新路由回 503 `{live:false}`，
+    網站、會員卡、取名、回歸禮都照舊走 Apps Script——**部署後、切換前，玩家看不到任何差別**。
+  - 店家畫面「玩本記錄與點數（搬家）」：共用試算表 → 匯入（整批取代，可重來）→ 對帳（逐人比對 6 欄）→ 切換；切換後可「補匯入新記錄」與「緊急切回」。
+  - 店家定案：介紹人必須是已有玩家；按讚維持一個瀏覽器一次；作廢只作廢那筆點數；首探依送出順序。
+- 測試：`tests/play_records.sql`（規則、匯入、對帳、切換、權限）PASS；`tests/gas_parity.test.mjs` 用真正的 .gs 產生 14 份試算表，
+  匯入結果與逐筆送出結果都和 Apps Script 相同；api 新增 8 項；npm test 全過。網站 tests/run.sh 新增「切換之後」情境全過；
+  順手修好送出結果卡在「重複」「每日上限」時說明文字不顯示（`.award-card` 的 `display:flex` 蓋過 `hidden`）。
+- **店家要做的事（依序）**：
+  1. SQL Editor 貼上 Claude 給的兩段：角色問卷最後一段（`admin_delete_role_survey`）＋ `tests/role_survey.sql`（須 PASS）。
+  2. 管理員 OA：發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；Secrets 刪除 `GOOGLE_SHEET_ID`。
+  3. 「角色問卷總表」與「玩本記錄」兩份試算表共用給服務帳戶 `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（檢視者）。
+  4. 0036 套用與 api 部署（Claude 代為執行；含 `delete` 的部分同第 1 點由店家貼）。
+  5. LINE 店家後台「玩本記錄與點數（搬家）」：匯入 → 對帳。**第 3 階段做好之前先不要按切換。**
+
 ## 移除 GAS：第 0 階段（管理員 OA）＋第 1 階段（角色問卷）（2026-10-11）
 
 整體計畫與店家定案見 `docs/GAS_MIGRATION.md`。
