@@ -1474,6 +1474,7 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   }
   if (req.method === 'POST' && path === '/admin/records/source') {
     const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
     const { source, force } = await readJson(req);
     if (source !== 'gas' && source !== 'supabase') throw new ApiError(400, 'INVALID_SOURCE');
     // The first switch compares against the Apps Script's summary as it is now (RECONCILE_STALE if it cannot be read):
