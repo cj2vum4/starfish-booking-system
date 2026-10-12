@@ -74,7 +74,8 @@
 1. Supabase → SQL Editor → New query → 貼上 `supabase/migrations/202610120036_play_records.sql` **整份** → Run（看到 Success）。
 2. 再開一個 New query，貼上 `tests/play_records.sql` 整份 → Run，最後一行要是 `PASS: …`（測試以 api 的身分 `service_role` 執行，
    權限漏了會在這裡失敗；測試資料自動回滾）。
-3. 告訴 Claude，Claude 部署 api 並比對 SHA-256。順序反過來也沒關係：沒有 0036 時 api 會讓網站直接走 Apps Script。
+3. api 已在 2026-10-12 部署（v44，commit `038058a`），網站與 LINE 店家畫面也已上線；沒有 0036 時 api 讓網站直接走 Apps Script，
+   貼完 0036 不需要再部署任何東西。
 - 資料量：目前約 62 位玩家、123 場（2026-10-12 的總覽）。api 對資料庫的單一指令上限是 8 秒（`authenticator` 的
   `statement_timeout`），以測試估算數千列才會接近；資料量大很多時再改成分批匯入。
 

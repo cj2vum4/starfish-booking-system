@@ -26,6 +26,9 @@
     第一次切換前重讀 Apps Script 總覽（10 分鐘內）；匯入時每個時區只建一個日期格式器（省 Edge CPU）。
   - 網站：記住預約系統上次的回答（已切換／還沒），還沒切換時不久等、心得與 CSV 同時讀；已切換時讀不到就沿用快取、
     按讚失敗收回、改送 Apps Script 的記錄說明約 10 分鐘內入帳；修好偶發失敗的計時測試。
+- 上線（10/12 15:48 UTC）：api v44（改用固定 commit 的入口檔部署；v43 整份貼上被截斷、約 1 分鐘無法啟動，期間沒有任何請求）、
+  網站 `1175bc7`、LINE 店家畫面 `ac83a61`。用 pg_net 從資料庫實測：`/public/records` 200、`/public/play-records` 503 `live:false`、
+  `/me` 401，15:50 排程 202。0036 尚未套用，所以一切照舊走 Apps Script。
 - 測試：`tests/play_records.sql`（規則、匯入、對帳、切換、權限）PASS；`tests/gas_parity.test.mjs` 用真正的 .gs 產生 14 份試算表，
   匯入結果與逐筆送出結果都和 Apps Script 相同；api 新增 8 項；npm test 全過。網站 tests/run.sh 新增「切換之後」情境全過；
   順手修好送出結果卡在「重複」「每日上限」時說明文字不顯示（`.award-card` 的 `display:flex` 蓋過 `hidden`）。
@@ -33,8 +36,8 @@
   1. SQL Editor 貼上 Claude 給的兩段：角色問卷最後一段（`admin_delete_role_survey`）＋ `tests/role_survey.sql`（須 PASS）。
   2. 管理員 OA：發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；Secrets 刪除 `GOOGLE_SHEET_ID`。
   3. 「角色問卷總表」與「玩本記錄」兩份試算表共用給服務帳戶 `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（檢視者）。
-  4. SQL Editor 貼上 `supabase/migrations/202610120036_play_records.sql` 整份，再貼 `tests/play_records.sql`（須 PASS）；
-     之後 Claude 部署 api（見 `docs/GAS_MIGRATION.md`「部署 0036」）。
+  4. SQL Editor 貼上 `supabase/migrations/202610120036_play_records.sql` 整份，再貼 `tests/play_records.sql`（須 PASS）。
+     api（v44）、網站、LINE 店家畫面都已在 10/12 上線，貼完不用再部署。
   5. 試算表「重算所有點數」→ LINE 店家後台「玩本記錄與點數（搬家）」：匯入 → 對帳。**第 3 階段做好之前先不要按切換。**
 
 ## 移除 GAS：第 0 階段（管理員 OA）＋第 1 階段（角色問卷）（2026-10-11）
