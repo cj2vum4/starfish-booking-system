@@ -173,8 +173,13 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - 單一檔案 `supabase/functions/api/index.ts`，無外部相依，可直接在 Node 24 測試（`handleApi(req, settings)`）。`verify_jwt` 關閉（自己驗 session）。
 - 部署：目前是在 Dashboard → Edge Functions → api → Code，把 GitHub 上該 commit 的檔案貼進編輯器並 Deploy，
   部署前後比對 SHA-256（以 LF 換行計算）確認雲端與 GitHub 一致。也可改用 `supabase functions deploy api --no-verify-jwt`。
-- 2026-10-12 起也可由 Claude 透過 Supabase 連接器部署（MCP `deploy_edge_function`，`verify_jwt:false`），部署後用 `get_edge_function`
-  取回內容比對 SHA-256。目前雲端：api v42＝GitHub `630b995` 的 index.ts（fd4e6597…），line-webhook v14＝同 commit。
+- 2026-10-12 起也可由 Claude 透過 Supabase 連接器部署（MCP `deploy_edge_function`，`verify_jwt:false`）。
+  api 已超過 110 KB，整份貼進一次工具呼叫會被截斷（v43 就是這樣壞掉、約 1 分鐘、期間沒有請求），所以改部署一行「入口檔」：
+  `import 'https://raw.githubusercontent.com/cj2vum4/starfish-booking-system/<完整 commit>/supabase/functions/api/index.ts';`
+  （repo 公開；commit 網址內容永遠不變；部署時 Supabase 把它打包進去，執行時不依賴 GitHub）。
+  部署前先 `curl` 這個網址，和本機檔案比對 SHA-256；部署後用 pg_net 從資料庫打 `/public/records`、`/me` 確認活著。
+  目前雲端：api v44＝`038058a` 的 index.ts（c7da505d…），line-webhook v14＝`630b995`。
+  Dashboard 手動貼整份檔案的方式仍然可用。
 - 連接器的 `execute_sql` 遇到含 `delete`／某些修改的 SQL 會要求店家在 Claude App 按確認，60 秒內沒按就逾時（資料庫會整批回滾，不會半套）；
   這類 SQL 改請店家在 SQL Editor 貼上執行。整份測試 SQL（`tests/*.sql`）同理。
 - 成功的 POST（`/hooks/*`、`/public/*` 除外）結束後會在背景送通知；另外每 5 分鐘的排程也會送（0034）。
