@@ -20,6 +20,7 @@ type Settings = {
   playRecordUrl?: string;
   playRecordSecret?: string;  // shared with the Apps Script property BOOKING_SECRET
   roleSurveySheetId?: string;  // the old 角色問卷總表, imported once (defaults to the known sheet)
+  playRecordSheetId?: string;  // the 玩本記錄 spreadsheet behind the Apps Script (defaults to the known sheet)
   background?: (work: Promise<unknown>) => void;  // run after the response (EdgeRuntime.waitUntil)
   fetcher?: typeof fetch;
   now?: () => number;
@@ -37,12 +38,14 @@ class ApiError extends Error {
 const NOT_FOUND = /_NOT_FOUND$/;
 const CONFLICT = new Set(['IDENTITY_MERGE_REQUIRED', 'NAME_EXISTS', 'BINDING_PENDING', 'NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
   'SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
-  'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE']);
+  'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE',
+  'RECORDS_LIVE', 'IMPORT_REQUIRED', 'RECONCILE_MISMATCH', 'LEDGER_APPEND_ONLY']);
 export function statusForCode(code: string) {
   if (NOT_FOUND.test(code)) return 404;
   if (CONFLICT.has(code)) return 409;
   if (code === 'NOT_ADMIN' || code === 'NOT_FRIEND') return 403;
   if (code === 'TOO_MANY_REQUESTS') return 429;
+  if (code === 'RECORDS_NOT_LIVE') return 503;  // the website then uses the Apps Script, as before the cutover
   return 400;
 }
 
@@ -73,11 +76,11 @@ async function readJson(req: Request, max = MAX_BODY): Promise<Record<string, un
   } catch { throw new ApiError(400, 'INVALID_JSON'); }
 }
 
-async function rpc<T>(settings: Settings, name: string, args: Record<string, unknown>): Promise<T> {
+async function rpc<T>(settings: Settings, name: string, args: Record<string, unknown>, timeoutMs = 8000): Promise<T> {
   let response: Response;
   try {
     response = await (settings.fetcher ?? fetch)(`${settings.supabaseUrl}/rest/v1/rpc/${name}`, {
-      method: 'POST', signal: AbortSignal.timeout(8000),
+      method: 'POST', signal: AbortSignal.timeout(timeoutMs),
       headers: { 'Content-Type': 'application/json', apikey: settings.serviceKey!,
         Authorization: `Bearer ${settings.serviceKey}` },
       body: JSON.stringify(args),
@@ -589,7 +592,13 @@ export async function runScheduledWork(settings: Settings) {
     .catch(() => false)) {
     surveys = await importRoleSurveys(settings, null).then(r => r.imported, () => null);
   }
-  console.log('tick', JSON.stringify({ expired, ...total, surveys }));  // counts only, for the Edge Function logs
+  // After the cutover, records the website sent to the Apps Script while the booking system was unreachable.
+  let records: unknown = null;
+  if (settings.google && await recordsLive(settings) &&
+      await rpc<boolean>(settings, 'claim_scheduled_job', { p_name: 'records-catch-up', p_every: '6 hours' }).catch(() => false)) {
+    records = await importPlayRecords(settings, null, 'new').then(r => (r as any)?.added ?? null, () => null);
+  }
+  console.log('tick', JSON.stringify({ expired, ...total, surveys, records }));  // counts only, for the Edge Function logs
   return { expired, ...total };
 }
 
@@ -656,8 +665,17 @@ async function playRecordSummary(settings: Settings, maxAgeMs = 60_000, preferCo
   throw new ApiError(503, 'RECORDS_UNAVAILABLE');
 }
 
-// Asks the Apps Script for the 回歸禮. It is idempotent per 歸戶名 and checks eligibility itself.
+// After the cutover the points live here: the 回歸禮 is one ledger row, written with the eligibility check
+// (once per player, joined before 回歸禮資格日) in the database.
+// Anything but a clear 'supabase' (including a database without migration 0036 yet) keeps the Apps Script path.
+const recordsLive = (settings: Settings) =>
+  rpc<string>(settings, 'records_source', {}).then(v => v === 'supabase', () => false);
+
+// Before the cutover: asks the Apps Script for the 回歸禮. It is idempotent per 歸戶名 and checks eligibility itself.
 async function grantReturnBonus(settings: Settings, binding: Binding): Promise<Binding> {
+  if (await recordsLive(settings)) {
+    return rpc<Binding>(settings, 'grant_record_return_bonus', { p_user_id: binding.user_id, p_points: RETURN_BONUS });
+  }
   if (!settings.playRecordSecret) throw new ApiError(503, 'BONUS_NOT_CONFIGURED');
   let body: any;
   try {
@@ -685,6 +703,9 @@ function refreshRecordCopy(settings: Settings) {
   return refreshingRecords;
 }
 async function publicRecordsPayload(settings: Settings): Promise<Record<string, unknown>> {
+  // After the cutover the summary is computed by the database (same JSON shape); before it, null.
+  const live = await rpc<Record<string, unknown> | null>(settings, 'public_records_payload', {}).catch(() => null);
+  if (live) return live;
   const saved = await rpc<{ payload: any; fetched_at: string } | null>(settings, 'get_record_snapshot', {}).catch(() => null);
   const savedAt = saved ? Date.parse(saved.fetched_at) : NaN;
   // Copies saved before the whole payload was kept have no updatedAt; read the script for those.
@@ -797,6 +818,94 @@ async function importRoleSurveys(settings: Settings, actor: string | null) {
     ? await rpc<{ imported: number; skipped: number }>(settings, 'admin_import_role_surveys', { p_actor: actor, p_rows: rows })
     : await rpc<{ imported: number; skipped: number }>(settings, 'system_import_role_surveys', { p_rows: rows });
   return { tabs: perTab, imported: done.imported, skipped: done.skipped + skipped };
+}
+
+// --- 玩本記錄 spreadsheet import (stage 2 of the GAS removal) ----------------------------------
+// The store shares the spreadsheet behind GoogleAppsScript_玩本記錄.gs with the service account (Viewer).
+// Values are read unformatted, as the Apps Script's getValues() saw them: date cells come as serial numbers and
+// become an instant (時間戳記, 最後更新) or a Y/M/D date (日期, 加入日期), numbers stay numbers, checkboxes booleans.
+const PLAY_RECORD_SHEET_ID = '1hjdPJQo5Z6nVICZsvljihSXoZAJ32DpiAEQikCaog-8';
+const PLAY_RECORD_RESPONSE_GID = 463584243;  // 表單回應 1
+const PLAY_RECORD_TABS = ['點數帳本', '玩家', '設定', '獎勵', '任務', '心得互動'];
+const serialDay = (serial: number) => {
+  const d = new Date(Math.floor(serial - 25569) * 86400000);
+  return `${d.getUTCFullYear()}/${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+};
+const asText = (v: unknown) => v == null ? '' : typeof v === 'number' && !Number.isFinite(v) ? '' : String(v);
+const asDate = (v: unknown) => typeof v === 'number' ? serialDay(v) : asText(v);
+const asNumber = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+const asTruthy = (v: unknown) => v === true || /^(true|yes|是|y|v|1|✓|✔)$/i.test(asText(v).trim());
+const asActive = (v: unknown) => asText(v).trim().toUpperCase() !== 'FALSE';
+
+// readRows_: the first row is the header; rows with every cell blank are skipped.
+function sheetRows(values: unknown[][] | undefined) {
+  const [head = [], ...body] = values ?? [];
+  const header = head.map(h => asText(h).trim());
+  return body.filter(r => (r ?? []).some(c => asText(c).trim()))
+    .map(r => Object.fromEntries(header.map((h, i) => [h, (r ?? [])[i]]).filter(([h]) => h)) as Record<string, unknown>);
+}
+
+export async function playRecordsFromSheet(tabs: Record<string, unknown[][]>, responseTab: string, timeZone: string) {
+  const stamp = (v: unknown) => typeof v === 'number' && v > 0 ? sheetSerialToIso(v, timeZone) : null;
+  const seen = new Map<string, number>();
+  const responses = [];
+  let index = 0;
+  for (const r of sheetRows(tabs[responseTab])) {
+    index++;
+    const raw = r['時間戳記'];
+    const id = typeof raw === 'number' ? String(raw) : `row-${index}`;
+    const nth = seen.get(id) ?? 0;
+    seen.set(id, nth + 1);
+    // Old Google Form rows may hold the role in any of several 角色… columns; the honour wall joins them with ', '.
+    const role = Object.keys(r).filter(k => k.startsWith('角色')).map(k => asText(r[k]).trim()).filter(Boolean).join(', ');
+    responses.push({ key: await sha256Hex(JSON.stringify(['玩本記錄', id, nth])), stamp: stamp(raw),
+      name: asText(r['怎麼稱呼你呢']), date: asDate(r['日期']), script: asText(r['劇本']), role,
+      rating: asText(r['給予評價']), comment: asText(r['50字以內的心得推薦']), referrer: asText(r['介紹人']) });
+  }
+  return {
+    responses,
+    ledger: sheetRows(tabs['點數帳本']).map(r => ({ stamp: stamp(r['時間戳記']), name: asText(r['玩家名']), player: asText(r['歸戶名']),
+      type: asText(r['類型']), points: asNumber(r['點數']), detail: asText(r['明細']), script: asText(r['劇本']), date: asDate(r['日期']),
+      source: asText(r['來源']), status: asText(r['狀態']), note: asText(r['備註']), key: asText(r['去重鍵']) })),
+    players: sheetRows(tabs['玩家']).map(r => ({ name: asText(r['顯示名']),
+      aliases: asText(r['別名']).split(/[,，、;；]/).map(a => a.trim()).filter(Boolean),
+      agent: asText(r['探員編號']), joined: asDate(r['加入日期']), note: asText(r['備註']), gilded: asTruthy(r['鍍金']),
+      title: asText(r['自訂稱號']), legend: asTruthy(r['傳奇殿堂']) })),
+    // Only the date settings may be date cells; the point settings are plain numbers.
+    config: sheetRows(tabs['設定']).map(r => {
+      const key = asText(r['設定項']).trim();
+      return { key, value: ['回歸禮資格日', 'LINE上線日', '雙倍日'].includes(key) ? asDate(r['值']) : asText(r['值']) };
+    }),
+    rewards: sheetRows(tabs['獎勵']).map(r => ({ track: asText(r['軌道']), name: asText(r['品項']), cost: asNumber(r['所需點數']),
+      note: asText(r['說明']), active: asActive(r['是否上架']) })),
+    quests: sheetRows(tabs['任務']).map(r => ({ id: asText(r['任務ID']), label: asText(r['說明']), goal: asNumber(r['目標']),
+      points: asNumber(r['點數']), active: asActive(r['是否啟用']) })),
+    interactions: sheetRows(tabs['心得互動']).map(r => ({ script: asText(r['劇本']), date: asDate(r['日期']), author: asText(r['作者']),
+      likes: asNumber(r['讚數']), featured: asTruthy(r['精選']), updated: stamp(r['最後更新']) })),
+  };
+}
+
+// full: everything, before the cutover (replaces the earlier import). new: only 表單回應 rows added after that import,
+// scored with the new rules (the website fell back to the Apps Script). actor null = the scheduled catch-up.
+async function importPlayRecords(settings: Settings, actor: string | null, mode: 'full' | 'new') {
+  const sheetId = settings.playRecordSheetId ?? PLAY_RECORD_SHEET_ID;
+  const meta = await sheetsGet(settings, sheetId, '?fields=properties.timeZone,sheets.properties(title,sheetId)');
+  const timeZone = meta?.properties?.timeZone || 'Asia/Taipei';
+  const all: { title: string; sheetId: number }[] = (meta?.sheets ?? []).map((x: any) => x.properties ?? {});
+  const responseTab = (all.find(t => t.sheetId === PLAY_RECORD_RESPONSE_GID) ?? all.find(t => t.title === '表單回應 1') ?? all[0])?.title;
+  if (!responseTab) throw new ApiError(503, 'SHEET_NOT_FOUND');
+  const wanted = [responseTab, ...(mode === 'full' ? PLAY_RECORD_TABS.filter(t => all.some(x => x.title === t)) : [])];
+  const ranges = wanted.map(t => `ranges=${encodeURIComponent(`'${t.replace(/'/g, "''")}'!A1:CZ`)}`).join('&');
+  const got = await sheetsGet(settings, sheetId,
+    `/values:batchGet?${ranges}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER`);
+  const tabs = Object.fromEntries(wanted.map((t, i) => [t, got?.valueRanges?.[i]?.values ?? []]));
+  const data = await playRecordsFromSheet(tabs, responseTab, timeZone);
+  if (mode === 'new') {
+    return actor
+      ? rpc<Record<string, unknown>>(settings, 'admin_import_new_play_records', { p_actor: actor, p_rows: data.responses }, 60000)
+      : rpc<Record<string, unknown>>(settings, 'system_import_new_play_records', { p_rows: data.responses }, 60000);
+  }
+  return rpc<Record<string, unknown>>(settings, 'admin_import_play_records', { p_actor: actor, p_data: data }, 60000);
 }
 
 // --- Rich Menu -------------------------------------------------------------------
@@ -1052,8 +1161,12 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   // ---- 老玩家綁定 and 會員卡 ----
   if (req.method === 'GET' && path === '/records/names') {
     await requireSession(req, settings);
+    // After the cutover the names come from the database; before it, from the Apps Script copy.
+    const [live, bound] = await Promise.all([rpc<RecordSummary[] | null>(settings, 'record_names', {}).catch(() => null),
+      rpc<string[]>(settings, 'bound_record_names', {})]);
+    if (live) return [200, { names: live, bound }];
     // The saved copy answers at once; a copy older than 10 minutes is refreshed after the response.
-    const [{ summary }, bound] = await Promise.all([playRecordSummary(settings, 600_000, true), rpc<string[]>(settings, 'bound_record_names', {})]);
+    const { summary } = await playRecordSummary(settings, 600_000, true);
     return [200, { names: summary.map(publicRecord), bound }];
   }
   // 玩後問卷從 LINE 打開：帶入綁定的名字；第一次填的新玩家取一個全新的名字直接綁定。
@@ -1070,6 +1183,12 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     const { name } = await readJson(req);
     if (typeof name !== 'string' || !name.trim() || Array.from(name.trim()).length > 30) throw new ApiError(400, 'INVALID_NAME');
+    if (await recordsLive(settings)) {
+      // A name that is (or, without spaces and case, matches) a player or an alias would add to someone else's points.
+      if (await rpc<boolean>(settings, 'record_name_taken', { p_name: name })) throw new ApiError(409, 'NAME_EXISTS');
+      const claimed = await rpc<{ record_name: string }>(settings, 'claim_record_name', { p_actor: session.user_id, p_name: name });
+      return [201, { recordName: claimed.record_name }];
+    }
     const wanted = name.trim().toLowerCase();
     const taken = (records: RecordData) => records.summary.some(r => r.name.trim().toLowerCase() === wanted);
     // A name not in a recent copy is checked once more against the script itself before it is given away.
@@ -1089,14 +1208,20 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     if (req.method === 'POST') {
       const { name, note } = await readJson(req);
       if (typeof name !== 'string' || (note != null && typeof note !== 'string')) throw new ApiError(400, 'INVALID_NAME');
+      const live = await rpc<RecordSummary[] | null>(settings, 'record_names', {}).catch(() => null);
       const listed = (records: RecordData) => records.summary.some(r => r.name === name.trim());
-      if (!listed(await playRecordSummary(settings, 600_000)) && !listed(await playRecordSummary(settings, 0))) {
+      if (live ? !live.some(r => r.name === name.trim())
+          : !listed(await playRecordSummary(settings, 600_000)) && !listed(await playRecordSummary(settings, 0))) {
         throw new ApiError(404, 'NAME_NOT_FOUND');
       }
       return [201, { binding: camel(await rpc(settings, 'request_binding', { p_actor: session.user_id, p_name: name, p_note: note ?? '' })) }];
     }
     let binding = await rpc<Binding | null>(settings, 'my_binding', { p_actor: session.user_id });
-    if (binding?.status === 'approved' && binding.bonus_status === 'none' && settings.playRecordSecret) {
+    const live = await recordsLive(settings);
+    if (binding?.status === 'approved' && binding.bonus_status === 'none' && live) {
+      const pending = binding;  // the database grants it at once; a failure is retried on the next visit
+      binding = await grantReturnBonus(settings, pending).catch(() => pending);
+    } else if (binding?.status === 'approved' && binding.bonus_status === 'none' && settings.playRecordSecret) {
       // The Apps Script takes seconds; the card shows 「回歸禮處理中」 and the grant finishes after the response.
       const pending = binding;
       const work = grantReturnBonus(settings, pending).catch(() => pending);  // retried on the next visit
@@ -1105,7 +1230,14 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     let card = null, rewards: Reward[] = [];
     const recordName = binding?.status === 'approved' ? binding.record_name :
       await rpc<string | null>(settings, 'my_record_account', { p_actor: session.user_id }).catch(() => null);
-    if (recordName) {
+    if (recordName && live) {
+      const got = await rpc<{ card: RecordSummary | null; rewards: Reward[] } | null>(settings, 'record_card', { p_name: recordName });
+      const r = got?.card;
+      card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed, plays: r.plays,
+        last: r.last, title: r.title ?? '', updatedAt: new Date((settings.now ?? Date.now)()).toISOString(), stale: false,
+        refreshing: false } : null;
+      rewards = got?.rewards ?? [];
+    } else if (recordName) {
       const records = await playRecordSummary(settings, 300_000, true);
       const r = records.summary.find(x => x.name === recordName);
       card = r ? { name: r.name, agent: r.agent, balance: r.balance, earned: r.earned, redeemed: r.redeemed,
@@ -1254,6 +1386,53 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { assignedRole, storeNote } = await readJson(req);
     return [200, camel(await rpc(settings, 'admin_update_role_survey', { p_actor: session.user_id, p_id: surveyRoute[1],
       p_assigned_role: typeof assignedRole === 'string' ? assignedRole : '', p_store_note: typeof storeNote === 'string' ? storeNote : '' }))];
+  }
+  // ---- 玩本記錄（網站送出、按讚；店家匯入、對帳、切換）----
+  if (req.method === 'POST' && path === '/public/play-records') {
+    // The website form (no login, like the Apps Script). body.id is its 送出編號: a resend is recognised.
+    // Before the cutover this answers 503 RECORDS_NOT_LIVE and the website posts to the Apps Script instead.
+    const body = await readJson(req, 8 * 1024);
+    if (typeof body.website === 'string' && body.website) return [200, { ok: true }];  // honeypot: drop silently
+    const text = (v: unknown) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+    const result = await rpc<Record<string, unknown>>(settings, 'submit_play_record', {
+      p_record: { name: text(body.name), date: text(body.date), script: text(body.script), role: text(body.role ?? body.character),
+        rating: text(body.rating), comment: text(body.comment), referrer: text(body.referrer) },
+      p_client_id: typeof body.id === 'string' && UUID_ANY.test(body.id) ? body.id.toLowerCase() : null });
+    return [result.duplicate ? 200 : 201, { ok: true, live: true, ...result }];
+  }
+  if (req.method === 'POST' && path === '/public/likes') {
+    // liker: a random ID the browser keeps, so one browser counts once per review (no login, as before).
+    const body = await readJson(req, 4 * 1024);
+    const text = (v: unknown) => typeof v === 'string' ? v : '';
+    if (typeof body.liker !== 'string' || !UUID_ANY.test(body.liker)) throw new ApiError(400, 'INVALID_RECORD');
+    return [200, { ...(await rpc<Record<string, unknown>>(settings, 'submit_review_like', { p_script: text(body.script),
+      p_date: text(body.date), p_author: text(body.author), p_liker: body.liker.toLowerCase() })), live: true }];
+  }
+  if (req.method === 'GET' && path === '/admin/records') {
+    const { session } = await requireSession(req, settings);
+    return [200, { ...camel(await rpc(settings, 'admin_records_status', { p_actor: session.user_id })) as object,
+      serviceAccountEmail: settings.google?.clientEmail ?? null, sheetId: settings.playRecordSheetId ?? PLAY_RECORD_SHEET_ID }];
+  }
+  if (req.method === 'POST' && (path === '/admin/records/import' || path === '/admin/records/import-new')) {
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    return [200, camel(await importPlayRecords(settings, session.user_id, path.endsWith('-new') ? 'new' : 'full'))];
+  }
+  if (req.method === 'GET' && path === '/admin/records/reconcile') {
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    // Compare against the Apps Script's summary as it is right now (a stale copy is said to be stale).
+    const fresh = await playRecordSummary(settings, 0).then(r => !r.stale, () => false);
+    return [200, { ...(await rpc<Record<string, unknown>>(settings, 'admin_records_reconcile', { p_actor: session.user_id })),
+      snapshotFresh: fresh }];
+  }
+  if (req.method === 'POST' && path === '/admin/records/source') {
+    const { session } = await requireSession(req, settings);
+    const { source, force } = await readJson(req);
+    if (source !== 'gas' && source !== 'supabase') throw new ApiError(400, 'INVALID_SOURCE');
+    recordCache = null;
+    return [200, camel(await rpc(settings, 'admin_set_records_source', { p_actor: session.user_id, p_source: source,
+      p_force: force === true }))];
   }
   if (req.method === 'GET' && path === '/admin/google-account') {
     // Which service account a spreadsheet must be shared with before it can be imported.
@@ -1414,27 +1593,42 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
 export async function handleApi(req: Request, settings: Settings): Promise<Response> {
   // Supabase serves this function at /functions/v1/api/...; strip everything up to "/api".
   const path = new URL(req.url).pathname.replace(/^.*?\/api(?=\/|$)/, '') || '/';
-  // The website's role survey answer is readable from any origin: CORS does not protect a simple POST anyway, and a
-  // page that cannot read a successful answer would resend it to the old Apps Script (a duplicate).
-  const openSurvey = path === '/public/role-survey';
-  const cors = openSurvey ? { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST',
+  // The website's public routes (role survey, 玩本記錄, likes, points summary) are readable from any origin: CORS does
+  // not protect a simple POST anyway, and a page that cannot read a successful answer would resend it to the old
+  // Apps Script (a duplicate). They carry no login and return only public data or {ok}.
+  const openPublic = path.startsWith('/public/');
+  const cors = openPublic ? { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST',
     'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Max-Age': '600' } : corsHeaders(req, settings);
   const reply = (status: number, data: unknown) => new Response(JSON.stringify(data), {
     status, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
-  if (req.method === 'OPTIONS' && path !== '/public/records') {
+  if (req.method === 'OPTIONS') {
     return new Response(null, { status: cors['Access-Control-Allow-Origin'] ? 204 : 403, headers: cors });
   }
   if (req.method === 'GET' && path === '/health/records') {
     // Public like /health/calendar: says whether the website's 玩本記錄 summary is readable, never its content.
+    if (settings.supabaseUrl && settings.serviceKey && await recordsLive(settings)) {
+      return reply(200, { ok: true, source: 'supabase' });
+    }
     try {
       const { summary, rewards, stale } = await playRecordSummary(settings, 0);
       if (stale) return reply(503, { ok: false, error: lastRecordError, players: summary.length, servedFromCopy: true });
       return reply(200, { ok: true, players: summary.length, rewards: rewards.length });
     } catch { return reply(503, { ok: false, error: lastRecordError || 'RECORDS_UNAVAILABLE' }); }
   }
-  if (path === '/public/records' && (req.method === 'GET' || req.method === 'OPTIONS')) {
+  if (req.method === 'GET' && path === '/public/play-records') {
+    // The review list for the honour wall and script pages (replaces the published CSV). Before the cutover:
+    // 503 {live:false} and the website reads the CSV. Only the columns the pages show; no times or referrers.
+    if (!settings.supabaseUrl || !settings.serviceKey) return reply(503, { ok: false, live: false, error: 'API_NOT_CONFIGURED' });
+    const script = new URL(req.url).searchParams.get('script');
+    try {
+      const records = await rpc<unknown[] | null>(settings, 'public_play_records', { p_script: script ? script.slice(0, 100) : null });
+      if (!records) return reply(503, { ok: false, live: false, error: 'RECORDS_NOT_LIVE' });
+      return new Response(JSON.stringify({ ok: true, live: true, updatedAt: new Date((settings.now ?? Date.now)()).toISOString(), records }),
+        { status: 200, headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=30' } });
+    } catch { return reply(503, { ok: false, live: false, error: 'RECORDS_UNAVAILABLE' }); }
+  }
+  if (path === '/public/records' && req.method === 'GET') {
     const open = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET', Vary: 'Origin' };
-    if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: open });
     if (!settings.supabaseUrl || !settings.serviceKey) return reply(503, { ok: false, error: 'API_NOT_CONFIGURED' });
     try {
       return new Response(JSON.stringify(await publicRecordsPayload(settings)), { status: 200, headers: { ...open,
@@ -1470,6 +1664,9 @@ export async function handleApi(req: Request, settings: Settings): Promise<Respo
     }
     return reply(status, data);
   } catch (error) {
+    // The website's 玩本記錄 routes tell it to keep using the Apps Script until the store switches.
+    if (error instanceof ApiError && openPublic) return reply(error.status, { ok: false, error: error.message,
+      ...(error.message === 'RECORDS_NOT_LIVE' ? { live: false } : {}) });
     if (error instanceof ApiError) return reply(error.status, { error: error.message });
     return reply(500, { error: 'INTERNAL_ERROR' });
   }
