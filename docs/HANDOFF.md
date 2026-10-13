@@ -142,7 +142,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 
 ### 資料庫 migration
 - **一律新增檔案**（`supabase/migrations/YYYYMMDDNNNN_name.sql`，以 `begin; … commit;` 包住），不改已套用的檔案。
-- 0001–0033 在 **Supabase Dashboard SQL Editor 手動套用**；0034、0035 於 2026-10-12 由 Claude 透過 Supabase 連接器（MCP `execute_sql`）套用（含 `delete` 的那段需店家在 SQL Editor 補）。0036 尚未套用。CLI 的 migration history 是空的：
+- 0001–0033 在 **Supabase Dashboard SQL Editor 手動套用**；0034、0035 於 2026-10-12 由 Claude 透過 Supabase 連接器（MCP `execute_sql`）套用，
+  0035 含 `delete` 的最後一段與 0036 由店家 2026-10-13 在 SQL Editor 貼上（測試 PASS）。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）
@@ -182,6 +183,10 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
   Dashboard 手動貼整份檔案的方式仍然可用。
 - 連接器的 `execute_sql` 遇到含 `delete`／某些修改的 SQL 會要求店家在 Claude App 按確認，60 秒內沒按就逾時（資料庫會整批回滾，不會半套）；
   這類 SQL 改請店家在 SQL Editor 貼上執行。整份測試 SQL（`tests/*.sql`）同理。
+  請店家貼時注意兩件事（2026-10-13 實際遇到）：① SQL Editor 左上 ＋ 要選 **Create a new snippet**，選到 Create a new logs query
+  會出現「Logs now run on a ClickHouse-backed engine」與 `Backend error`（那是查紀錄用的，不會連到資料庫）；
+  ② 長檔案從聊天附件預覽複製會被截斷（`unterminated dollar-quoted string`），請給 GitHub raw 網址
+  （`https://raw.githubusercontent.com/cj2vum4/starfish-booking-system/main/<路徑>`），全選複製，並對最後一行與行數。
 - 成功的 POST（`/hooks/*`、`/public/*` 除外）結束後會在背景送通知；另外每 5 分鐘的排程也會送（0034）。
 
 ### LIFF 頁

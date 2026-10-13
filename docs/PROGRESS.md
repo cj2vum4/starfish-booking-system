@@ -32,12 +32,14 @@
 - 測試：`tests/play_records.sql`（規則、匯入、對帳、切換、權限）PASS；`tests/gas_parity.test.mjs` 用真正的 .gs 產生 14 份試算表，
   匯入結果與逐筆送出結果都和 Apps Script 相同；api 新增 8 項；npm test 全過。網站 tests/run.sh 新增「切換之後」情境全過；
   順手修好送出結果卡在「重複」「每日上限」時說明文字不顯示（`.award-card` 的 `display:flex` 蓋過 `hidden`）。
+- **2026-10-13 店家在 SQL Editor 貼上** 0035 最後一段、`tests/role_survey.sql`、0036、`tests/play_records.sql`，兩個測試都 PASS。
+  Claude 查證：`record_state.source='gas'`、沒有匯入資料、測試資料全數回滾、內部函式只授權 service_role、10 張表都開 RLS；
+  以 pg_net 實測 api：心得清單與送出回 503 `live:false`（網站照舊走 Apps Script）、點數總覽 200（Apps Script 副本）。
 - **店家要做的事（依序）**：
-  1. SQL Editor 貼上 Claude 給的兩段：角色問卷最後一段（`admin_delete_role_survey`）＋ `tests/role_survey.sql`（須 PASS）。
+  1. ~~SQL Editor 貼上角色問卷最後一段＋ `tests/role_survey.sql`~~（10/13 完成）。
   2. 管理員 OA：發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；Secrets 刪除 `GOOGLE_SHEET_ID`。
   3. 「角色問卷總表」與「玩本記錄」兩份試算表共用給服務帳戶 `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（檢視者）。
-  4. SQL Editor 貼上 `supabase/migrations/202610120036_play_records.sql` 整份，再貼 `tests/play_records.sql`（須 PASS）。
-     api（v44）、網站、LINE 店家畫面都已在 10/12 上線，貼完不用再部署。
+  4. ~~SQL Editor 貼上 0036 與 `tests/play_records.sql`~~（10/13 完成，PASS）。
   5. 試算表「重算所有點數」→ LINE 店家後台「玩本記錄與點數（搬家）」：匯入 → 對帳。**第 3 階段做好之前先不要按切換。**
 
 ## 移除 GAS：第 0 階段（管理員 OA）＋第 1 階段（角色問卷）（2026-10-11）
