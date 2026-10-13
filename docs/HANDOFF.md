@@ -1,6 +1,6 @@
 # 交接文件：海星劇本殺 LINE 預約系統
 
-最後更新：2026-10-12（GAS 第 0／1 階段已部署、第 2 階段玩本記錄搬家程式完成；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準，GAS 移除計畫見 `docs/GAS_MIGRATION.md`）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
+最後更新：2026-10-13（GAS 第 0／1／2 階段已部署、第 3 階段店家點數管理程式完成；2026-10-05 之後的變動以 `docs/PROGRESS.md` 最上方為準，GAS 移除計畫見 `docs/GAS_MIGRATION.md`）。這份文件給接手的工程師／AI（例如 Codex）。先讀完這份，再看
 `docs/PROGRESS.md`（逐階段施工紀錄）、`docs/SECURITY.md`（安全設計）、`docs/PLAYER_GUIDE.md`（玩家說明）。
 
 店家（帳號持有人）只講中文，回覆請用繁體中文、白話、少術語。
@@ -33,6 +33,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
   第 2 階段（0036，2026-10-12）：玩本記錄與點數搬進 Postgres，由 record_state.source 切換（'gas'｜'supabase'）
        網站一律先問 api（/public/play-records、/public/likes、/public/records）；切換前 api 回 503 {live:false}，網站照舊走 Apps Script／CSV
        店家在 LIFF「玩本記錄與點數（搬家）」匯入 → 對帳 → 切換（docs/GAS_MIGRATION.md）
+  第 3 階段（0039，2026-10-13）：兌換申請與審核、補扣點、作廢、隱藏、精選、別名合併、榮耀軌、規則、月報（切換後才能寫入）
+       管理員 OA 有自己的圖文選單「海星選單・店家」（LIFF 店家後台按「設定店家 OA 選單」建立）
 ```
 
 ### 兩個 repo
@@ -197,7 +199,9 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings|survey|surveys`（bindings、surveys 只限店家）、`?game=<scripts.js id>`、`?invite=`、`?group=`。
 
 ### 圖文選單
-- 圖片：`python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png` → `richmenu-new.jpg`、`richmenu-member.jpg`（2500×1686）。
+- 圖片：`python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png [new member store]` → `richmenu-new.jpg`、`richmenu-member.jpg`、
+  `richmenu-store.jpg`（2500×1686；只重做指定的幾組，Linux 用文泉驛正黑）。
+- 店家 OA 選單：格子在 `storeRichMenuDefinition()`；店家在 LIFF 店家後台按「設定店家 OA 選單」（`POST /admin/richmenu/store`，用 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`）。
 - 格子順序與連結在 `richMenuDefinition()`；改完先 push（等 Pages 上線），再 `POST /hooks/richmenu-setup`（帶 `X-Sync-Secret`）。會建立兩組選單、設新玩家為預設、連結老玩家、刪除舊版。
 
 ### 網站 Apps Script
@@ -239,6 +243,12 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 `GET /public/records` 的回應帶 `live`（true＝資料庫算的、false＝Apps Script 副本）。排程每 10 分鐘補匯入（`records-catch-up`），結果存在 `record_state.catch_up_*`。
 
 店家玩本記錄搬家（session＋admin）：`GET /admin/records`、`POST /admin/records/import|import-new`、`GET /admin/records/reconcile`、`POST /admin/records/source`（`{source:'gas'|'supabase', force?}`）。
+
+第 3 階段（0039）：玩家 `GET/POST /me/redemptions`（`{rewardId, title?, requestId}`）、`POST /me/redemptions/:id/cancel`；
+店家 `GET /admin/redemptions`、`POST /admin/redemptions/:id/approve|reject`（`{title?, note?}`）、`GET /admin/players?q=|?name=`、
+`POST /admin/players/adjust|redeem|glory|alias|merge`、`POST /admin/ledger/:id/void`、`GET /admin/reviews?script=&before=&beforeId=`、
+`POST /admin/reviews/:id/hide|feature`、`GET/POST /admin/record-settings`（`type: setting|reward|quest`）、`GET /admin/records/report`、
+`POST /admin/richmenu/store`。寫入在切換前一律 503 `RECORDS_NOT_LIVE`。
 
 ---
 
