@@ -121,6 +121,14 @@ begin
   insert into public.play_record_snapshot(id,payload,fetched_at) values (1, jsonb_build_object('ok',true,'summary',public._sf_records_summary()), now())
     on conflict (id) do update set payload=excluded.payload, fetched_at=excluded.fetched_at;
   if not (public.admin_records_reconcile(adm)->>'matched')::boolean then raise exception 'reconcile should match'; end if;
+  -- The Apps Script writes a date cell as String(date); the same day still matches (0038).
+  update public.play_record_snapshot set payload = jsonb_set(payload, '{summary}', (select jsonb_agg(case when x->>'name'='阿明'
+      then x || '{"last":"Tue Sep 01 2026 00:00:00 GMT+0800 (台湾標準時)"}' else x end) from jsonb_array_elements(payload->'summary') x));
+  if not (public.admin_records_reconcile(adm)->>'matched')::boolean then raise exception 'reconcile: Apps Script date text'; end if;
+  update public.play_record_snapshot set payload = jsonb_set(payload, '{summary}', (select jsonb_agg(case when x->>'name'='阿明'
+      then x || '{"last":"Wed Sep 02 2026 00:00:00 GMT+0800 (台湾標準時)"}' else x end) from jsonb_array_elements(payload->'summary') x));
+  if (public.admin_records_reconcile(adm)->>'matched')::boolean then raise exception 'reconcile: another day must differ'; end if;
+  update public.play_record_snapshot set payload = jsonb_build_object('ok',true,'summary',public._sf_records_summary());
   update public.play_record_snapshot set payload = jsonb_set(payload, '{summary,0,balance}', '999');
   r := public.admin_records_reconcile(adm);
   if (r->>'matched')::boolean or jsonb_array_length(r->'differences') <> 1 then raise exception 'reconcile diff %', r; end if;
