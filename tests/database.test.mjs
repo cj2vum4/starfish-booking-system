@@ -45,7 +45,7 @@ test('no function deletes or updates a whole table without WHERE (Supabase safeu
   await db.close();
 });
 
-for (const file of ['tests/database.sql', 'tests/booking_core.sql', 'tests/booking_rpc.sql', 'tests/sessions.sql', 'tests/slots.sql', 'tests/group_views.sql', 'tests/game_catalog.sql', 'tests/confirm.sql', 'tests/cancel_event.sql', 'tests/notifications.sql', 'tests/public_groups.sql', 'tests/history.sql', 'tests/report.sql', 'tests/friend_gate.sql', 'tests/member_menu.sql', 'tests/player_binding.sql', 'tests/record_snapshot.sql', 'tests/review_context.sql', 'tests/expire_groups.sql', 'tests/claim_record_name.sql', 'tests/group_venue.sql', 'tests/confirm_calendar_recheck.sql', 'tests/oa_message_alerts.sql', 'tests/tick_schedule.sql', 'tests/role_survey.sql', 'tests/play_records.sql']) {
+for (const file of ['tests/database.sql', 'tests/booking_core.sql', 'tests/booking_rpc.sql', 'tests/sessions.sql', 'tests/slots.sql', 'tests/group_views.sql', 'tests/game_catalog.sql', 'tests/confirm.sql', 'tests/cancel_event.sql', 'tests/notifications.sql', 'tests/public_groups.sql', 'tests/history.sql', 'tests/report.sql', 'tests/friend_gate.sql', 'tests/member_menu.sql', 'tests/player_binding.sql', 'tests/record_snapshot.sql', 'tests/review_context.sql', 'tests/expire_groups.sql', 'tests/claim_record_name.sql', 'tests/group_venue.sql', 'tests/confirm_calendar_recheck.sql', 'tests/oa_message_alerts.sql', 'tests/tick_schedule.sql', 'tests/role_survey.sql', 'tests/play_records.sql', 'tests/store_points.sql']) {
   test(`${file} passes on a fresh Postgres`, async () => {
     const db = await migratedDb();
     const results = await db.exec(read(file));
