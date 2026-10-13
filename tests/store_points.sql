@@ -1,4 +1,6 @@
 -- Run in Supabase SQL Editor after 202610130039_store_points.sql. All synthetic records are rolled back.
+-- Works on a database with real data: quests, rewards and settings are set inside the transaction, and the report is
+-- checked by how much it changed.
 -- Stage 3: redemption requests (held, approved by the store, glory track), direct redemption, adjustments, voiding,
 -- hiding a record (and undoing it), featured reviews, aliases, merging two names, settings, rewards, quests, monthly report.
 begin;
@@ -9,7 +11,7 @@ declare
   n integer; t text;
   today text := to_char(now() at time zone 'Asia/Taipei', 'YYYY/FMMM/FMDD');
   month_key text := to_char(now() at time zone 'Asia/Taipei', 'YYYY/MM');
-  bal integer;
+  bal integer; s0 jsonb;
 begin
   insert into public.users(line_user_id,display_name,oa_friend_status) values ('U00000000000000000000000000007d01','店長','active') returning id into adm;
   insert into public.users(line_user_id,display_name,oa_friend_status) values ('U00000000000000000000000000007d02','小美','active') returning id into u1;
@@ -17,12 +19,20 @@ begin
   insert into public.admin_users(user_id) values (adm);
   insert into public.games(slug,title,min_players,max_players,price_cents,review_key)
     values ('st-test-a','st-test A',1,8,0,'SA'), ('st-test-b','st-test B',1,8,0,'SB'), ('st-test-c','st-test C',1,8,0,'SC');
-  insert into public.record_rewards(sort,track,name,cost,note) values (1,'保底','折抵 50 元',50,''),
-    (2,'榮耀','榮譽牆名字鍍金',100,''), (3,'榮耀','自訂專屬稱號',200,''), (4,'榮耀','傳奇殿堂留名',500,'');
-  select id into rw_50 from public.record_rewards where name='折抵 50 元';
-  select id into rw_gold from public.record_rewards where name='榮譽牆名字鍍金';
-  select id into rw_title from public.record_rewards where name='自訂專屬稱號';
-  select id into rw_legend from public.record_rewards where name='傳奇殿堂留名';
+  -- Only this test's rewards, no monthly quests, fixed point rules (real ones are restored by the rollback).
+  update public.record_rewards set active = false where true;
+  update public.record_quests set active = false where true;
+  insert into public.record_settings(key,value)
+    select k, v from (values ('基本點數','10'),('心得點數','5'),('心得字數門檻','15'),('首玩點數','5'),('首探點數','10'),
+      ('新手好運點數','20'),('介紹人點數','10'),('被介紹點數','10'),('每日上限筆數','3'),('讚點數','2'),('讚點數上限','10'),
+      ('精選點數','20'),('雙倍日',''),('補登寬限天數','7')) t(k,v)
+    on conflict (key) do update set value = excluded.value;
+  insert into public.record_rewards(sort,track,name,cost,note) values (1,'保底','折抵 50 元',50,'') returning id into rw_50;
+  insert into public.record_rewards(sort,track,name,cost,note) values (2,'榮耀','榮譽牆名字鍍金',100,'') returning id into rw_gold;
+  insert into public.record_rewards(sort,track,name,cost,note) values (3,'榮耀','自訂專屬稱號',200,'') returning id into rw_title;
+  insert into public.record_rewards(sort,track,name,cost,note) values (4,'榮耀','傳奇殿堂留名',500,'') returning id into rw_legend;
+  s0 := coalesce((select x from jsonb_array_elements(public.admin_records_report(adm)) x where x->>'month' = month_key),
+    '{"responses":0,"sessions":0,"active":0,"newPlayers":0,"redeemed":0,"earned":0}');
 
   -- ---- before the cutover the sheet is the source: no store writes, the member card says not live ----
   begin perform public.admin_adjust_points(adm,'小美',5,'x'); raise exception 'store wrote before cutover';
@@ -30,7 +40,6 @@ begin
   if (public.my_redemptions(u1)->>'live')::boolean then raise exception 'redemption live before cutover'; end if;
 
   update public.record_state set source='supabase', went_live_at=now() where id;
-  insert into public.record_settings(key,value) values ('雙倍日','') on conflict (key) do update set value='';
   -- 小美: SA 10+5+5+10+20 = 50, SB 10+5+5+10 = 30 → 80. 阿華: SC 10+5+10+20 = 45 (no comment points).
   rec_a := (public.submit_play_record(jsonb_build_object('name','小美','date',today,'script','SA','role','A','rating','5',
     'comment','這是一段超過十五個字的心得內容真的很好玩')))->>'id';
@@ -201,8 +210,10 @@ begin
   r := public.admin_records_report(adm);
   s := (select x from jsonb_array_elements(r) x where x->>'month' = month_key);
   -- After the merge all three plays (SA, SB, SC today) are 小美's: one active player, one new player, three sessions.
-  if s is null or (s->>'responses')::int <> 3 or (s->>'sessions')::int <> 3 or (s->>'active')::int <> 1 or (s->>'newPlayers')::int <> 1
-     or (s->>'earned')::int <= 0 or (s->>'redeemed')::int <> 200 then raise exception 'report %', s; end if;
+  if s is null or (s->>'responses')::int - (s0->>'responses')::int <> 3 or (s->>'sessions')::int - (s0->>'sessions')::int <> 3
+     or (s->>'active')::int - (s0->>'active')::int <> 1 or (s->>'newPlayers')::int - (s0->>'newPlayers')::int <> 1
+     or (s->>'earned')::int <= (s0->>'earned')::int or (s->>'redeemed')::int - (s0->>'redeemed')::int <> 200 then
+    raise exception 'report % (before %)', s, s0; end if;
 
   -- ---- 權限 ----
   foreach t in array array['public.request_redemption(uuid,uuid,text,text)','public.admin_decide_redemption(uuid,uuid,boolean,text,text)',
@@ -221,7 +232,7 @@ end $$;
 -- quest twice and keeps the old name's card; unhiding does not pay featured/likes twice.
 do $$
 declare
-  adm uuid := (select user_id from public.admin_users limit 1); u3 uuid; r jsonb; r1 uuid; r2 uuid; t text;
+  adm uuid := (select id from public.users where line_user_id = 'U00000000000000000000000000007d01'); u3 uuid; r jsonb; r1 uuid; r2 uuid; t text;
   today text := to_char(now() at time zone 'Asia/Taipei', 'YYYY/FMMM/FMDD');
   iid uuid;
 begin
