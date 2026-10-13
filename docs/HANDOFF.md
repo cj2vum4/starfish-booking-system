@@ -183,7 +183,7 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
   `import 'https://raw.githubusercontent.com/cj2vum4/starfish-booking-system/<完整 commit>/supabase/functions/api/index.ts';`
   （repo 公開；commit 網址內容永遠不變；部署時 Supabase 把它打包進去，執行時不依賴 GitHub）。
   部署前先 `curl` 這個網址，和本機檔案比對 SHA-256；部署後用 pg_net 從資料庫打 `/public/records`、`/me` 確認活著。
-  目前雲端：api v46＝`c4d2997` 的 index.ts（fabcb8e1…，2026-10-13 第 3 階段），line-webhook v14＝`630b995`。
+  目前雲端：api v47＝`b3ba0f0` 的 index.ts（35e4968b…，2026-10-13 第 3 階段＋LINE 通知卡顯示 OA 名稱），line-webhook v14＝`630b995`。
   Dashboard 手動貼整份檔案的方式仍然可用。
 - 連接器的 `execute_sql` 遇到含 `delete`／某些修改的 SQL 會要求店家在 Claude App 按確認，60 秒內沒按就逾時（資料庫會整批回滾，不會半套）；
   這類 SQL 改請店家在 SQL Editor 貼上執行。整份測試 SQL（`tests/*.sql`）同理。
