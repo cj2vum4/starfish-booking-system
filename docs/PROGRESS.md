@@ -15,6 +15,10 @@
   改成在測試交易內停用任務、只用自己建的獎勵、月報比增量後，Claude 以連接器在正式資料庫跑 PASS 並確認全部回滾（仍是 gas、無測試資料）。
   api v46（`c4d2997`，入口檔比對 SHA-256 一致）；pg_net 實測 `/public/records` 200、`/me`／`/me/redemptions`／`/admin/redemptions` 401、
   心得清單 503 `live:false`。`main` 推上 GitHub Pages，新畫面與 `richmenu-store.jpg` 皆 200。
+- **管理員 OA 上線（10/13）**：第一個管理員 OA「劇本殺主持人通知」（@585rwuhx）在別的 Provider，LINE 給的使用者 ID 不同，
+  加了好友仍傳不到（LINE 通知卡顯示「傳不到你」）。店家在「海星劇本殺」同一個 Provider 底下新建「海星劇本殺通知」（@511ifvnd）、
+  重發 token 貼進 Secrets 後 ✅。api v47 起 LINE 通知卡會顯示兩個 token 各是哪個 OA（名稱與 @ID）。
+  **管理員 OA 必須和玩家 OA、LINE Login 在同一個 Provider。**
 - **店家要做的事**：店家後台按「設定店家 OA 選單」→
   決定切換時間：切換前最後一次「重算所有點數」→ 匯入 → 對帳 → 切換。
 - **需要真人實測**：玩家在會員卡申請兌換 → 管理員 OA 收到通知 → 審核核准 → 玩家收到通知、餘額正確；店家 OA 圖文選單六格都打得開。
