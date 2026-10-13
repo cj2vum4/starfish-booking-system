@@ -40,7 +40,9 @@ const NOT_FOUND = /_NOT_FOUND$/;
 const CONFLICT = new Set(['IDENTITY_MERGE_REQUIRED', 'NAME_EXISTS', 'BINDING_PENDING', 'NAME_TAKEN', 'ALREADY_BOUND', 'BINDING_DECIDED',
   'SOLD_OUT', 'GROUP_FULL', 'ALREADY_BOOKED', 'ALREADY_MEMBER', 'ALREADY_CLAIMED',
   'INVITE_USED', 'GROUP_CLOSED', 'GROUP_CONFIRMED', 'EVENT_CLOSED', 'EVENT_STARTED', 'ORGANIZER_CANNOT_LEAVE',
-  'RECORDS_LIVE', 'RECORDS_WENT_LIVE', 'IMPORT_REQUIRED', 'RECONCILE_MISMATCH', 'RECONCILE_STALE', 'LEDGER_APPEND_ONLY']);
+  'RECORDS_LIVE', 'RECORDS_WENT_LIVE', 'IMPORT_REQUIRED', 'RECONCILE_MISMATCH', 'RECONCILE_STALE', 'LEDGER_APPEND_ONLY',
+  'NOT_ENOUGH_POINTS', 'REDEMPTION_DECIDED', 'LEDGER_VOIDED', 'RECORD_HIDDEN', 'RECORD_NOT_HIDDEN', 'ALIAS_TAKEN', 'NAME_IS_PLAYER',
+  'SAME_PLAYER']);
 export function statusForCode(code: string) {
   if (NOT_FOUND.test(code)) return 404;
   if (CONFLICT.has(code)) return 409;
@@ -522,6 +524,12 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
       return `【老玩家綁定申請】${p.display_name || 'LINE 玩家'} 申請綁定玩本記錄名字「${p.record_name}」\n審核：https://liff.line.me/${liffId}?view=bindings`;
     case 'binding_approved':
       return `【綁定完成】你的 LINE 已綁定玩本記錄「${p.record_name}」。\n符合資格的老玩家會收到 ${RETURN_BONUS} 點回歸禮，打開會員卡就能看到。\n會員卡：https://liff.line.me/${liffId}?view=card`;
+    case 'redemption_requested':
+      return `【兌換申請】${p.record_name} 想兌換「${p.reward}」（${p.cost} 點，餘額 ${p.balance}）${p.title ? `\n稱號：${p.title}` : ''}\n審核：https://liff.line.me/${liffId}?view=redemptions`;
+    case 'redemption_approved':
+      return `【兌換完成】已為你兌換「${p.reward}」，扣 ${p.cost} 點，目前餘額 ${p.balance} 點。${p.title ? `\n你的稱號「${p.title}」已掛上榮譽牆。` : ''}\n到店時出示會員卡即可。\n會員卡：https://liff.line.me/${liffId}?view=card`;
+    case 'redemption_rejected':
+      return `【兌換未通過】「${p.reward}」的兌換申請沒有通過${p.note ? `：${p.note}` : ''}。點數沒有扣，有問題請直接在聊天室留言。\n會員卡：https://liff.line.me/${liffId}?view=card`;
     case 'binding_rejected':
       return `【綁定未通過】店家沒有通過「${p.record_name}」的綁定。名字選錯的話可以重新申請，有問題請直接在聊天室留言。\n重新申請：https://liff.line.me/${liffId}?view=veteran`;
     default:
@@ -532,7 +540,7 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
 // Store-facing notifications go out from the store's own OA (a second LINE OA with its own free message
 // quota) when LINE_ADMIN_CHANNEL_ACCESS_TOKEN is set. If that OA cannot reach the admin (not its friend yet,
 // or its channel sits under another provider, where LINE user IDs differ), the players' OA sends it instead.
-export const ADMIN_NOTIFICATION_KINDS = new Set(['group_created', 'group_full', 'binding_requested']);
+export const ADMIN_NOTIFICATION_KINDS = new Set(['group_created', 'group_full', 'binding_requested', 'redemption_requested']);
 function pushText(settings: Settings, token: string, to: string, text: string, retryKey: string) {
   return (settings.fetcher ?? fetch)('https://api.line.me/v2/bot/message/push', {
     method: 'POST', signal: AbortSignal.timeout(8000),
@@ -958,6 +966,7 @@ const RICH_MENU_OLD_NAMES = ['海星預約選單'];  // earlier single menu, rem
 const RICH_MENU_IMAGES: Record<string, string> = {
   new: 'https://cj2vum4.github.io/starfish-booking-system/richmenu-new.jpg',
   member: 'https://cj2vum4.github.io/starfish-booking-system/richmenu-member.jpg',
+  store: 'https://cj2vum4.github.io/starfish-booking-system/richmenu-store.jpg',
 };
 const SITE = 'https://cj2vum4.github.io/starfishlarp/';
 const sitePage = (file: string) => SITE + encodeURIComponent(file);
@@ -979,8 +988,7 @@ export function richMenuDefinition(kind: 'new' | 'member', liffId = DEFAULT_LIFF
 }
 
 type LineCall = (url: string, init?: RequestInit) => Promise<any>;
-function lineCaller(settings: Settings): LineCall {
-  const token = settings.lineAccessToken;
+function lineCaller(settings: Settings, token = settings.lineAccessToken): LineCall {
   if (!token) throw new ApiError(503, 'LINE_NOT_CONFIGURED');
   const f = settings.fetcher ?? fetch;
   return async (url, init = {}) => {
@@ -989,6 +997,40 @@ function lineCaller(settings: Settings): LineCall {
     if (!response.ok) throw new ApiError(502, `LINE_${response.status}`);
     return response.headers.get('content-type')?.includes('json') ? response.json() : null;
   };
+}
+
+// The store's OA: one menu for the store (whoever follows that OA is the store). Replaces an older copy.
+const RICH_MENU_STORE = '海星選單・店家';
+export function storeRichMenuDefinition(liffId = DEFAULT_LIFF_ID) {
+  const liff = (view?: string) => `https://liff.line.me/${liffId}${view ? '?view=' + view : ''}`;
+  const links = [liff('redemptions'), liff('players'), liff('reviews'), liff('admin'), liff('bindings'), liff()];
+  const widths = [833, 834, 833];
+  return {
+    size: { width: 2500, height: 1686 }, selected: true, name: RICH_MENU_STORE, chatBarText: '店家選單',
+    areas: links.map((uri, i) => {
+      const col = i % 3, row = Math.floor(i / 3);
+      return { bounds: { x: col === 0 ? 0 : col === 1 ? 833 : 1667, y: row * 843, width: widths[col], height: 843 },
+        action: { type: 'uri', uri } };
+    }),
+  };
+}
+async function setupStoreRichMenu(settings: Settings) {
+  if (!settings.adminLineAccessToken) throw new ApiError(503, 'ADMIN_OA_NOT_CONFIGURED');
+  const call = lineCaller(settings, settings.adminLineAccessToken);
+  const f = settings.fetcher ?? fetch;
+  const image = await f(settings.richMenuImageUrls?.store ?? RICH_MENU_IMAGES.store, { signal: AbortSignal.timeout(15000) });
+  if (!image.ok) throw new ApiError(502, 'RICH_MENU_IMAGE_UNAVAILABLE');
+  const bytes = new Uint8Array(await image.arrayBuffer());
+  if (bytes.length > 1024 * 1024) throw new ApiError(502, 'RICH_MENU_IMAGE_TOO_LARGE');
+  const before = await call('https://api.line.me/v2/bot/richmenu/list');
+  const { richMenuId } = await call('https://api.line.me/v2/bot/richmenu', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(storeRichMenuDefinition(settings.liffId)) });
+  await call(`https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`, { method: 'POST',
+    headers: { 'Content-Type': 'image/jpeg' }, body: bytes });
+  await call(`https://api.line.me/v2/bot/user/all/richmenu/${richMenuId}`, { method: 'POST' });
+  const old = (before?.richmenus ?? []).filter((m: { name: string; richMenuId: string }) => m.name === RICH_MENU_STORE && m.richMenuId !== richMenuId);
+  for (const m of old) await call(`https://api.line.me/v2/bot/richmenu/${m.richMenuId}`, { method: 'DELETE' });
+  return { storeMenuId: richMenuId, replaced: old.length };
 }
 
 // Links every player with a recorded play to the member menu. Idempotent; bulk link takes 500 IDs.
@@ -1483,6 +1525,120 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     recordCache = null;
     return [200, camel(await rpc(settings, 'admin_set_records_source', { p_actor: session.user_id, p_source: source,
       p_force: force === true }))];
+  }
+  // ---- 第 3 階段：兌換、補點扣點、作廢、隱藏、精選、別名、合併、設定、月報（寫入在切換後；資料庫檢查店家身分）----
+  if (path === '/me/redemptions' && (req.method === 'GET' || req.method === 'POST')) {
+    const { session } = await requireSession(req, settings);
+    if (req.method === 'GET') return [200, camel(await rpc(settings, 'my_redemptions', { p_actor: session.user_id }))];
+    const { rewardId, title, requestId } = await readJson(req);
+    if (typeof rewardId !== 'string' || !UUID.test(rewardId)) throw new ApiError(400, 'REWARD_NOT_FOUND');
+    return [201, camel(await rpc(settings, 'request_redemption', { p_actor: session.user_id, p_reward_id: rewardId,
+      p_title: typeof title === 'string' ? title : '', p_request_key: typeof requestId === 'string' && UUID_ANY.test(requestId)
+        ? `me:${session.user_id}:${requestId.toLowerCase()}` : null }))];
+  }
+  const myRedemption = /^\/me\/redemptions\/([0-9a-f-]{36})\/cancel$/.exec(path);
+  if (req.method === 'POST' && myRedemption && UUID.test(myRedemption[1])) {
+    const { session } = await requireSession(req, settings);
+    return [200, camel(await rpc(settings, 'cancel_redemption', { p_actor: session.user_id, p_id: myRedemption[1] }))];
+  }
+  if (req.method === 'GET' && path === '/admin/redemptions') {
+    const { session } = await requireSession(req, settings);
+    return [200, camel(await rpc(settings, 'admin_redemptions', { p_actor: session.user_id }))];
+  }
+  const decide = /^\/admin\/redemptions\/([0-9a-f-]{36})\/(approve|reject)$/.exec(path);
+  if (req.method === 'POST' && decide && UUID.test(decide[1])) {
+    const { session } = await requireSession(req, settings);
+    const { title, note } = await readJson(req);
+    return [200, camel(await rpc(settings, 'admin_decide_redemption', { p_actor: session.user_id, p_id: decide[1],
+      p_approve: decide[2] === 'approve', p_title: typeof title === 'string' ? title : '', p_note: typeof note === 'string' ? note : '' }))];
+  }
+  if (req.method === 'GET' && path === '/admin/players') {
+    const { session } = await requireSession(req, settings);
+    const params = new URL(req.url).searchParams;
+    const name = params.get('name');
+    if (name != null) return [200, camel(await rpc(settings, 'admin_player', { p_actor: session.user_id, p_name: name.slice(0, 60) }))];
+    return [200, { players: camel(await rpc(settings, 'admin_players', { p_actor: session.user_id, p_query: (params.get('q') ?? '').slice(0, 60) })) }];
+  }
+  if (req.method === 'POST' && path.startsWith('/admin/players/')) {
+    const { session } = await requireSession(req, settings);
+    const body = await readJson(req);
+    const text = (v: unknown) => typeof v === 'string' ? v : '';
+    const key = typeof body.requestId === 'string' && UUID_ANY.test(body.requestId) ? `admin:${body.requestId.toLowerCase()}` : null;
+    const actor = { p_actor: session.user_id };
+    switch (path) {
+      case '/admin/players/adjust':
+        if (!Number.isInteger(body.points)) throw new ApiError(400, 'INVALID_POINTS');
+        return [200, camel(await rpc(settings, 'admin_adjust_points', { ...actor, p_player: text(body.name), p_points: body.points,
+          p_reason: text(body.reason), p_request_key: key }))];
+      case '/admin/players/redeem':
+        if (typeof body.rewardId !== 'string' || !UUID.test(body.rewardId)) throw new ApiError(400, 'REWARD_NOT_FOUND');
+        return [200, camel(await rpc(settings, 'admin_redeem', { ...actor, p_player: text(body.name), p_reward_id: body.rewardId,
+          p_title: text(body.title), p_note: text(body.note), p_request_key: key }))];
+      case '/admin/players/glory':
+        return [200, camel(await rpc(settings, 'admin_set_glory', { ...actor, p_player: text(body.name), p_gilded: body.gilded === true,
+          p_title: text(body.title), p_legend: body.legend === true }))];
+      case '/admin/players/alias':
+        return [200, camel(await rpc(settings, 'admin_set_alias', { ...actor, p_player: text(body.name), p_alias: text(body.alias),
+          p_remove: body.remove === true }))];
+      case '/admin/players/merge':
+        return [200, camel(await rpc(settings, 'admin_merge_players', { ...actor, p_from: text(body.from), p_into: text(body.into) }))];
+    }
+  }
+  const voidRoute = /^\/admin\/ledger\/([0-9a-f-]{36})\/void$/.exec(path);
+  if (req.method === 'POST' && voidRoute && UUID.test(voidRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    const { reason } = await readJson(req);
+    return [200, camel(await rpc(settings, 'admin_void_ledger', { p_actor: session.user_id, p_ledger_id: voidRoute[1],
+      p_reason: typeof reason === 'string' ? reason : '' }))];
+  }
+  if (req.method === 'GET' && path === '/admin/reviews') {
+    const { session } = await requireSession(req, settings);
+    const params = new URL(req.url).searchParams;
+    const before = params.get('before'), beforeId = params.get('beforeId');
+    if ((before && Number.isNaN(Date.parse(before))) || (beforeId && !UUID.test(beforeId))) throw new ApiError(400, 'INVALID_RANGE');
+    return [200, { reviews: camel(await rpc(settings, 'admin_reviews', { p_actor: session.user_id, p_script: (params.get('script') ?? '').slice(0, 100),
+      p_before: before || null, p_before_id: before && beforeId ? beforeId : null })) }];
+  }
+  const reviewRoute = /^\/admin\/reviews\/([0-9a-f-]{36})\/(hide|feature)$/.exec(path);
+  if (req.method === 'POST' && reviewRoute && UUID.test(reviewRoute[1])) {
+    const { session } = await requireSession(req, settings);
+    const body = await readJson(req);
+    return [200, camel(reviewRoute[2] === 'hide'
+      ? await rpc(settings, 'admin_hide_record', { p_actor: session.user_id, p_record_id: reviewRoute[1], p_hide: body.hidden !== false,
+          p_reason: typeof body.reason === 'string' ? body.reason : '' })
+      : await rpc(settings, 'admin_feature_record', { p_actor: session.user_id, p_record_id: reviewRoute[1], p_featured: body.featured !== false }))];
+  }
+  if (path === '/admin/record-settings' && (req.method === 'GET' || req.method === 'POST')) {
+    const { session } = await requireSession(req, settings);
+    if (req.method === 'GET') return [200, camel(await rpc(settings, 'admin_record_settings', { p_actor: session.user_id }))];
+    const body = await readJson(req);
+    const text = (v: unknown) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
+    if (body.type === 'setting') {
+      return [200, camel(await rpc(settings, 'admin_save_setting', { p_actor: session.user_id, p_key: text(body.key), p_value: text(body.value) }))];
+    }
+    if (body.type === 'reward') {
+      if (body.id != null && (typeof body.id !== 'string' || !UUID.test(body.id))) throw new ApiError(400, 'REWARD_NOT_FOUND');
+      if (!Number.isInteger(body.cost)) throw new ApiError(400, 'INVALID_REWARD');
+      return [200, camel(await rpc(settings, 'admin_save_reward', { p_actor: session.user_id, p_id: body.id ?? null, p_track: text(body.track),
+        p_name: text(body.name), p_cost: body.cost, p_note: text(body.note), p_active: body.active !== false,
+        p_sort: Number.isInteger(body.sort) ? body.sort : null }))];
+    }
+    if (body.type === 'quest') {
+      if (!Number.isInteger(body.goal) || !Number.isInteger(body.points)) throw new ApiError(400, 'INVALID_QUEST');
+      return [200, camel(await rpc(settings, 'admin_save_quest', { p_actor: session.user_id, p_id: text(body.id), p_label: text(body.label),
+        p_goal: body.goal, p_points: body.points, p_active: body.active !== false }))];
+    }
+    throw new ApiError(400, 'INVALID_SETTING');
+  }
+  if (req.method === 'GET' && path === '/admin/records/report') {
+    const { session } = await requireSession(req, settings);
+    return [200, { months: camel(await rpc(settings, 'admin_records_report', { p_actor: session.user_id })) }];
+  }
+  if (req.method === 'POST' && path === '/admin/richmenu/store') {
+    // The store's own OA gets its menu (兌換審核, 玩家點數, …); needs LINE_ADMIN_CHANNEL_ACCESS_TOKEN.
+    const { session } = await requireSession(req, settings);
+    if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
+    return [200, await setupStoreRichMenu(settings)];
   }
   if (req.method === 'GET' && path === '/admin/google-account') {
     // Which service account a spreadsheet must be shared with before it can be imported.

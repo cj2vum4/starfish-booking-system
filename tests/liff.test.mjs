@@ -17,8 +17,9 @@ test('the LIFF page loads only the LINE SDK and its own config', () => {
 });
 
 test('every Rich Menu view opens a page the LIFF app routes to', async () => {
-  const { richMenuDefinition } = await import('../supabase/functions/api/index.ts');
-  const views = ['new', 'member'].flatMap(k => richMenuDefinition(k, 'X').areas.map(a => a.action.uri))
+  const { richMenuDefinition, storeRichMenuDefinition } = await import('../supabase/functions/api/index.ts');
+  const views = [...['new', 'member'].flatMap(k => richMenuDefinition(k, 'X').areas), ...storeRichMenuDefinition('X').areas]
+    .map(a => a.action.uri)
     .filter(u => u.startsWith('https://liff.line.me/')).map(u => new URL(u).searchParams.get('view')).filter(Boolean);
   assert.ok(views.length >= 5);
   for (const v of new Set(views)) {
