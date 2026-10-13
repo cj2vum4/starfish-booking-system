@@ -11,7 +11,11 @@
 - **LINE 畫面**：會員卡「申請兌換」／「我的兌換申請」；店家「兌換審核」「玩家點數」「心得管理」「點數規則・獎勵・任務」「玩本月報」、
   「設定店家 OA 選單」；`?view=redemptions|players|reviews|admin` 可直接開。390px 截圖檢查過、沒有橫向捲動。
 - 測試：npm test 全過（新增 `tests/store_points.test.mjs`、`tests/store_points.sql`、LIFF 錯誤訊息涵蓋 0039 所有錯誤代碼）。
-- **店家要做的事**：SQL Editor 貼上 0039 與 `tests/store_points.sql`（PASS）→ Claude 部署 api → 店家後台按「設定店家 OA 選單」→
+- **上線（10/13）**：店家貼上 0039；第一次跑 `tests/store_points.sql` 因為正式資料庫有啟用中的每月任務而失敗（測試假設空資料庫），
+  改成在測試交易內停用任務、只用自己建的獎勵、月報比增量後，Claude 以連接器在正式資料庫跑 PASS 並確認全部回滾（仍是 gas、無測試資料）。
+  api v46（`c4d2997`，入口檔比對 SHA-256 一致）；pg_net 實測 `/public/records` 200、`/me`／`/me/redemptions`／`/admin/redemptions` 401、
+  心得清單 503 `live:false`。`main` 推上 GitHub Pages，新畫面與 `richmenu-store.jpg` 皆 200。
+- **店家要做的事**：店家後台按「設定店家 OA 選單」→
   決定切換時間：切換前最後一次「重算所有點數」→ 匯入 → 對帳 → 切換。
 - **需要真人實測**：玩家在會員卡申請兌換 → 管理員 OA 收到通知 → 審核核准 → 玩家收到通知、餘額正確；店家 OA 圖文選單六格都打得開。
 
