@@ -23,7 +23,7 @@ test('every Rich Menu view opens a page the LIFF app routes to', async () => {
     .filter(u => u.startsWith('https://liff.line.me/')).map(u => new URL(u).searchParams.get('view')).filter(Boolean);
   assert.ok(views.length >= 5);
   for (const v of new Set(views)) {
-    assert.match(html, new RegExp(String.raw`'${v}'[^\n]*\]\.includes\(view\)`), `?view=${v} not moved into the hash`);
+    assert.match(html, new RegExp(String.raw`const views = \[[^\n]*'${v}'[^\n]*\];\n\s*if \(views\.includes\(view\)\)`), `?view=${v} not moved into the hash`);
     assert.ok(html.includes(`h === '#/${v}'`), `#/${v} has no route`);
   }
 });
@@ -75,4 +75,11 @@ test('website 立即預約 links keep ?game= through a LINE login round trip', a
   const signedIn = await openLiff(link);
   assert.equal(signedIn.logins.length, 0);
   assert.ok(signedIn.url.endsWith('/#/create') && !signedIn.url.includes('game='), 'the address bar is tidied once signed in');
+});
+
+test('every error the store-points functions (0039) raise has a message on the LIFF page', () => {
+  const sql = readFileSync(new URL('../supabase/migrations/202610130039_store_points.sql', import.meta.url), 'utf8');
+  const codes = new Set([...sql.matchAll(/raise exception '([A-Z_]+)'/g)].map(m => m[1]));
+  assert.ok(codes.size > 10);
+  for (const code of codes) assert.ok(new RegExp(String.raw`\b${code}: '`).test(html), `${code} has no message in ERRORS`);
 });

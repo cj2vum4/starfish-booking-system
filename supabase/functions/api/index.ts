@@ -1596,8 +1596,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const params = new URL(req.url).searchParams;
     const before = params.get('before'), beforeId = params.get('beforeId');
     if ((before && Number.isNaN(Date.parse(before))) || (beforeId && !UUID.test(beforeId))) throw new ApiError(400, 'INVALID_RANGE');
-    return [200, { reviews: camel(await rpc(settings, 'admin_reviews', { p_actor: session.user_id, p_script: (params.get('script') ?? '').slice(0, 100),
-      p_before: before || null, p_before_id: before && beforeId ? beforeId : null })) }];
+    const [reviews, live] = await Promise.all([rpc(settings, 'admin_reviews', { p_actor: session.user_id,
+      p_script: (params.get('script') ?? '').slice(0, 100), p_before: before || null, p_before_id: before && beforeId ? beforeId : null }),
+      recordsLive(settings)]);
+    return [200, { live, reviews: camel(reviews) }];
   }
   const reviewRoute = /^\/admin\/reviews\/([0-9a-f-]{36})\/(hide|feature)$/.exec(path);
   if (req.method === 'POST' && reviewRoute && UUID.test(reviewRoute[1])) {

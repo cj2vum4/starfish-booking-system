@@ -106,6 +106,8 @@ begin
   if pid is null then return jsonb_build_object('live',true,'player',null); end if;
   return jsonb_build_object('live',true,'player',(select name from public.record_players where id=pid),
     'balance',public._sf_balance(pid),'held',public._sf_held(pid),
+    'rewards',coalesce((select jsonb_agg(jsonb_build_object('id',id,'track',track,'name',name,'cost',cost,'note',note) order by sort, name)
+      from public.record_rewards where active and cost > 0),'[]'),
     'requests',coalesce((select jsonb_agg(public._sf_redemption_row(r) order by r.created_at desc)
       from (select * from public.redemption_requests where player_id=pid order by created_at desc limit 20) r),'[]'));
 end $$;

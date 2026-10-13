@@ -1,9 +1,9 @@
-"""Starfish dark-theme Rich Menus: 2500x1686, six cells each (新玩家 / 老玩家).
+"""Starfish dark-theme Rich Menus: 2500x1686, six cells each (新玩家 / 老玩家 / 店家 OA).
 
-Usage: python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png
-Writes richmenu-new.jpg and richmenu-member.jpg. Cell order must match richMenuDefinition()
-in supabase/functions/api/index.ts. Colors follow the starfishlarp site theme (index.css);
-fonts are Windows Noto Serif/Sans TC.
+Usage: python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png [new member store]
+Writes richmenu-<kind>.jpg for the kinds given (default: all). Cell order must match richMenuDefinition()
+and storeRichMenuDefinition() in supabase/functions/api/index.ts. Colors follow the starfishlarp site theme
+(index.css); fonts are Windows Noto Serif/Sans TC, or WenQuanYi Zen Hei on Linux.
 """
 import sys
 from pathlib import Path
@@ -21,7 +21,10 @@ HOLE = (20, 12, 8)
 
 
 def font(name, size, weight=None):
-    f = ImageFont.truetype(f'C:/Windows/Fonts/{name}', size)
+    try:
+        f = ImageFont.truetype(f'C:/Windows/Fonts/{name}', size)
+    except OSError:  # not on Windows
+        return ImageFont.truetype('/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc', size)
     if weight:
         try: f.set_variation_by_axes([weight])
         except Exception: pass
@@ -109,6 +112,30 @@ def icon_trophy(d, cx, cy):  # 榮譽牆: trophy
     star(d, cx, cy - 70, 30, HOLE)
 
 
+def icon_gift(d, cx, cy):  # 兌換審核: gift box with a check
+    d.rounded_rectangle([cx - 110, cy - 40, cx + 110, cy + 105], radius=14, outline=GOLD, width=10)
+    d.rectangle([cx - 125, cy - 80, cx + 125, cy - 40], outline=GOLD, width=10)
+    d.line([cx, cy - 80, cx, cy + 105], fill=GOLD_L, width=12)
+    d.ellipse([cx - 70, cy - 135, cx - 5, cy - 82], outline=GOLD_L, width=9)
+    d.ellipse([cx + 5, cy - 135, cx + 70, cy - 82], outline=GOLD_L, width=9)
+    d.line([cx + 60, cy + 55, cx + 95, cy + 90, cx + 160, cy + 10], fill=CRIM, width=16, joint='curve')
+
+
+def icon_ledger(d, cx, cy):  # 玩家點數: player with a stack of coins
+    d.ellipse([cx - 110, cy - 110, cx - 20, cy - 20], outline=GOLD, width=10)
+    d.arc([cx - 150, cy - 5, cx + 20, cy + 165], 180, 360, fill=GOLD, width=10)
+    for k in range(4):
+        y = cy + 80 - k * 42
+        d.ellipse([cx + 30, y - 22, cx + 150, y + 22], fill=HOLE, outline=GOLD_L, width=8)
+
+
+def icon_home(d, cx, cy):  # 店家首頁: shop front
+    d.polygon([(cx - 140, cy - 30), (cx, cy - 135), (cx + 140, cy - 30)], outline=GOLD, width=10)
+    d.rectangle([cx - 110, cy - 30, cx + 110, cy + 105], outline=GOLD, width=10)
+    d.rectangle([cx - 30, cy + 20, cx + 30, cy + 105], fill=GOLD_L)
+    star(d, cx, cy - 70, 26, CRIM)
+
+
 def star(d, cx, cy, r, color):
     import math
     pts = []
@@ -126,6 +153,9 @@ MENUS = {
     'member': [(icon_calendar, '劇本預約', '開團・我的揪團'), (icon_seats, '缺人場次', '還有空位的公開團'),
                (icon_quill, '玩後問卷', '填心得拿點數'), (icon_card, '會員卡・兌換', '點數與獎勵'),
                (icon_book, '劇本介紹', '劇本總覽與故事'), (icon_trophy, '榮譽牆', '玩家排行與徽章')],
+    'store': [(icon_gift, '兌換審核', '核准才扣點'), (icon_ledger, '玩家點數', '補點・扣點・合併'),
+              (icon_quill, '心得管理', '精選・隱藏'), (icon_calendar, '場次總覽', '店家後台'),
+              (icon_medal, '綁定審核', '老玩家綁定'), (icon_home, '店家首頁', '所有店家功能')],
 }
 
 
@@ -179,5 +209,5 @@ def draw_menu(kind, emblem_img):
 
 
 emblem_img = Image.open(EMBLEM).convert('RGB')
-for kind in MENUS:
+for kind in sys.argv[3:] or MENUS:
     draw_menu(kind, emblem_img)

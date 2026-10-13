@@ -41,7 +41,7 @@
   .month-nav { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
   .month-nav button { width:auto; padding:8px 12px; }
   .stepper output { min-width:56px; text-align:center; font-size:20px; font-weight:700; }
-  select, textarea, input[type=text] { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line);
+  select, textarea, input[type=text], input[type=number] { width:100%; padding:10px; border-radius:10px; border:1px solid var(--line);
     background:var(--card); color:var(--fg); font:inherit; }
   textarea { min-height:72px; resize:vertical; }
   .seats { list-style:none; padding:0; margin:0; }
@@ -62,6 +62,11 @@
   .poster { width:56px; height:78px; flex:0 0 56px; border-radius:8px; object-fit:cover; background:var(--chip); }
   .poster.none { display:grid; place-items:center; color:var(--muted); font-size:13px; }
   .link { display:inline-block; margin-top:4px; color:var(--accent); font-size:14px; text-decoration:underline; }
+  .ledger { display:flex; justify-content:space-between; gap:8px; padding:8px 0; border-top:1px solid var(--line); font-size:14px; }
+  .ledger:first-child { border-top:0; }
+  .ledger.void > div:first-child, .ledger.void b { text-decoration:line-through; color:var(--muted); }
+  .row2 { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  label.check { display:flex; align-items:center; gap:8px; }
   .gate { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:flex-end; justify-content:center; z-index:10; }
   .gate .card { width:100%; max-width:560px; margin:0; border-radius:18px 18px 0 0; padding:20px 16px calc(20px + env(safe-area-inset-bottom)); }
   [hidden] { display:none !important; }
@@ -128,13 +133,23 @@
     RECORDS_UNAVAILABLE: '暫時讀不到海星網站的玩本記錄，請稍後再試。',
     BONUS_SECRET_MISMATCH: '已核准，但回歸禮沒發成功：Apps Script 的 BOOKING_SECRET 與 Supabase 的 PLAY_RECORD_SECRET 不一致。',
     BONUS_NOT_CONFIGURED: '已核准，但還沒設定 PLAY_RECORD_SECRET，回歸禮沒有發。',
-    BONUS_FAILED: '已核准，但回歸禮暫時沒發成功，請稍後按「重試發回歸禮」。', INVALID_REASON: '取消原因最多 500 字。',
+    BONUS_FAILED: '已核准，但回歸禮暫時沒發成功，請稍後按「重試發回歸禮」。', INVALID_REASON: '原因沒有填，或超過字數。',
     RECORDS_NOT_LIVE: '玩本記錄還沒切換到預約系統。', RECORDS_LIVE: '已經切換到預約系統，不能再整批匯入；請改用「補匯入新記錄」。',
     RECORDS_WENT_LIVE: '曾經切換到預約系統，不能再整批匯入（會刪掉切換後的記錄）；切回預約系統後用「補匯入新記錄」。',
     RECONCILE_STALE: '讀不到 Apps Script 最新的點數總覽，不能確認一致，請稍後再按一次切換。',
     IMPORT_REQUIRED: '請先匯入玩本記錄。', RECONCILE_MISMATCH: '對帳還有差異。請先處理，或確認差異沒問題後按「仍要切換」。',
     INVALID_IMPORT: '試算表的內容無法辨識，請聯絡維護者。', INVALID_RECORD: '記錄內容不完整。', REVIEW_NOT_FOUND: '找不到這則心得。',
-    LEDGER_APPEND_ONLY: '點數帳本只能新增，不能修改或刪除。', INVALID_SOURCE: '切換的目標不正確。', INVALID_POINTS: '點數不正確。',
+    LEDGER_APPEND_ONLY: '點數帳本只能新增，不能修改或刪除。', INVALID_SOURCE: '切換的目標不正確。', INVALID_POINTS: '點數不正確（1–1000 的整數）。',
+    NOT_ENOUGH_POINTS: '點數不夠（申請中的兌換會先保留點數）。', REDEMPTION_DECIDED: '這筆兌換已經處理過了。',
+    REDEMPTION_NOT_FOUND: '找不到這筆兌換申請。', BINDING_REQUIRED: '要先綁定玩本記錄的名字才能兌換。',
+    REWARD_NOT_FOUND: '找不到這個獎勵，可能已經下架。', INVALID_TITLE: '請輸入 1–20 字的稱號。',
+    LEDGER_VOIDED: '這筆點數已經作廢了。', LEDGER_NOT_FOUND: '找不到這筆點數。',
+    RECORD_HIDDEN: '這筆記錄已經隱藏了。', RECORD_NOT_HIDDEN: '這筆記錄沒有隱藏。', RECORD_NOT_FOUND: '找不到這筆記錄（隱藏的記錄不能精選）。',
+    NO_COMMENT: '這筆記錄沒有寫心得，不能精選。', ALIAS_TAKEN: '這個別名已經屬於另一位玩家。', ALIAS_NOT_FOUND: '找不到這個別名。',
+    NAME_IS_PLAYER: '這個名字本身就是一位玩家，同一人請改用「合併」。', SAME_PLAYER: '不能合併到自己。',
+    INVALID_SETTING: '設定值不正確：點數類是 0–1000 的整數，日期要像 2026/10/13。', INVALID_REWARD: '獎勵要有名稱，點數 1–10000。',
+    INVALID_QUEST: '任務目標要 0–100、點數 0–1000。',
+    ADMIN_OA_NOT_CONFIGURED: '還沒設定管理員 OA 的 Channel access token（Supabase Secrets 的 LINE_ADMIN_CHANNEL_ACCESS_TOKEN）。',
   };
   const view = document.getElementById('view');
   const store = { get: k => { try { return sessionStorage.getItem(k); } catch { return null; } },
@@ -196,8 +211,14 @@
         <button id="adminBtn">店家後台：場次總覽</button>
         <button class="secondary" id="bindingsBtn">老玩家綁定審核</button>
         <button class="secondary" id="surveysBtn">角色問卷回覆</button>
-        <button class="secondary" id="recordsBtn">玩本記錄與點數（搬家）</button>
         <button class="secondary" id="sync">從 GitHub 同步劇本</button><div id="syncMsg" class="muted"></div></div>
+        <h3>店家：玩本記錄與點數</h3><div class="card stack">
+        <button id="redemptionsBtn">兌換審核</button>
+        <button class="secondary" id="playersBtn">玩家點數（補點、扣點、別名、合併）</button>
+        <button class="secondary" id="reviewsBtn">心得管理（精選、隱藏）</button>
+        <button class="secondary" id="ruleBtn">點數規則・獎勵・任務</button>
+        <button class="secondary" id="reportBtn">玩本月報</button>
+        <button class="secondary" id="recordsBtn">玩本記錄與點數（搬家）</button></div>
         <h3>店家：近期揪團</h3><div id="adminGroups" class="muted">讀取中…</div>` : ''}`);
     document.getElementById('new').onclick = () => go('#/create');
     document.getElementById('openList').onclick = () => go('#/open');
@@ -216,6 +237,8 @@
     document.getElementById('bindingsBtn')?.addEventListener('click', () => go('#/bindings'));
     document.getElementById('surveysBtn')?.addEventListener('click', () => go('#/surveys'));
     document.getElementById('recordsBtn')?.addEventListener('click', () => go('#/records'));
+    for (const [btn, to] of [['redemptionsBtn', '#/redemptions'], ['playersBtn', '#/players'], ['reviewsBtn', '#/reviews'],
+      ['ruleBtn', '#/record-settings'], ['reportBtn', '#/report']]) document.getElementById(btn)?.addEventListener('click', () => go(to));
     document.getElementById('sync')?.addEventListener('click', async e => {
       busy(e.target, true);
       try { const r = await api('/admin/games/sync', { method: 'POST' });
@@ -250,6 +273,10 @@
         <div class="big">${r.sessions.length} 場</div>
         <div class="muted">即將進行 ${upcoming}・已結束 ${count(['completed'])}・已取消 ${count(['cancelled'])}・累計出席 ${attended} 人次・玩家 ${r.players.length} 位</div></div>
       <div class="card stack"><b>LINE 通知</b><div id="lineHealth" class="muted">檢查中…</div></div>
+      <div class="card stack"><b>店家 OA 圖文選單</b>
+        <div class="muted">在管理員 OA（店家用的官方帳號）聊天室下方放一組選單：兌換審核、玩家點數、心得管理、場次總覽、綁定審核、店家首頁。
+          換了選單圖或第一次使用時按一次即可。</div>
+        <button class="secondary" id="storeMenuBtn">設定店家 OA 選單</button><div id="storeMenuMsg" class="muted"></div></div>
       <h3>場次</h3>
       ${r.sessions.length ? [...r.sessions].reverse().map(x => `<${x.groupId ? 'button' : 'div'} class="card group-row" ${x.groupId ? `data-g="${esc(x.groupId)}"` : ''}>
         <div><b>${esc(fmtRange(x.startsAt, x.endsAt))}</b> <span class="tag ${x.status === 'completed' ? '' : 'ok'}">${esc(zh[x.status] || x.status)}</span></div>
@@ -258,6 +285,14 @@
         </${x.groupId ? 'button' : 'div'}>`).join('') : '<div class="card muted">這段期間沒有場次。</div>'}
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`);
     document.querySelectorAll('[data-g]').forEach(b => b.onclick = () => go('#/group/' + b.dataset.g));
+    document.getElementById('storeMenuBtn').onclick = async e => {
+      busy(e.target, true);
+      const msg = document.getElementById('storeMenuMsg');
+      try { const m = await api('/admin/richmenu/store', { method: 'POST' });
+        msg.textContent = '已設定。打開管理員 OA 的聊天室就會看到（可能要關掉聊天室再打開）。' + (m.replaced ? `已換掉舊的選單 ${m.replaced} 個。` : ''); }
+      catch (x) { if (x.message !== 'reauth') msg.textContent = message(x.code); }
+      busy(e.target, false);
+    };
     // 店家通知（新揪團、滿團、綁定申請、玩家私訊）走管理員 OA；傳不到時改由玩家 OA 送出，不會漏。
     api('/admin/line-health').then(h => {
       const admin = { ok: '✅ 店家通知由管理員 OA 發送。',
@@ -406,8 +441,10 @@
 
   async function showCard() {
     render(`<h2>會員卡・兌換</h2><div class="card">讀取中…</div>`);
-    let data;
-    try { data = await api('/me/binding'); }
+    let data, red;
+    // 切換到預約系統後，兌換在這裡申請（店家核准才扣點）；讀不到兌換時照舊顯示「到店給店家看」。
+    try { [data, red] = await Promise.all([api('/me/binding'),
+      api('/me/redemptions').catch(e => { if (e.message === 'reauth') throw e; return null; })]); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>會員卡・兌換</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
     const { binding, card, rewards } = data;
     if (binding?.status !== 'approved' && !card && !data.recordName) {
@@ -425,7 +462,9 @@
       render(`<h2>會員卡・兌換</h2><div class="card muted">「${esc(binding?.recordName ?? data.recordName)}」的點數正在更新，請過 1 分鐘再打開；一直看不到請聯絡店家。</div>${homeBtn}`);
       return;
     }
-    const tracks = [...new Set(rewards.map(r => r.track))];
+    const live = !!(red?.live && red.player);
+    const list = live ? red.rewards : rewards, avail = live ? red.balance - red.held : card.balance;
+    const tracks = [...new Set(list.map(r => r.track))];
     render(`<h2>會員卡・兌換</h2>
       <div class="card stack friend-bar">
         <div class="muted">海星劇本殺・探員 ${esc(card.agent)}</div>
@@ -436,14 +475,56 @@
           : `點數更新於 ${esc(fmtRange(card.updatedAt))}${card.stale ? '（網站暫時讀不到，顯示上次的資料）' : ''}`}</div>
         ${['granted', 'already'].includes(binding?.bonusStatus) ? '<div class="muted">老玩家回歸禮已處理（每名一次）</div>' : ''}
         ${binding?.bonusStatus === 'none' ? '<div class="muted">老玩家回歸禮處理中，稍後再打開就會看到。</div>' : ''}</div>
-      <div class="card muted">要兌換時，到店把這個畫面給店家看，店家會幫你扣點。</div>
-      ${tracks.map(t => `<h3>${esc(t)}</h3>${rewards.filter(r => r.track === t).map(r => `<div class="card group-row" style="cursor:default">
-        <div><b>${esc(r.name)}</b> <span class="tag ${card.balance >= r.cost ? 'ok' : ''}">${r.cost} 點${card.balance >= r.cost ? '・可兌換' : ''}</span></div>
-        ${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}</div>`).join('')}`).join('')}
+      <div id="redeemMsg" class="card" hidden></div>
+      ${live ? `<div class="card muted">選好獎勵按「申請兌換」，店家核准後才扣點；申請中的點數會先保留，核准或取消前不能再拿去換別的。
+          ${red.held ? `目前保留 ${red.held} 點，可用 ${avail} 點。` : ''}</div>
+        ${red.requests.length ? `<h3>我的兌換申請</h3>${red.requests.map(r => `<div class="card stack">
+          <div><b>${esc(r.reward)}</b> <span class="tag ${r.status === 'approved' ? 'ok' : ''}">${esc(REDEEM_ZH[r.status] || r.status)}</span></div>
+          <div class="muted">${r.cost} 點・${esc(fmtRange(r.createdAt))}${r.title ? '・稱號：' + esc(r.title) : ''}${r.storeNote ? '・店家：' + esc(r.storeNote) : ''}</div>
+          ${r.status === 'pending' ? `<button class="secondary" data-cancel="${esc(r.id)}">取消申請</button>` : ''}</div>`).join('')}` : ''}`
+        : '<div class="card muted">要兌換時，到店把這個畫面給店家看，店家會幫你扣點。</div>'}
+      ${tracks.map(t => `<h3>${esc(t)}</h3>${list.filter(r => r.track === t).map(r => `<div class="card stack">
+        <div><b>${esc(r.name)}</b> <span class="tag ${avail >= r.cost ? 'ok' : ''}">${r.cost} 點${avail >= r.cost ? '・可兌換' : ''}</span></div>
+        ${r.note ? `<div class="muted">${esc(r.note)}</div>` : ''}
+        ${live && avail >= r.cost ? `${/稱號/.test(r.name) ? `<input type="text" maxlength="20" placeholder="想要的稱號（1–20 字）" data-title-for="${esc(r.id)}">` : ''}
+          <button data-redeem="${esc(r.id)}">申請兌換</button>` : ''}</div>`).join('')}`).join('')}
       <div class="stack"><button class="secondary" data-site="榮譽牆.html">看榮譽牆</button>
         <button class="secondary" id="cHistory">我的遊戲紀錄</button>${homeBtn}</div>`);
     document.getElementById('cHistory').onclick = () => go('#/history');
     bindSiteLinks();
+    const keys = {};  // one request ID per reward until it goes through: a retry after a lost reply is not a second request
+    document.querySelectorAll('[data-redeem]').forEach(btn => btn.onclick = async () => {
+      const rw = list.find(r => r.id === btn.dataset.redeem);
+      const title = document.querySelector(`[data-title-for="${rw.id}"]`)?.value.trim() ?? '';
+      if (/稱號/.test(rw.name) && !title) return flash('redeemMsg', '請先填想要的稱號。', true);
+      if (!confirm(`申請兌換「${rw.name}」（${rw.cost} 點）？店家核准後才會扣點。`)) return;
+      busy(btn, true);
+      try {
+        await api('/me/redemptions', { method: 'POST', body: { rewardId: rw.id, title, requestId: keys[rw.id] ??= crypto.randomUUID() } });
+        await showCard();
+        flash('redeemMsg', `已送出「${rw.name}」的兌換申請，店家核准後會用 LINE 通知你。`);
+      } catch (x) {
+        if (x.message === 'reauth') return;
+        busy(btn, false);
+        flash('redeemMsg', x.code === 'TOO_MANY_REQUESTS' ? '申請中的兌換最多 5 筆，請等店家處理後再申請。' : message(x.code), true);
+      }
+    });
+    document.querySelectorAll('[data-cancel]').forEach(btn => btn.onclick = async () => {
+      if (!confirm('取消這筆兌換申請？保留的點數會放回。')) return;
+      busy(btn, true);
+      try { await api(`/me/redemptions/${btn.dataset.cancel}/cancel`, { method: 'POST' }); await showCard(); flash('redeemMsg', '已取消申請。'); }
+      catch (x) { if (x.message !== 'reauth') { busy(btn, false); flash('redeemMsg', message(x.code), true); } }
+    });
+  }
+
+  const REDEEM_ZH = { pending: '申請中', approved: '已兌換', rejected: '未通過', cancelled: '已取消' };
+  // A message box at the top of the page (after a re-render, which scrolls to the top).
+  function flash(id, text, bad = false) {
+    const m = document.getElementById(id);
+    if (!m) return;
+    m.className = 'card' + (bad ? ' error' : '');
+    m.textContent = text; m.hidden = false;
+    m.scrollIntoView({ block: 'nearest' });
   }
 
   // ---- 店家：老玩家綁定審核 ----
@@ -1157,7 +1238,7 @@
       : `<div class="card stack"><b>4. 切換</b>
           <div class="muted">對帳一致後才能切換。切換後：網站送出玩本記錄、按讚、榮譽牆與劇本頁的心得都改走預約系統，
             點數在送出當下算好就固定；LINE 會員卡、老玩家綁定的回歸禮也改由預約系統處理。
-            兌換扣點、補點、精選心得等店家操作會在下一階段加到 LINE；在那之前請先不要切換，或切換後暫時不要在試算表手動調整點數。</div>
+            切換後兌換審核、補點扣點、精選與隱藏心得、點數規則都在這個店家後台操作，不要再改試算表（試算表的修改不會帶過來）。</div>
           <button id="switchBtn" disabled>切換到預約系統</button><div id="switchMsg" class="muted"></div></div>`}
       ${homeBtn}`);
     const out = (id, html) => { document.getElementById(id).innerHTML = html; };
@@ -1224,6 +1305,350 @@
     });
   }
 
+  // ---- 第 3 階段（店家）：兌換審核、玩家點數、心得管理、點數規則、月報 --------------------------------
+  // 寫入只在切換到預約系統之後（切換前試算表才是正本，這裡改的會被重新匯入蓋掉）；切換前先看得到匯入的資料。
+  const liveNote = live => live ? '' : `<div class="card error">網站還在用 Apps Script（試算表）。這裡先看得到匯入的資料，
+    但兌換、補點、隱藏、規則修改要在「玩本記錄與點數（搬家）」切換之後才能用。</div>`;
+  const storeFail = (id, x) => { if (x.message !== 'reauth') flash(id, message(x.code), true); };
+  const recordDate = d => esc(d || '');
+
+  function redemptionCard(r, actions) {
+    const title = /稱號/.test(r.reward);
+    return `<div class="card stack">
+      <div><b>${esc(r.player)}</b>${r.agent ? ` <span class="muted">探員 ${esc(r.agent)}</span>` : ''}
+        <span class="tag ${r.status === 'approved' ? 'ok' : ''}">${esc(REDEEM_ZH[r.status] || r.status)}</span></div>
+      <div>${esc(r.reward)}・${r.cost} 點</div>
+      <div class="muted">${r.fromLine ? 'LINE 申請' : '店家直接兌換'}・${esc(fmtRange(r.createdAt))}
+        ${r.status === 'pending' ? `・餘額 ${r.balance}（申請中共保留 ${r.held}）` : r.decidedAt ? '・處理 ' + esc(fmtRange(r.decidedAt)) : ''}</div>
+      ${r.title && !(actions && title) ? `<div>稱號：${esc(r.title)}</div>` : ''}
+      ${r.storeNote ? `<div class="muted">備註：${esc(r.storeNote)}</div>` : ''}
+      ${actions && r.status === 'pending' ? `${title ? `<input type="text" maxlength="20" value="${esc(r.title)}" placeholder="稱號（可修改）" data-rtitle="${esc(r.id)}">` : ''}
+        <input type="text" maxlength="200" placeholder="給玩家的備註（選填，不通過時寫原因）" data-rnote="${esc(r.id)}">
+        <div class="chips"><button data-approve="${esc(r.id)}">核准並扣點</button><button class="secondary" data-reject="${esc(r.id)}">不通過</button></div>` : ''}</div>`;
+  }
+
+  async function showRedemptions() {
+    render(`<h2>兌換審核</h2><div class="card">讀取中…</div>`);
+    let d;
+    try { d = await api('/admin/redemptions'); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>兌換審核</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    render(`<h2>兌換審核</h2>${liveNote(d.live)}
+      <p class="muted">玩家在 LINE 會員卡申請的兌換。核准才扣點（榮耀軌的鍍金、稱號、傳奇同時生效），並用 LINE 通知玩家；
+        不通過不扣點。沒綁 LINE 的玩家請到「玩家點數」直接兌換。</p>
+      <div id="rMsg" class="card" hidden></div>
+      <h3>待審核（${d.pending.length}）</h3>${d.pending.length ? d.pending.map(r => redemptionCard(r, true)).join('') : '<div class="card muted">目前沒有待審核的兌換。</div>'}
+      ${d.recent.length ? `<h3>最近處理</h3>${d.recent.map(r => redemptionCard(r, false)).join('')}` : ''}
+      <div class="stack"><button class="secondary" id="toPlayers">玩家點數</button>${homeBtn}</div>`);
+    document.getElementById('toPlayers').onclick = () => go('#/players');
+    const decide = (attr, action) => document.querySelectorAll(`[data-${attr}]`).forEach(btn => btn.onclick = async () => {
+      const id = btn.dataset[attr], r = d.pending.find(x => x.id === id);
+      const title = document.querySelector(`[data-rtitle="${id}"]`)?.value.trim() ?? '';
+      const note = document.querySelector(`[data-rnote="${id}"]`).value.trim();
+      if (!confirm(action === 'approve' ? `核准 ${r.player} 兌換「${r.reward}」，扣 ${r.cost} 點？` : `不通過 ${r.player} 的「${r.reward}」？點數不會扣。`)) return;
+      busy(btn, true);
+      try {
+        await api(`/admin/redemptions/${id}/${action}`, { method: 'POST', body: { title, note } });
+        await showRedemptions();
+        flash('rMsg', action === 'approve' ? `已核准並扣 ${r.cost} 點，已通知 ${r.player}。` : `已不通過，已通知 ${r.player}。`);
+      } catch (x) { busy(btn, false); storeFail('rMsg', x); }
+    });
+    decide('approve', 'approve');
+    decide('reject', 'reject');
+  }
+
+  async function showPlayers() {
+    render(`<h2>玩家點數</h2>
+      <div class="card stack"><input id="pq" type="text" placeholder="搜尋名字、別名或探員編號" autocomplete="off">
+        <div class="muted">不輸入就列出最近有玩的 30 位。</div></div>
+      <div id="pList" class="muted">讀取中…</div>${homeBtn}`);
+    let seq = 0, timer;
+    const load = async () => {
+      const mine = ++seq, q = document.getElementById('pq').value.trim();
+      try {
+        const { players } = await api('/admin/players?q=' + encodeURIComponent(q));
+        if (mine !== seq) return;
+        const box = document.getElementById('pList');
+        box.innerHTML = players.length ? players.map(p => `<button class="card group-row" data-player="${esc(p.name)}">
+          <div><b>${esc(p.name)}</b>${p.agent ? ` <span class="muted">探員 ${esc(p.agent)}</span>` : ''}
+            <span class="tag ok">${p.balance} 點</span>${p.held ? ` <span class="tag">保留 ${p.held}</span>` : ''}</div>
+          <div class="muted">${p.aliases.length ? '別名：' + esc(p.aliases.join('、')) + '・' : ''}${p.last ? '最後填寫 ' + esc(fmtDay(p.last)) : '沒有記錄'}</div></button>`).join('')
+          : '<div class="card muted">找不到。</div>';
+        box.querySelectorAll('[data-player]').forEach(b => b.onclick = () => go('#/player/' + encodeURIComponent(b.dataset.player)));
+      } catch (x) { if (x.message !== 'reauth' && mine === seq) document.getElementById('pList').textContent = message(x.code); }
+    };
+    document.getElementById('pq').oninput = () => { clearTimeout(timer); timer = setTimeout(load, 300); };
+    load();
+  }
+
+  const KIND_ZH = { record: '玩本記錄', referred: '被介紹', referrer: '介紹朋友', quest: '任務', like: '心得被讚', featured: '精選心得', bonus: '回歸禮',
+    redeem: '兌換', adjust: '補扣點' };
+  async function showPlayer(name, note = '') {
+    render(`<h2>${esc(name)}</h2><div class="card">讀取中…</div>`);
+    let p, cfg;
+    try { [p, cfg] = await Promise.all([api('/admin/players?name=' + encodeURIComponent(name)), api('/admin/record-settings')]); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>${esc(name)}</h2><div class="card error">${esc(message(e.code))}</div>
+      <div class="stack"><button class="secondary" onclick="location.hash='#/players'">回玩家列表</button>${homeBtn}</div>`); return; }
+    const rewards = cfg.rewards.filter(r => r.active);
+    const keys = {};
+    const key = k => keys[k] ??= crypto.randomUUID();
+    render(`<h2>${esc(p.name)}</h2>${liveNote(p.live)}
+      <div id="pMsg" class="card" hidden></div>
+      <div class="card stack friend-bar">
+        <div class="muted">${p.agent ? '探員 ' + esc(p.agent) + '・' : ''}${p.joined ? '加入 ' + esc(p.joined) + '・' : ''}${p.bound ? '已綁 LINE' : '沒有綁 LINE'}</div>
+        <div><span style="font-size:36px;font-weight:700;line-height:1.1">${p.balance}</span> 點
+          ${p.held ? `<span class="tag">申請中保留 ${p.held}</span>` : ''}</div>
+        <div class="muted">累積 ${p.earned}・已兌換 ${p.redeemed}</div>
+        <div>${p.gilded ? '<span class="tag ok">鍍金</span> ' : ''}${p.title ? `<span class="tag ok">${esc(p.title)}</span> ` : ''}${p.legend ? '<span class="tag ok">傳奇殿堂</span>' : ''}</div>
+        ${p.aliases.length ? `<div class="muted">別名：${esc(p.aliases.join('、'))}</div>` : ''}
+        ${p.note ? `<div class="muted">備註：${esc(p.note)}</div>` : ''}</div>
+
+      <div class="card stack"><b>補點／扣點</b>
+        <div class="row2"><input id="adjPts" type="number" min="1" max="1000" inputmode="numeric" placeholder="點數">
+          <input id="adjWhy" type="text" maxlength="100" placeholder="原因（玩家看得到）"></div>
+        <div class="chips"><button id="adjAdd">補點</button><button class="secondary" id="adjSub">扣點</button></div></div>
+
+      <div class="card stack"><b>直接兌換</b>
+        <div class="muted">沒綁 LINE 或到店口頭說的玩家用這裡，立即扣點；榮耀軌（鍍金、稱號、傳奇）同時生效。</div>
+        <select id="rdReward"><option value="">選擇獎勵</option>${rewards.map(r => `<option value="${esc(r.id)}" ${p.balance - p.held < r.cost ? 'disabled' : ''}>
+          ${esc(r.track ? r.track + '・' : '')}${esc(r.name)}（${r.cost} 點）</option>`).join('')}</select>
+        <input id="rdTitle" type="text" maxlength="20" placeholder="稱號（兌換稱號時填）">
+        <input id="rdNote" type="text" maxlength="200" placeholder="備註（選填）">
+        <button id="rdGo">兌換並扣點</button></div>
+
+      <div class="card stack"><b>榮耀軌</b>
+        <div class="muted">兌換核准時會自動設定；這裡用來更正。</div>
+        <label class="check"><input type="checkbox" id="gGild" ${p.gilded ? 'checked' : ''}> 榮譽牆名字鍍金</label>
+        <input id="gTitle" type="text" maxlength="20" value="${esc(p.title)}" placeholder="自訂稱號（空白＝沒有）">
+        <label class="check"><input type="checkbox" id="gLegend" ${p.legend ? 'checked' : ''}> 傳奇殿堂</label>
+        <button class="secondary" id="gSave">儲存榮耀軌</button></div>
+
+      <div class="card stack"><b>別名</b>
+        <div class="muted">玩家填表時用了別的寫法（例如加了表情符號），加成別名，之後的記錄就算到這位。</div>
+        ${p.aliases.length ? `<div class="chips wrap">${p.aliases.map(a => `<button class="chip" data-unalias="${esc(a)}">${esc(a)} ✕</button>`).join('')}</div>` : ''}
+        <div class="row2"><input id="aNew" type="text" maxlength="60" placeholder="新增別名"><button class="secondary" id="aAdd">加入別名</button></div></div>
+
+      <div class="card stack"><b>合併同一人</b>
+        <div class="muted">另一個名字其實也是這位玩家：那個名字的記錄、點數、兌換都移到「${esc(p.name)}」，那個名字變成別名。無法復原。</div>
+        <div class="row2"><input id="mFrom" type="text" maxlength="60" placeholder="另一個名字"><button class="danger" id="mGo">合併進來</button></div></div>
+
+      ${p.requests.length ? `<h3>兌換紀錄</h3>${p.requests.map(r => redemptionCard(r, false)).join('')}` : ''}
+
+      <h3>點數帳本（最近 ${p.ledger.length} 筆）</h3>
+      <div class="card">${p.ledger.length ? p.ledger.map(l => `<div class="ledger ${l.voided ? 'void' : ''}">
+        <div><div>${esc(l.detail || KIND_ZH[l.kind] || l.kind)}</div>
+          <div class="muted">${recordDate(l.date)}${l.script ? '・' + esc(l.script) : ''}${l.note ? '・' + esc(l.note) : ''}
+            ${l.voided ? `・已作廢${l.voidReason ? '：' + esc(/^hidden:/.test(l.voidReason) ? '記錄已隱藏' : l.voidReason) : ''}` : ''}</div>
+          ${l.voided ? '' : `<details><summary class="link">作廢這筆</summary><div class="row2" style="margin-top:6px">
+            <input type="text" maxlength="200" placeholder="作廢原因" data-vwhy="${esc(l.id)}"><button class="danger" data-void="${esc(l.id)}">確定作廢</button></div></details>`}</div>
+        <b>${l.points > 0 ? '+' : ''}${l.points}</b></div>`).join('') : '<div class="muted">沒有點數紀錄。</div>'}</div>
+
+      <h3>玩本記錄（最近 ${p.records.length} 筆）</h3>
+      ${p.records.length ? p.records.map(r => `<div class="card stack">
+        <div><b>${esc(r.script)}</b> <span class="muted">${recordDate(r.date)}</span>
+          ${r.hidden ? '<span class="tag">已隱藏</span>' : `<span class="tag ok">${r.points} 點</span>`}${r.name !== p.name ? ` <span class="muted">（填寫名：${esc(r.name)}）</span>` : ''}</div>
+        ${r.comment ? `<div class="muted" style="white-space:pre-wrap">${esc(r.comment)}</div>` : ''}
+        ${r.hidden ? `<button class="secondary" data-unhide="${esc(r.id)}">取消隱藏（補回點數）</button>`
+          : `<details><summary class="link">隱藏這筆（惡意或重複的記錄）</summary><div class="row2" style="margin-top:6px">
+            <input type="text" maxlength="200" placeholder="原因（只有店家看得到）" data-hwhy="${esc(r.id)}"><button class="danger" data-hide="${esc(r.id)}">隱藏並作廢點數</button></div></details>`}
+        </div>`).join('') : '<div class="card muted">沒有玩本記錄。</div>'}
+      <div class="stack"><button class="secondary" onclick="location.hash='#/players'">回玩家列表</button>${homeBtn}</div>`);
+    if (note) flash('pMsg', note);
+    const $ = id => document.getElementById(id);
+    // Each action reloads this page with a note at the top; on failure the button comes back with the reason.
+    const act = async (btn, path, body, done, name2 = p.name) => {
+      busy(btn, true);
+      try { const r = await api(path, { method: 'POST', body }); await showPlayer(name2, typeof done === 'function' ? done(r) : done); }
+      catch (x) { busy(btn, false); storeFail('pMsg', x); }
+    };
+    const adjust = sign => e => {
+      const n = Number($('adjPts').value), why = $('adjWhy').value.trim();
+      if (!Number.isInteger(n) || n < 1 || n > 1000) return flash('pMsg', '點數請填 1–1000 的整數。', true);
+      if (!why) return flash('pMsg', '請填原因。', true);
+      if (!confirm(`${sign > 0 ? '補' : '扣'} ${p.name} ${n} 點（${why}）？`)) return;
+      act(e.target, '/admin/players/adjust', { name: p.name, points: sign * n, reason: why, requestId: key('adjust') },
+        r => r.duplicate ? '這筆剛才已經記過了，沒有重複記。' : `已${sign > 0 ? '補' : '扣'} ${n} 點，餘額 ${r.balance}。`);
+    };
+    $('adjAdd').onclick = adjust(1);
+    $('adjSub').onclick = adjust(-1);
+    $('rdGo').onclick = e => {
+      const rw = rewards.find(r => r.id === $('rdReward').value);
+      if (!rw) return flash('pMsg', '請選擇獎勵。', true);
+      const title = $('rdTitle').value.trim();
+      if (/稱號/.test(rw.name) && !title) return flash('pMsg', '兌換稱號請填稱號。', true);
+      if (!confirm(`幫 ${p.name} 兌換「${rw.name}」，扣 ${rw.cost} 點？`)) return;
+      act(e.target, '/admin/players/redeem', { name: p.name, rewardId: rw.id, title, note: $('rdNote').value.trim(), requestId: key('redeem') },
+        `已兌換「${rw.name}」，扣 ${rw.cost} 點。`);
+    };
+    $('gSave').onclick = e => act(e.target, '/admin/players/glory',
+      { name: p.name, gilded: $('gGild').checked, title: $('gTitle').value.trim(), legend: $('gLegend').checked }, '已儲存榮耀軌。');
+    $('aAdd').onclick = e => {
+      const alias = $('aNew').value.trim();
+      if (!alias) return flash('pMsg', '請填別名。', true);
+      act(e.target, '/admin/players/alias', { name: p.name, alias }, `已加入別名「${alias}」。`);
+    };
+    document.querySelectorAll('[data-unalias]').forEach(b => b.onclick = () => {
+      if (!confirm(`移除別名「${b.dataset.unalias}」？之後用這個名字填的記錄會變成另一位玩家。`)) return;
+      act(b, '/admin/players/alias', { name: p.name, alias: b.dataset.unalias, remove: true }, `已移除別名「${b.dataset.unalias}」。`);
+    });
+    $('mGo').onclick = e => {
+      const from = $('mFrom').value.trim();
+      if (!from) return flash('pMsg', '請填要合併進來的名字。', true);
+      if (!confirm(`把「${from}」的所有記錄、點數、兌換合併到「${p.name}」？「${from}」會變成別名，無法復原。`)) return;
+      act(e.target, '/admin/players/merge', { from, into: p.name }, `已把「${from}」合併進來。`);
+    };
+    document.querySelectorAll('[data-void]').forEach(b => b.onclick = () => {
+      const why = document.querySelector(`[data-vwhy="${b.dataset.void}"]`).value.trim();
+      if (!why) return flash('pMsg', '請填作廢原因。', true);
+      act(b, `/admin/ledger/${b.dataset.void}/void`, { reason: why }, r => `已作廢，餘額 ${r.balance}。`);
+    });
+    document.querySelectorAll('[data-hide]').forEach(b => b.onclick = () => {
+      if (!confirm('隱藏這筆記錄？心得從榮譽牆與劇本頁消失、不算場次，這筆給的點數一併作廢。之後可以取消隱藏。')) return;
+      act(b, `/admin/reviews/${b.dataset.hide}/hide`, { hidden: true, reason: document.querySelector(`[data-hwhy="${b.dataset.hide}"]`).value.trim() },
+        r => `已隱藏，作廢 ${r.ledgerRows} 筆點數。`);
+    });
+    document.querySelectorAll('[data-unhide]').forEach(b => b.onclick = () =>
+      act(b, `/admin/reviews/${b.dataset.unhide}/hide`, { hidden: false }, r => `已取消隱藏，補回 ${r.ledgerRows} 筆點數。`));
+  }
+
+  // 心得：新的在前，30 筆一頁；可依劇本篩選。精選給作者「精選點數」一次；隱藏＝惡意記錄（點數一併作廢，可取消）。
+  async function showReviews(script = '', cursor = null, shown = []) {
+    if (!cursor) render(`<h2>心得管理</h2><div class="card">讀取中…</div>`);
+    let d;
+    try { d = await api(`/admin/reviews?script=${encodeURIComponent(script)}${cursor
+      ? `&before=${encodeURIComponent(cursor.submittedAt)}&beforeId=${encodeURIComponent(cursor.id)}` : ''}`); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>心得管理</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    const all = [...shown, ...d.reviews];
+    const item = r => `<div class="card stack" id="rv-${esc(r.id)}">
+      <div><b>${esc(r.name)}</b>${r.player !== r.name ? ` <span class="muted">（${esc(r.player)}）</span>` : ''}
+        ${r.featured ? '<span class="tag ok">精選</span>' : ''}${r.hidden ? ' <span class="tag">已隱藏</span>' : ''}</div>
+      <div class="muted">${esc(r.script)}・${recordDate(r.date)}${r.role ? '・' + esc(r.role) : ''}${r.rating ? '・' + '★'.repeat(Math.min(5, +r.rating || 0)) : ''}・${r.points} 點${r.likes ? `・${r.likes} 讚` : ''}${r.status === 'backfill' ? '・補登' : ''}</div>
+      ${r.comment ? `<div style="white-space:pre-wrap">${esc(r.comment)}</div>` : '<div class="muted">（沒有寫心得）</div>'}
+      ${r.hidden && r.hiddenReason ? `<div class="muted">隱藏原因：${esc(r.hiddenReason)}</div>` : ''}
+      <div class="chips">${r.hidden ? `<button class="secondary" data-unhide="${esc(r.id)}">取消隱藏</button>`
+        : `${r.comment ? `<button class="${r.featured ? 'secondary' : ''}" data-feature="${esc(r.id)}">${r.featured ? '取消精選' : '設為精選'}</button>` : ''}
+          <button class="danger" data-hide="${esc(r.id)}">隱藏</button>`}</div></div>`;
+    render(`<h2>心得管理</h2>${liveNote(d.live)}
+      <div class="card stack"><div class="row2"><input id="rvScript" type="text" value="${esc(script)}" placeholder="劇本名稱（選填）">
+        <button class="secondary" id="rvFind">篩選</button></div>
+        <div class="muted">精選：給作者精選點數（每則一次），心得在榮譽牆標成精選。隱藏：惡意或重複的記錄，從榮譽牆、劇本頁消失，點數一併作廢，可以取消。</div></div>
+      <div id="rvMsg" class="card" hidden></div>
+      ${all.length ? all.map(item).join('') : '<div class="card muted">沒有心得。</div>'}
+      ${d.reviews.length === 30 ? '<button class="secondary" id="more">看更早的</button>' : ''}${homeBtn}`);
+    const next = d.reviews.length ? { submittedAt: d.reviews.at(-1).submittedAt, id: d.reviews.at(-1).id } : cursor;
+    document.getElementById('more')?.addEventListener('click', () => showReviews(script, next, all));
+    document.getElementById('rvFind').onclick = () => showReviews(document.getElementById('rvScript').value.trim());
+    // Update the one card in place, so the store keeps its place in a long list.
+    const update = (id, patch, text) => {
+      const i = all.findIndex(x => x.id === id);
+      Object.assign(all[i], patch);
+      document.getElementById('rv-' + id).outerHTML = item(all[i]);
+      bind();
+      flash('rvMsg', text);
+    };
+    const bind = () => {
+      document.querySelectorAll('[data-feature]').forEach(b => b.onclick = async () => {
+        const r = all.find(x => x.id === b.dataset.feature), on = !r.featured;
+        busy(b, true);
+        try { await api(`/admin/reviews/${r.id}/feature`, { method: 'POST', body: { featured: on } });
+          update(r.id, { featured: on }, on ? `已把 ${r.name} 的心得設為精選。` : '已取消精選，精選點數已作廢。'); }
+        catch (x) { busy(b, false); storeFail('rvMsg', x); }
+      });
+      document.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
+        const r = all.find(x => x.id === b.dataset.hide);
+        if (!confirm(`隱藏 ${r.name} 在「${r.script}」的記錄？會從榮譽牆、劇本頁消失、不算場次，這筆的點數一併作廢。之後可以取消。`)) return;
+        busy(b, true);
+        try { const x = await api(`/admin/reviews/${r.id}/hide`, { method: 'POST', body: { hidden: true } });
+          update(r.id, { hidden: true }, `已隱藏，作廢 ${x.ledgerRows} 筆點數。`); }
+        catch (x) { busy(b, false); storeFail('rvMsg', x); }
+      });
+      document.querySelectorAll('[data-unhide]').forEach(b => b.onclick = async () => {
+        const r = all.find(x => x.id === b.dataset.unhide);
+        busy(b, true);
+        try { const x = await api(`/admin/reviews/${r.id}/hide`, { method: 'POST', body: { hidden: false } });
+          update(r.id, { hidden: false, hiddenReason: '' }, `已取消隱藏，補回 ${x.ledgerRows} 筆點數。`); }
+        catch (x) { busy(b, false); storeFail('rvMsg', x); }
+      });
+    };
+    bind();
+  }
+
+  // 點數規則、獎勵、任務：只影響之後的新點數（已發的點數固定不變）。
+  const SETTING_HINT = { 雙倍日: '平日、假日、週三、2026/10/20…，多個用逗號分開；空白＝沒有', 雙倍日文案: '榮譽牆上顯示的說明',
+    回歸禮資格日: '這天之前加入的老玩家，綁定 LINE 時發回歸禮', LINE上線日: '', 心得字數門檻: '心得超過幾個字才給心得點數',
+    每日上限筆數: '同一人同一天最多幾筆給點', 補登寬限天數: '遊玩日超過幾天才填算補登（不給點）' };
+  const QUEST_ZH = { 場次: '每月玩幾場', 心得: '每月寫幾則心得', 新本: '每月玩幾本沒玩過的', 揪團: '每月介紹幾位朋友' };
+  async function showRecordSettings(note = '') {
+    render(`<h2>點數規則・獎勵・任務</h2><div class="card">讀取中…</div>`);
+    let c;
+    try { c = await api('/admin/record-settings'); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>點數規則・獎勵・任務</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    const rewardRow = (r, i) => `<div class="card stack" data-reward="${i}">
+      <div class="row2"><input type="text" maxlength="20" value="${esc(r.track)}" placeholder="分類（如 特權）" data-f="track">
+        <input type="number" min="1" max="10000" value="${r.cost ?? ''}" placeholder="所需點數" data-f="cost"></div>
+      <input type="text" maxlength="60" value="${esc(r.name)}" placeholder="獎勵名稱（含「鍍金」「稱號」「傳奇」會自動生效）" data-f="name">
+      <input type="text" maxlength="200" value="${esc(r.note)}" placeholder="說明（選填）" data-f="note">
+      <label class="check"><input type="checkbox" data-f="active" ${r.active !== false ? 'checked' : ''}> 上架</label>
+      <button class="secondary" data-save-reward="${i}">${r.id ? '儲存' : '新增獎勵'}</button></div>`;
+    const rewards = [...c.rewards, { id: null, track: '', name: '', cost: null, note: '', active: true }];
+    const quests = ['場次', '心得', '新本', '揪團'].map(id => c.quests.find(q => q.id === id) ?? { id, label: '', goal: 0, points: 0, active: false });
+    render(`<h2>點數規則・獎勵・任務</h2>${liveNote(c.live)}
+      <p class="muted">改了只影響之後的新點數，已經發出的點數不會變。</p>
+      <div id="sMsg" class="card" hidden></div>
+      <h3>點數規則</h3><div class="card">${c.settings.map(x => `<div class="stack" style="padding:8px 0;border-top:1px solid var(--line)">
+        <div><b>${esc(x.key)}</b>${SETTING_HINT[x.key] ? `<div class="muted">${esc(SETTING_HINT[x.key])}</div>` : ''}</div>
+        <div class="row2"><input type="text" maxlength="200" value="${esc(x.value ?? '')}" data-setting="${esc(x.key)}">
+          <button class="secondary" data-save-setting="${esc(x.key)}">儲存</button></div></div>`).join('')}</div>
+      <h3>獎勵</h3>${rewards.map(rewardRow).join('')}
+      <h3>每月任務</h3>${quests.map(q => `<div class="card stack" data-quest="${esc(q.id)}">
+        <div><b>${esc(q.id)}</b> <span class="muted">${esc(QUEST_ZH[q.id])}</span></div>
+        <input type="text" maxlength="100" value="${esc(q.label)}" placeholder="說明（{目標} 會換成目標數字）" data-f="label">
+        <div class="row2"><input type="number" min="0" max="100" value="${q.goal}" placeholder="目標" data-f="goal">
+          <input type="number" min="0" max="1000" value="${q.points}" placeholder="完成給幾點" data-f="points"></div>
+        <label class="check"><input type="checkbox" data-f="active" ${q.active ? 'checked' : ''}> 啟用</label>
+        <button class="secondary" data-save-quest="${esc(q.id)}">儲存</button></div>`).join('')}
+      ${homeBtn}`);
+    if (note) flash('sMsg', note);
+    const save = async (btn, body, done) => {
+      busy(btn, true);
+      try { await api('/admin/record-settings', { method: 'POST', body }); await showRecordSettings(done); }
+      catch (x) { busy(btn, false); storeFail('sMsg', x); }
+    };
+    const field = (box, f) => box.querySelector(`[data-f="${f}"]`);
+    const int = v => v.trim() === '' ? NaN : Number(v);
+    document.querySelectorAll('[data-save-setting]').forEach(b => b.onclick = () => {
+      const k = b.dataset.saveSetting;
+      save(b, { type: 'setting', key: k, value: document.querySelector(`[data-setting="${k}"]`).value.trim() }, `已儲存「${k}」。`);
+    });
+    document.querySelectorAll('[data-save-reward]').forEach(b => b.onclick = () => {
+      const r = rewards[+b.dataset.saveReward], box = b.closest('[data-reward]');
+      save(b, { type: 'reward', id: r.id, track: field(box, 'track').value.trim(), name: field(box, 'name').value.trim(),
+        cost: int(field(box, 'cost').value), note: field(box, 'note').value.trim(), active: field(box, 'active').checked },
+        r.id ? '已儲存獎勵。' : '已新增獎勵。');
+    });
+    document.querySelectorAll('[data-save-quest]').forEach(b => b.onclick = () => {
+      const box = b.closest('[data-quest]');
+      save(b, { type: 'quest', id: b.dataset.saveQuest, label: field(box, 'label').value.trim(), goal: int(field(box, 'goal').value),
+        points: int(field(box, 'points').value), active: field(box, 'active').checked }, `已儲存任務「${b.dataset.saveQuest}」。`);
+    });
+  }
+
+  // 月報（取代試算表的「月報」分頁）：依遊玩日的月份；場次＝同劇本同一天。
+  async function showRecordsReport() {
+    render(`<h2>玩本月報</h2><div class="card">讀取中…</div>`);
+    let months;
+    try { ({ months } = await api('/admin/records/report')); }
+    catch (e) { if (e.message !== 'reauth') render(`<h2>玩本月報</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
+    render(`<h2>玩本月報</h2>
+      <p class="muted">依玩本記錄的遊玩日統計（隱藏的記錄不算）。場次＝同一本同一天；週六日算假日；新玩家＝第一次出現的月份；
+        回訪間隔＝同一人和上一場相隔的天數；點數依入帳日期（作廢的不算）。</p>
+      ${months.length ? months.map(m => `<div class="card stack"><div class="big">${esc(m.month)}</div>
+        <div>${m.sessions} 場・${m.responses} 份記錄${m.sessions ? `（每場 ${m.perSession} 份）` : ''}</div>
+        <div class="muted">平日 ${m.weekday}・假日 ${m.weekend}${m.weekdayPct != null ? `（平日 ${m.weekdayPct}%）` : ''}</div>
+        <div class="muted">玩家 ${m.active} 位・新玩家 ${m.newPlayers}・介紹 ${m.referrals}${m.avgGap != null ? `・平均 ${m.avgGap} 天回訪` : ''}</div>
+        <div class="muted">發出 ${m.earned} 點・兌換 ${m.redeemed} 點</div></div>`).join('') : '<div class="card muted">還沒有資料。</div>'}
+      ${homeBtn}`);
+  }
+
   // ---- Router -----------------------------------------------------------------------
   function route() {
     const h = location.hash;
@@ -1239,6 +1664,12 @@
     if (h === '#/bindings' && me.isAdmin) return showBindings();
     if (h === '#/surveys' && me.isAdmin) return showSurveys();
     if (h === '#/records' && me.isAdmin) return showRecords();
+    if (h === '#/redemptions' && me.isAdmin) return showRedemptions();
+    if (h === '#/players' && me.isAdmin) return showPlayers();
+    if (h === '#/reviews' && me.isAdmin) return showReviews();
+    if (h === '#/record-settings' && me.isAdmin) return showRecordSettings();
+    if (h === '#/report' && me.isAdmin) return showRecordsReport();
+    if ((m = /^#\/player\/(.+)$/.exec(h)) && me.isAdmin) return showPlayer(decodeURIComponent(m[1]));
     if ((m = /^#\/surveys\/(.+)$/.exec(h)) && me.isAdmin) return showSurveyScript(decodeURIComponent(m[1]));
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
@@ -1255,14 +1686,15 @@
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
       const entry = location.href;  // before the rewrites below: a login round trip must come back with ?game= etc.
       // Invite links arrive as ?invite=...; move the token into the hash and out of the address bar.
-      // Rich Menu, website and notification links: ?view=open|create|history|guide|veteran|card|bindings|surveys
-      // (bindings: store only); none = 首頁（劇本預約＋我的揪團）.
+      // Rich Menu, website and notification links: ?view=open|create|history|guide|veteran|card|bindings|surveys|…
+      // (bindings, surveys, records, admin, redemptions, players, reviews: store only); none = 首頁（劇本預約＋我的揪團）.
       // ?game=<scripts.js id> preselects a script in the create flow ("預約這本" on the website).
       const params = new URLSearchParams(location.search);
       const view = params.get('view');
       // Links from before 玩本心得 moved back to the website form land on the history page.
       if (params.get('review')) history.replaceState(null, '', location.pathname + '#/history');
-      if (['open', 'create', 'history', 'guide', 'veteran', 'card', 'bindings', 'survey', 'surveys', 'records'].includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
+      const views = ['open', 'create', 'history', 'guide', 'veteran', 'card', 'survey', 'bindings', 'surveys', 'records', 'admin', 'redemptions', 'players', 'reviews'];
+      if (views.includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
       const gameParam = params.get('game');
       if (view === 'create' && gameParam && /^[A-Za-z0-9_-]{1,64}$/.test(gameParam)) pendingGame = gameParam;
       const invite = new URLSearchParams(location.search).get('invite');

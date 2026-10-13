@@ -73,6 +73,10 @@ begin
   exception when others then if sqlerrm <> 'REDEMPTION_NOT_FOUND' then raise; end if; end;
   r := public.cancel_redemption(u1, (r->>'id')::uuid);
   if r->>'status' <> 'cancelled' or (r->>'held')::int <> 100 then raise exception 'cancel %', r; end if;
+  r := public.my_redemptions(u1);
+  if (r->>'held')::int <> 100 or jsonb_array_length(r->'requests') <> 2
+     or not exists(select 1 from jsonb_array_elements(r->'rewards') x where (x->>'id')::uuid = rw_title) then
+    raise exception 'my redemptions %', r; end if;
   r := public.admin_redemptions(adm);
   if jsonb_array_length(r->'pending') <> 1 or jsonb_array_length(r->'recent') <> 1 then raise exception 'store list %', r; end if;
 
