@@ -147,6 +147,8 @@ test('line-health tells the admin which OA can reach them', async () => {
     { headers: { Authorization: `Bearer ${session}` } }), { loginChannelId: '1', supabaseUrl: 'https://db.invalid', serviceKey: 'k',
     allowedOrigins: [], lineAccessToken: 'player-token', adminLineAccessToken: token,
     fetcher: async (url, opts = {}) => {
+      if (url === 'https://api.line.me/v2/bot/info') return opts.headers.Authorization === 'Bearer admin-token'
+        ? Response.json({ displayName: '店家通知', basicId: '@admin' }) : Response.json({ displayName: '海星', basicId: '@player' });
       if (url.startsWith('https://api.line.me/v2/bot/profile/')) {
         assert.ok(url.endsWith('/Uadmin'));
         return new Response('{}', { status: opts.headers.Authorization === 'Bearer admin-token' ? adminProfile : playerProfile });
@@ -156,8 +158,9 @@ test('line-health tells the admin which OA can reach them', async () => {
       if (name === 'user_line_identity') return Response.json({ line_user_id: 'Uadmin', oa_friend_status: 'active' });
       return Response.json(null);
     } }).then(r => r.json());
-  assert.deepEqual(await probe(200), { playerOa: 'ok', adminOa: 'ok' });
-  assert.deepEqual(await probe(404), { playerOa: 'ok', adminOa: 'unreachable' });
-  assert.deepEqual(await probe(401, 404), { playerOa: 'unreachable', adminOa: 'bad_token' });
-  assert.deepEqual(await probe(200, 200, null), { playerOa: 'ok', adminOa: 'not_configured' });
+  const player = { name: '海星', id: '@player' }, admin = { name: '店家通知', id: '@admin' };
+  assert.deepEqual(await probe(200), { playerOa: 'ok', adminOa: 'ok', playerOaInfo: player, adminOaInfo: admin });
+  assert.deepEqual(await probe(404), { playerOa: 'ok', adminOa: 'unreachable', playerOaInfo: player, adminOaInfo: admin });
+  assert.deepEqual(await probe(401, 404), { playerOa: 'unreachable', adminOa: 'bad_token', playerOaInfo: player, adminOaInfo: admin });
+  assert.deepEqual(await probe(200, 200, null), { playerOa: 'ok', adminOa: 'not_configured', playerOaInfo: player, adminOaInfo: null });
 });

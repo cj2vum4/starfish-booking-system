@@ -1663,8 +1663,19 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
         return r.ok ? 'ok' : r.status === 404 ? 'unreachable' : r.status === 401 ? 'bad_token' : 'error';
       } catch { return 'error'; }
     };
-    const [playerOa, adminOa] = await Promise.all([probe(settings.lineAccessToken), probe(settings.adminLineAccessToken)]);
-    return [200, { playerOa, adminOa }];
+    // Which OA each token belongs to (name and @ID), so the store can tell the two apart in LINE Official Account Manager.
+    const info = async (token?: string) => {
+      if (!token) return null;
+      try {
+        const r = await (settings.fetcher ?? fetch)('https://api.line.me/v2/bot/info',
+          { signal: AbortSignal.timeout(8000), headers: { Authorization: `Bearer ${token}` } });
+        const j = r.ok ? await r.json() : null;
+        return j?.basicId ? { name: String(j.displayName ?? ''), id: String(j.basicId) } : null;
+      } catch { return null; }
+    };
+    const [playerOa, adminOa, playerOaInfo, adminOaInfo] = await Promise.all([probe(settings.lineAccessToken),
+      probe(settings.adminLineAccessToken), info(settings.lineAccessToken), info(settings.adminLineAccessToken)]);
+    return [200, { playerOa, adminOa, playerOaInfo, adminOaInfo }];
   }
   if (req.method === 'POST' && path === '/admin/games/sync') {
     const { session } = await requireSession(req, settings);

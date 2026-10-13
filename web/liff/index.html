@@ -302,7 +302,9 @@
         bad_token: '⚠️ 管理員 OA 的 Channel access token 無效，請重新發行並更新 Supabase Secrets。在那之前改由玩家 OA 發送。',
         error: '暫時無法確認管理員 OA，請稍後再看。' }[h.adminOa];
       const player = h.playerOa === 'ok' ? '' : '<div class="error">玩家 OA 傳不到你：請確認你有加「海星劇本殺」好友。</div>';
-      document.getElementById('lineHealth').innerHTML = esc(admin) + player;
+      const oa = (label, x) => x ? `<div class="muted">${label}：${esc(x.name)}（${esc(x.id)}）</div>` : '';
+      document.getElementById('lineHealth').innerHTML = esc(admin) + player
+        + oa('管理員 OA', h.adminOaInfo) + oa('玩家 OA', h.playerOaInfo);
     }).catch(e => { if (e.message !== 'reauth') document.getElementById('lineHealth').textContent = message(e.code); });
   }
 
