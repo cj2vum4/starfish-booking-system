@@ -39,6 +39,10 @@
   `record_state` 的「整列更新」沒有 WHERE，被拒絕（21000「DELETE requires a WHERE clause」），資料庫沒有任何改變；
   切換、補匯入也會遇到。本機 PGlite 沒有 safeupdate 所以沒測到。0037 只在這 4 個函式加上 `where true`／`where id`；
   `tests/database.test.mjs` 新增檢查：migration 跑完後任何函式裡都不能有沒 WHERE 的 DELETE／UPDATE。
+- **10/13 匯入、對帳完成**：店家貼上 0037 後匯入成功（玩家 62、記錄 126、帳本 307 列、需要留意 2 項）。第一次對帳 62 位玩家的
+  累積／已兌換／餘額／場次／探員編號全部一致，只有 59 位「最後遊玩日」寫法不同（Apps Script 送 `String(date)`），逐筆確認都是同一天；
+  0038（Claude 以連接器套用）改成以日期比對後 **matched=true、0 差異**。沒有探員編號的 3 位（Celine、查查、語捷）只有帳本點數、沒有玩本記錄，
+  與 Apps Script 相同。尚未切換（等第 3 階段）。
 - **店家要做的事（依序）**：
   1. ~~SQL Editor 貼上角色問卷最後一段＋ `tests/role_survey.sql`~~（10/13 完成）。
   2. 管理員 OA：發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；Secrets 刪除 `GOOGLE_SHEET_ID`。
