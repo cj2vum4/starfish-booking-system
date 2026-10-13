@@ -113,6 +113,7 @@ begin
   begin perform public.admin_void_ledger(adm, rid, ''); raise exception 'void without reason';
   exception when others then if sqlerrm <> 'INVALID_REASON' then raise; end if; end;
   if (public.admin_void_ledger(adm, rid, '按錯')->>'balance')::int <> 180 then raise exception 'void refund'; end if;
+  if (select status from public.redemption_requests where ledger_id = rid) <> 'refunded' then raise exception 'refund not shown on the request'; end if;
   begin perform public.admin_void_ledger(adm, rid, '再一次'); raise exception 'voided twice';
   exception when others then if sqlerrm <> 'LEDGER_VOIDED' then raise; end if; end;
 
@@ -215,6 +216,83 @@ begin
   begin perform public.admin_redemptions(u1); raise exception 'player read requests';
   exception when others then if sqlerrm <> 'NOT_ADMIN' then raise; end if; end;
 end $$;
+
+-- Review findings: hidden records do not block the real player; LINE names match exactly; a merge does not pay a
+-- quest twice and keeps the old name's card; unhiding does not pay featured/likes twice.
+do $$
+declare
+  adm uuid := (select user_id from public.admin_users limit 1); u3 uuid; r jsonb; r1 uuid; r2 uuid; t text;
+  today text := to_char(now() at time zone 'Asia/Taipei', 'YYYY/FMMM/FMDD');
+  iid uuid;
+begin
+  -- Someone posts as "Amy" in three scripts; the store hides them. The real Amy then earns normally.
+  for t in select unnest(array['SA','SB','SC']) loop
+    r1 := (public.submit_play_record(jsonb_build_object('name','Amy','date',today,'script',t,'role','A','rating','5')))->>'id';
+    perform public.admin_hide_record(adm, r1, true, '冒名');
+  end loop;
+  if public._sf_balance(public._sf_find_player('Amy')) <> 0 then raise exception 'hidden points kept'; end if;
+  r := public.submit_play_record(jsonb_build_object('name','Amy','date',today,'script','SA','role','A','rating','5'));
+  if r->>'status' <> 'earn' or not (select first_play from public.play_records where id = (r->>'id')::uuid) then
+    raise exception 'hidden record blocked the real player %', r; end if;
+  for t in select unnest(array['SB','SC']) loop
+    if public.submit_play_record(jsonb_build_object('name','Amy','date',today,'script',t,'role','A','rating','5'))->>'status' <> 'earn' then
+      raise exception 'hidden records counted toward the daily cap'; end if;
+  end loop;
+
+  -- A LINE name that only loosely matches a player ("AmyChen" vs "Amy Chen") does not reach that player's points.
+  perform public.submit_play_record(jsonb_build_object('name','Amy Chen','date',today,'script','SA','role','A','rating','5'));
+  insert into public.users(line_user_id,display_name,oa_friend_status) values ('U00000000000000000000000000007d04','冒充','active') returning id into u3;
+  insert into public.line_record_accounts(user_id,record_name) values (u3,'AmyChen');
+  if public.my_redemptions(u3)->'player' <> 'null'::jsonb or public.record_card('AmyChen')->'card' <> 'null'::jsonb then
+    raise exception 'loose LINE name reached another player'; end if;
+  begin perform public.request_redemption(u3, (select id from public.record_rewards where active limit 1)); raise exception 'loose name redeemed';
+  exception when others then if sqlerrm <> 'BINDING_REQUIRED' then raise; end if; end;
+  insert into public.users(line_user_id,display_name,oa_friend_status) values ('U00000000000000000000000000007d05','陳小姐','active') returning id into u3;
+  insert into public.line_record_accounts(user_id,record_name) values (u3,'陳小姐');
+  begin perform public.admin_set_alias(adm, 'Amy Chen', '陳小姐'); raise exception 'alias handed a LINE account the points';
+  exception when others then if sqlerrm <> 'ALIAS_HAS_LINE' then raise; end if; end;
+
+  -- Merge: both names completed this month's 場次 quest → one stays; the old name's card shows the merged player.
+  perform public.admin_save_quest(adm, '場次', '本月 {目標} 場', 1, 7, true);
+  perform public.submit_play_record(jsonb_build_object('name','Q1','date',today,'script','SA','role','A','rating','5'));
+  perform public.submit_play_record(jsonb_build_object('name','Q2','date',today,'script','SB','role','A','rating','5'));
+  insert into public.line_record_accounts(user_id,record_name)
+    values ((select id from public.users where line_user_id='U00000000000000000000000000007d03'),'Q2');
+  perform public.admin_merge_players(adm, 'Q2', 'Q1');
+  if (select count(*) from public.point_ledger where player_id = public._sf_find_player('Q1') and kind='quest' and voided_at is null) <> 1 then
+    raise exception 'quest paid twice after a merge'; end if;
+  perform public.submit_play_record(jsonb_build_object('name','Q1','date',today,'script','SC','role','A','rating','5'));
+  if (select count(*) from public.point_ledger where player_id = public._sf_find_player('Q1') and kind='quest' and voided_at is null) <> 1 then
+    raise exception 'quest paid again after a merge'; end if;
+  if public.record_card('Q2')->'card'->>'name' <> 'Q1'
+     or public.my_redemptions((select id from public.users where line_user_id='U00000000000000000000000000007d03'))->>'player' <> 'Q1' then
+    raise exception 'old name lost its card after the merge'; end if;
+
+  -- A duplicate record of the same review: hide both, unhide one, re-feature and re-like, unhide the other.
+  -- Featured stays one payment and likes stay at the cap.
+  r1 := (public.submit_play_record(jsonb_build_object('name','Lin','date',today,'script','SA','role','A','rating','5',
+    'comment','這是一段超過十五個字的心得內容真的很好玩')))->>'id';
+  r2 := (public.submit_play_record(jsonb_build_object('name','Lin','date',today,'script','SA','role','A','rating','5',
+    'comment','重送一次的同一則心得內容也超過十五個字')))->>'id';
+  if (select status from public.play_records where id = r2) <> 'duplicate' then raise exception 'setup duplicate'; end if;
+  perform public.admin_feature_record(adm, r1, true);
+  for t in select unnest(array['1','2','3','4','5']) loop
+    perform public.submit_review_like('SA', today, 'Lin', ('00000000-0000-4000-8000-00000000a00'||t)::uuid); end loop;
+  select id into iid from public.review_interactions where script='SA' and date_text=today and author_norm=public._sf_name_norm('Lin');
+  perform public.admin_hide_record(adm, r2, true);
+  perform public.admin_hide_record(adm, r1, true);
+  perform public.admin_hide_record(adm, r2, false);
+  perform public.admin_feature_record(adm, r2, false);
+  perform public.admin_feature_record(adm, r2, true);
+  for t in select unnest(array['6','7','8','9','b']) loop
+    perform public.submit_review_like('SA', today, 'Lin', ('00000000-0000-4000-8000-00000000a00'||t)::uuid); end loop;
+  perform public.admin_hide_record(adm, r1, false);
+  if (select sum(points) from public.point_ledger where interaction_id=iid and kind='featured' and voided_at is null) <> 20
+     or (select sum(points) from public.point_ledger where interaction_id=iid and kind='like' and voided_at is null) <> 10 then
+    raise exception 'unhide paid twice: featured % likes %',
+      (select sum(points) from public.point_ledger where interaction_id=iid and kind='featured' and voided_at is null),
+      (select sum(points) from public.point_ledger where interaction_id=iid and kind='like' and voided_at is null); end if;
+end $$;
 reset role;
-select 'PASS: stage 3 store points (redemption held/approved/rejected/direct, glory, adjust, void, hide/unhide, featured, alias, merge, settings, rewards, quests, report, privileges)' as result;
+select 'PASS: stage 3 store points (redemption held/approved/rejected/direct, glory, adjust, void, hide/unhide, featured, alias, merge, settings, rewards, quests, report, privileges, review findings)' as result;
 rollback;

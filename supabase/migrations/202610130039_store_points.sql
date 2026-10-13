@@ -27,7 +27,7 @@ create table public.redemption_requests (
   track text not null default '' check (char_length(track) <= 20),
   cost integer not null check (cost > 0),
   title text not null default '' check (char_length(title) <= 20),  -- 自訂稱號：玩家填、店家核准前可改
-  status text not null default 'pending' check (status in ('pending','approved','rejected','cancelled')),
+  status text not null default 'pending' check (status in ('pending','approved','rejected','cancelled','refunded')),  -- refunded：店家作廢了扣點
   store_note text not null default '' check (char_length(store_note) <= 200),
   request_key text unique check (request_key is null or char_length(request_key) between 1 and 80),  -- 重送只記一次
   created_at timestamptz not null default now(),
@@ -76,10 +76,19 @@ begin
   return pid;
 end $$;
 
+-- LINE 帳號的名字 → 玩家：只認完全相同的玩家名或別名（合併後舊名字變成別名，照樣對得到）。
+-- 不用 _sf_find_player 的「去空白、不分大小寫」：切換前新玩家取名只擋完全相同的名字，
+-- 「AmyChen」取得到，鬆散比對就會拿到「Amy Chen」的點數。
+create function public._sf_exact_player(p_name text) returns uuid
+language sql stable set search_path='' as $$
+  select coalesce((select id from public.record_players where name = public._sf_js_trim(coalesce(p_name,'')) limit 1),
+    (select player_id from public.record_aliases where alias = public._sf_js_trim(coalesce(p_name,'')) limit 1))
+$$;
+
 -- 這個 LINE 使用者的玩本記錄名字：核准的老玩家綁定，或新玩家自己取的名字（會員卡同一套）。
 create function public._sf_line_player(p_actor uuid) returns uuid
 language sql stable set search_path='' as $$
-  select public._sf_find_player(coalesce(
+  select public._sf_exact_player(coalesce(
     (select record_name from public.player_bindings where user_id = p_actor and status = 'approved'),
     (select record_name from public.line_record_accounts where user_id = p_actor)))
 $$;
@@ -88,7 +97,8 @@ create function public._sf_redemption_row(r public.redemption_requests) returns 
 language sql stable set search_path='' as $$
   select jsonb_build_object('id',r.id,'player',p.name,'agent',coalesce(p.agent,''),'reward',r.reward_name,'track',r.track,
     'cost',r.cost,'title',r.title,'status',r.status,'store_note',r.store_note,'created_at',r.created_at,'decided_at',r.decided_at,
-    'from_line',r.user_id is not null,'balance',public._sf_balance(r.player_id),'held',public._sf_held(r.player_id))
+    'from_line',r.user_id is not null,'line_name',coalesce((select display_name from public.users u where u.id = r.user_id),''),
+    'balance',public._sf_balance(r.player_id),'held',public._sf_held(r.player_id))
   from public.record_players p where p.id = r.player_id
 $$;
 
@@ -157,7 +167,7 @@ begin
   return public._sf_redemption_row(r);
 end $$;
 
--- 核准或不通過（內部；呼叫前已鎖）。核准：餘額要夠（申請中的保留不算這一筆自己）→ 寫兌換帳本（負數）→ 榮耀軌生效；
+-- 核准或不通過（內部；呼叫前已鎖）。核准：餘額要夠這一筆（其他申請中的保留不擋店家，店家決定先核准哪一筆）→ 寫兌換帳本（負數）→ 榮耀軌生效；
 -- 名稱含「鍍金」→ 鍍金、含「稱號」→ 自訂稱號、含「傳奇」→ 傳奇殿堂（與試算表「獎勵」分頁的品項名稱對應）。
 create function public._sf_decide_redemption(p_actor uuid, p_id uuid, p_approve boolean, p_title text, p_note text)
 returns public.redemption_requests language plpgsql set search_path='' as $$
@@ -269,7 +279,7 @@ begin
     'duplicate',lid is null);
 end $$;
 
--- 作廢一筆點數（帳本只能填作廢欄位，不能改回）。兌換的那筆作廢＝退還點數。
+-- 作廢一筆點數（帳本只能填作廢欄位，不能改回）。兌換的那筆作廢＝退還點數，申請改成「已退點」（榮耀軌請店家另外更正）。
 create function public.admin_void_ledger(p_actor uuid, p_ledger_id uuid, p_reason text) returns jsonb
 language plpgsql set search_path='' as $$
 declare l public.point_ledger; why text := left(public._sf_js_trim(coalesce(p_reason,'')),200);
@@ -280,6 +290,9 @@ begin
   if not found then raise exception 'LEDGER_NOT_FOUND' using errcode='P0001'; end if;
   if l.voided_at is not null then raise exception 'LEDGER_VOIDED' using errcode='P0001'; end if;
   update public.point_ledger set voided_at=now(), voided_by=p_actor, void_reason=why where id = p_ledger_id;
+  if l.kind = 'redeem' then
+    update public.redemption_requests set status='refunded', store_note=left(why,200) where ledger_id = p_ledger_id;
+  end if;
   perform public._sf_audit(p_actor,'records.void','point_ledger',p_ledger_id,jsonb_build_object('points',l.points,'reason',why));
   return jsonb_build_object('balance',public._sf_balance(l.player_id));
 end $$;
@@ -292,7 +305,7 @@ end $$;
 -- （作廢原因記「hidden:<記錄>」）。取消隱藏：記錄回來，當初因隱藏而作廢的點數補回（新的一筆，帳本不改舊列）。
 create function public.admin_hide_record(p_actor uuid, p_record_id uuid, p_hide boolean, p_reason text default '')
 returns jsonb language plpgsql set search_path='' as $$
-declare pr public.play_records; iid uuid; tag text := 'hidden:'||p_record_id; l public.point_ledger; n integer := 0;
+declare pr public.play_records; iid uuid; tag text := 'hidden:'||p_record_id; l public.point_ledger; n integer := 0; pts integer;
 begin
   perform public._sf_store_write(p_actor);
   select * into pr from public.play_records where id = p_record_id for update;
@@ -314,10 +327,20 @@ begin
   else
     if not pr.hidden then raise exception 'RECORD_NOT_HIDDEN' using errcode='P0001'; end if;
     update public.play_records set hidden=false, hidden_at=null, hidden_by=null, hidden_reason='' where id = pr.id;
+    -- 心得的讚與精選在隱藏期間可能又發過（例如同一則心得另一筆重複記錄先取消隱藏、店家再按精選）：
+    -- 精選已經有有效的一筆就不補，讚補到上限為止。
     for l in select * from public.point_ledger where void_reason = tag order by created_at, id loop
+      pts := l.points;
+      if l.kind = 'featured' and exists(select 1 from public.point_ledger x where x.interaction_id = l.interaction_id
+          and x.kind = 'featured' and x.voided_at is null) then continue; end if;
+      if l.kind = 'like' then
+        pts := least(l.points, (public._sf_record_config()->>'讚點數上限')::int - coalesce((select sum(x.points)
+          from public.point_ledger x where x.interaction_id = l.interaction_id and x.kind = 'like' and x.voided_at is null),0));
+        if pts <= 0 then continue; end if;
+      end if;
       insert into public.point_ledger(player_id,kind,points,detail,script,date_text,earned_on,note,record_id,interaction_id,
           dedupe_key,source,created_by)
-        values (l.player_id,l.kind,l.points,l.detail,l.script,l.date_text,l.earned_on,left('取消隱藏，補回原本的點數'||
+        values (l.player_id,l.kind,pts,l.detail,l.script,l.date_text,l.earned_on,left('取消隱藏，補回原本的點數'||
             case when l.note <> '' then '・'||l.note else '' end,300),l.record_id,l.interaction_id,
           left('restore|'||l.id,300),'store',p_actor)
         on conflict (dedupe_key) do nothing;
@@ -416,8 +439,8 @@ begin
     'earned',(select coalesce(sum(points),0) from public.point_ledger where player_id=pid and voided_at is null and points >= 0),
     'redeemed',(select coalesce(-sum(points),0) from public.point_ledger where player_id=pid and voided_at is null and points < 0),
     'aliases',coalesce((select jsonb_agg(a.alias order by a.alias) from public.record_aliases a where a.player_id=pid),'[]'),
-    'bound',exists(select 1 from public.player_bindings b where b.status='approved' and public._sf_find_player(b.record_name)=pid)
-      or exists(select 1 from public.line_record_accounts a where public._sf_find_player(a.record_name)=pid),
+    'bound',exists(select 1 from public.player_bindings b where b.status='approved' and public._sf_exact_player(b.record_name)=pid)
+      or exists(select 1 from public.line_record_accounts a where public._sf_exact_player(a.record_name)=pid),
     'ledger',coalesce((select jsonb_agg(jsonb_build_object('id',l.id,'kind',l.kind,'points',l.points,'detail',l.detail,'script',l.script,
         'date',l.date_text,'note',l.note,'source',l.source,'created_at',l.created_at,'voided',l.voided_at is not null,'void_reason',l.void_reason)
         order by l.created_at desc, l.id) from (select * from public.point_ledger where player_id=pid order by created_at desc, id limit 200) l),'[]'),
@@ -455,6 +478,10 @@ begin
     if exists(select 1 from public.record_players where name_norm = an) then raise exception 'NAME_IS_PLAYER' using errcode='P0001'; end if;
     if exists(select 1 from public.record_aliases where alias_norm = an and player_id <> pid) then
       raise exception 'ALIAS_TAKEN' using errcode='P0001'; end if;
+    -- 已經有 LINE 帳號用這個名字（自己取的或綁定申請）：加成別名會讓那個 LINE 帳號拿到這位玩家的點數。
+    if exists(select 1 from public.line_record_accounts where public._sf_name_norm(record_name) = an)
+       or exists(select 1 from public.player_bindings where status <> 'rejected' and public._sf_name_norm(record_name) = an) then
+      raise exception 'ALIAS_HAS_LINE' using errcode='P0001'; end if;
     insert into public.record_aliases(alias_norm,alias,player_id) values (an,a,pid) on conflict (alias_norm) do nothing;
   end if;
   perform public._sf_audit(p_actor, case when p_remove then 'records.alias_remove' else 'records.alias_add' end,'record_player',pid,
@@ -483,6 +510,13 @@ begin
   delete from public.record_players where id = a;
   insert into public.record_aliases(alias_norm,alias,player_id) values (fa.name_norm, fa.name, b)
     on conflict (alias_norm) do update set alias=excluded.alias, player_id=excluded.player_id;
+  -- 兩人同一個月都達成同一個任務、或都領過回歸禮：留最早的一筆，其餘作廢（每人每月每個任務一次、回歸禮每人一次）。
+  update public.point_ledger set voided_at=now(), voided_by=p_actor, void_reason='合併同一人：重複的任務或回歸禮'
+    where id in (select id from (select id, row_number() over (
+        partition by case when kind='bonus' then 'bonus' else substring(dedupe_key from '^quest\|[^|]*\|(.*)$') end
+        order by created_at, id) n
+      from public.point_ledger where player_id = b and voided_at is null
+        and (kind='quest' and dedupe_key like 'quest|%' or kind='bonus' and dedupe_key like 'bonus|return|%')) d where n > 1);
   update public.record_players set gilded = gilded or fa.gilded, legend = legend or fa.legend,
     title = case when title = '' then fa.title else title end,
     joined_on = case when joined_on is null or (fa.joined_on is not null and fa.joined_on < joined_on) then fa.joined_on else joined_on end,
@@ -637,6 +671,175 @@ begin
       'earned',coalesce(p.earned,0),'redeemed',coalesce(p.redeemed,0)) order by a.m desc)
     from allm a left join months x on x.m = a.m left join pts p on p.m = a.m), '[]');
 end $$;
+
+-- ---------------------------------------------------------------------------------------------
+-- 隱藏的記錄不佔重複、每日上限、首玩、首探、新手好運與每月任務（否則有人冒名亂填、店家隱藏後，本人再填會被當成重複）；
+-- 合併同一人後，任務與回歸禮依「這位玩家名下」判斷是否發過（去重鍵裡的玩家編號可能是合併前的舊玩家）。
+-- 其餘與 0036 相同。
+-- ---------------------------------------------------------------------------------------------
+create or replace function public._sf_award_quests(p_player uuid, p_month date, p_kinds text[], p_source text) returns jsonb
+language plpgsql set search_path='' as $$
+declare q record; prog integer; out jsonb := '[]';
+  m1 date := (p_month + interval '1 month')::date; mk text := to_char(p_month, 'YYYY/MM');
+begin
+  for q in select * from public.record_quests where active and goal > 0 and points > 0 and id = any(p_kinds) order by sort, id loop
+    prog := case q.id
+      when '場次' then (select count(*) from public.play_records where player_id=p_player and status='earn' and not hidden and played_on>=p_month and played_on<m1)
+      when '心得' then (select count(*) from public.play_records where player_id=p_player and status='earn' and not hidden and long_comment and played_on>=p_month and played_on<m1)
+      when '新本' then (select count(*) from public.play_records where player_id=p_player and status='earn' and not hidden and first_play and played_on>=p_month and played_on<m1)
+      when '揪團' then (select count(*) from public.play_records where referrer_id=p_player and status='earn' and not hidden and played_on>=p_month and played_on<m1)
+    end;
+    -- 同一個月同一個任務只發一次：看這位玩家名下的任務列（含合併進來、去重鍵是舊玩家的那些）。
+    if prog >= q.goal and not exists(select 1 from public.point_ledger where player_id=p_player and kind='quest'
+        and dedupe_key like 'quest|%|'||to_char(p_month,'YYYY-MM')||'|'||q.id) then
+      insert into public.point_ledger(player_id,kind,points,detail,date_text,earned_on,note,dedupe_key,source)
+        values (p_player,'quest',q.points,left(replace(q.label,'{目標}',q.goal::text)||' +'||q.points,200),mk,p_month,
+          '每月任務達成（'||prog||'/'||q.goal||'）','quest|'||p_player||'|'||to_char(p_month,'YYYY-MM')||'|'||q.id,p_source)
+        on conflict (dedupe_key) do nothing;
+      if found then out := out || jsonb_build_array(jsonb_build_object('quest',q.id,'points',q.points)); end if;
+    end if;
+  end loop;
+  return out;
+end $$;
+
+create or replace function public._sf_add_play_record(p jsonb, p_source text, p_submitted_at timestamptz, p_legacy boolean default false)
+returns jsonb language plpgsql set search_path='' as $$
+declare
+  c jsonb := public._sf_record_config();
+  web boolean := p_source = 'web';
+  v_name text := public._sf_clean_text(p->>'name', case when web then 30 else 60 end);
+  v_raw_date text := public._sf_clean_text(p->>'date', case when web then 20 else 40 end);
+  v_script text := public._sf_clean_text(p->>'script', 100);
+  v_role text := public._sf_clean_text(p->>'role', case when web then 100 else 300 end);
+  v_rating text := public._sf_clean_text(p->>'rating', 10);
+  v_comment text := public._sf_clean_text(p->>'comment', case when web then 50 else 2000 end);
+  v_referrer text := public._sf_clean_text(p->>'referrer', case when web then 30 else 60 end);
+  v_played date := public._sf_parse_play_date(v_raw_date);
+  v_date text := public._sf_date_text(v_raw_date);
+  v_day date := (p_submitted_at at time zone 'Asia/Taipei')::date;  -- null：舊表單沒有時間戳記的列（永遠不算補登，同 Apps Script）
+  launch date := public._sf_parse_play_date(c->>'LINE上線日');
+  pid uuid; rid uuid := gen_random_uuid(); ref_id uuid;
+  v_status text; fp boolean := false; ever boolean := false; long_c boolean := false; dbl boolean := false;
+  pts integer := 0; parts text[] := '{}'; referred integer := 0; extra jsonb := '[]';
+begin
+  -- validate_：網站送出要有名字、日期、劇本、角色與 1–5 的評價；試算表的舊列只要有名字和劇本（與重算時相同）。
+  if v_name = '' or v_script = '' or public._sf_name_norm(v_name) = ''
+     or (web and (v_raw_date = '' or v_role = '' or v_rating !~ '^[1-5]$')) then
+    raise exception 'INVALID_RECORD' using errcode='P0001';
+  end if;
+  -- 新送出的記錄（網站、切換後補匯入的試算表列；不含重播舊資料）：劇本要在劇本目錄裡、遊玩日期要認得出來且不在未來。
+  -- Apps Script 時代靠店家人工審核；點數固定之後，亂填劇本名或未來日期就能無限拿首探、首玩與每日上限。
+  if not p_legacy and (v_played is null or v_played > v_day
+      or not exists(select 1 from public.games g
+                    where public._sf_name_norm(coalesce(g.review_key, g.title)) = public._sf_name_norm(v_script))) then
+    raise exception 'INVALID_RECORD' using errcode='P0001';
+  end if;
+  if v_date = '' then v_date := '—'; end if;  -- 舊表單偶有空白日期：照樣記錄（不會進任何月份）
+  pid := public._sf_ensure_player(v_name, v_played, p_source);
+
+  if launch is not null and v_played is not null and v_day is not null and v_day >= launch
+     and v_day - v_played > (c->>'補登寬限天數')::int then
+    v_status := 'backfill';  -- 只記錄不給點，也不佔首玩、首探、介紹、每日上限、任務
+  elsif exists(select 1 from public.play_records where player_id=pid and script=v_script and date_text=v_date
+                 and status in ('earn','daily_cap') and not hidden) then
+    v_status := 'duplicate';
+  elsif (select count(*) from public.play_records where player_id=pid and date_text=v_date
+           and status in ('earn','daily_cap') and not hidden) >= (c->>'每日上限筆數')::int then
+    v_status := 'daily_cap';
+  else
+    v_status := 'earn';
+    pts := (c->>'基本點數')::int; parts := parts || ('基本'||(c->>'基本點數'));
+    if public._sf_char_count(v_comment) >= (c->>'心得字數門檻')::int then
+      long_c := true; pts := pts + (c->>'心得點數')::int; parts := parts || ('心得'||(c->>'心得點數'));
+    end if;
+    if not exists(select 1 from public.play_records where player_id=pid and script=v_script and status='earn' and not hidden) then
+      fp := true; pts := pts + (c->>'首玩點數')::int; parts := parts || ('首玩'||(c->>'首玩點數'));
+    end if;
+    if not exists(select 1 from public.play_records where script=v_script and status='earn' and not hidden) then
+      pts := pts + (c->>'首探點數')::int; parts := parts || ('首探'||(c->>'首探點數'));
+    end if;
+    if not exists(select 1 from public.play_records where player_id=pid and status='earn' and not hidden) then
+      ever := true; pts := pts + (c->>'新手好運點數')::int; parts := parts || ('新手好運'||(c->>'新手好運點數'));
+    end if;
+    if public._sf_is_double_day(v_played, v_date, c->>'雙倍日') then
+      dbl := true; pts := pts * 2; parts := parts || '雙倍日 x2'::text;
+    end if;
+    -- 介紹人：只在被介紹者第一筆計點記錄結算一次，雙方都不加倍。
+    -- 新規則（店家定案）：介紹人必須是已有的玩家，亂填的只記錄不給點。舊資料照 Apps Script 當時的判斷。
+    if ever and v_referrer <> '' then
+      ref_id := public._sf_find_player(v_referrer);
+      if ref_id is null and p_legacy then  -- 舊規則：亂填的介紹人也拿點（點數總覽裡有這個名字，但沒有探員編號）
+        insert into public.record_players(name, source) values (left(v_referrer,60), p_source) returning id into ref_id;
+      end if;
+      if ref_id = pid then ref_id := null; end if;
+      if ref_id is not null then referred := (c->>'被介紹點數')::int; end if;
+    end if;
+  end if;
+
+  insert into public.play_records(id,submitted_at,name,player_id,script,date_text,played_on,role,rating,comment,referrer,referrer_id,
+      status,first_play,long_comment,points,detail,source,client_id,import_key)
+    values (rid,coalesce(p_submitted_at,'1970-01-01Z'),v_name,pid,v_script,v_date,v_played,v_role,
+      case when v_rating ~ '^[1-5]$' then v_rating::smallint end,v_comment,v_referrer,ref_id,v_status,fp,long_c,
+      pts+referred,array_to_string(parts,'＋'),p_source,
+      case when coalesce(p->>'client_id','') ~ '^[0-9a-fA-F-]{36}$' then (p->>'client_id')::uuid end,
+      nullif(p->>'import_key',''));
+
+  if v_status = 'earn' and not p_legacy then
+    insert into public.point_ledger(player_id,kind,points,detail,script,date_text,earned_on,note,record_id,dedupe_key,source)
+      values (pid,'record',pts,array_to_string(parts,'＋'),v_script,v_date,v_played,case when dbl then '雙倍點數日' else '' end,
+        rid,'rec|'||rid,p_source);
+    if ref_id is not null then
+      insert into public.point_ledger(player_id,kind,points,detail,script,date_text,earned_on,note,record_id,dedupe_key,source)
+        values (pid,'referred',referred,'被介紹'||referred,v_script,v_date,v_played,left('介紹人：'||v_referrer,300),rid,'ref|'||rid||'|referred',p_source),
+               (ref_id,'referrer',(c->>'介紹人點數')::int,'介紹新玩家'||(c->>'介紹人點數'),v_script,v_date,v_played,
+                left('介紹了：'||v_name,300),rid,'ref|'||rid||'|referrer',p_source);
+      extra := extra || jsonb_build_array(jsonb_build_object('detail','被介紹'||referred,'points',referred));
+    end if;
+    if v_played is not null then
+      extra := extra || public._sf_award_quests(pid, date_trunc('month', v_played)::date, array['場次','心得','新本'], p_source);
+      if ref_id is not null then
+        perform public._sf_award_quests(ref_id, date_trunc('month', v_played)::date, array['揪團'], p_source);
+      end if;
+    end if;
+  end if;
+
+  return jsonb_build_object('id',rid,'status',v_status,'player',(select name from public.record_players where id=pid),
+    'award',case when v_status='earn' then jsonb_build_object('points',pts,'detail',array_to_string(parts,'＋'),'script',v_script,
+      'extra',extra) end);
+end $$;
+
+create or replace function public.grant_record_return_bonus(p_user_id uuid, p_points integer) returns jsonb
+language plpgsql set search_path='' set lock_timeout='4s' as $$
+declare b public.player_bindings; pl public.record_players; c jsonb; cutoff date; st text;
+begin
+  if p_points is null or p_points not between 1 and 500 then raise exception 'INVALID_POINTS' using errcode='P0001'; end if;
+  if public._sf_records_lock() <> 'supabase' then raise exception 'RECORDS_NOT_LIVE' using errcode='P0001'; end if;
+  select * into b from public.player_bindings where user_id=p_user_id and status='approved' for update;
+  if not found then raise exception 'BINDING_NOT_FOUND' using errcode='P0001'; end if;
+  if b.bonus_status <> 'none' then return public._sf_binding_row(b); end if;
+  select * into pl from public.record_players where id = public._sf_exact_player(b.record_name);
+  if not found then raise exception 'NAME_NOT_FOUND' using errcode='P0001'; end if;
+  c := public._sf_record_config();
+  cutoff := public._sf_parse_play_date(c->>'回歸禮資格日');
+  if exists(select 1 from public.point_ledger where player_id=pl.id and kind='bonus' and dedupe_key like 'bonus|return|%') then st := 'already';
+  elsif cutoff is not null and (pl.joined_on is null or pl.joined_on >= cutoff) then st := 'ineligible';
+  else
+    insert into public.point_ledger(player_id,kind,points,detail,note,dedupe_key,source)
+      values (pl.id,'bonus',p_points,'老玩家回歸禮（LINE 綁定）','LINE 綁定','bonus|return|'||pl.id,'line');
+    st := 'granted';
+  end if;
+  return public.mark_binding_bonus(p_user_id, st);
+end $$;
+
+-- 會員卡：與兌換用同一套名字對應（完全相同的玩家名或別名），合併後用舊名字綁定的 LINE 也看得到合併後的卡。
+create or replace function public.record_card(p_name text) returns jsonb
+language sql stable set search_path='' as $$
+  select case when (select source from public.record_state) = 'supabase' then jsonb_build_object(
+    'card', (select x from jsonb_array_elements(public._sf_records_summary()) x
+      where x->>'name' = (select name from public.record_players where id = public._sf_exact_player(p_name))),
+    'rewards', coalesce((select jsonb_agg(jsonb_build_object('track',track,'name',name,'cost',cost,'note',note) order by sort, name)
+       from public.record_rewards where active),'[]')) end
+$$;
 
 -- ---------------------------------------------------------------------------------------------
 -- 隱藏的記錄：不在公開心得、不算場次與最後遊玩日、不能按讚（0036 的三個函式加上 not hidden）

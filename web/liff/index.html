@@ -146,7 +146,8 @@
     LEDGER_VOIDED: '這筆點數已經作廢了。', LEDGER_NOT_FOUND: '找不到這筆點數。',
     RECORD_HIDDEN: '這筆記錄已經隱藏了。', RECORD_NOT_HIDDEN: '這筆記錄沒有隱藏。', RECORD_NOT_FOUND: '找不到這筆記錄（隱藏的記錄不能精選）。',
     NO_COMMENT: '這筆記錄沒有寫心得，不能精選。', ALIAS_TAKEN: '這個別名已經屬於另一位玩家。', ALIAS_NOT_FOUND: '找不到這個別名。',
-    NAME_IS_PLAYER: '這個名字本身就是一位玩家，同一人請改用「合併」。', SAME_PLAYER: '不能合併到自己。',
+    NAME_IS_PLAYER: '這個名字本身就是一位玩家，同一人請改用「合併」。',
+    ALIAS_HAS_LINE: '有 LINE 帳號正在用這個名字，不能當別名（會讓那個帳號拿到這位玩家的點數）。是同一人的話，請玩家用「我是老玩家」綁定。', SAME_PLAYER: '不能合併到自己。',
     INVALID_SETTING: '設定值不正確：點數類是 0–1000 的整數，日期要像 2026/10/13。', INVALID_REWARD: '獎勵要有名稱，點數 1–10000。',
     INVALID_QUEST: '任務目標要 0–100、點數 0–1000。',
     ADMIN_OA_NOT_CONFIGURED: '還沒設定管理員 OA 的 Channel access token（Supabase Secrets 的 LINE_ADMIN_CHANNEL_ACCESS_TOKEN）。',
@@ -517,7 +518,7 @@
     });
   }
 
-  const REDEEM_ZH = { pending: '申請中', approved: '已兌換', rejected: '未通過', cancelled: '已取消' };
+  const REDEEM_ZH = { pending: '申請中', approved: '已兌換', rejected: '未通過', cancelled: '已取消', refunded: '已退點' };
   // A message box at the top of the page (after a re-render, which scrolls to the top).
   function flash(id, text, bad = false) {
     const m = document.getElementById(id);
@@ -1318,7 +1319,7 @@
       <div><b>${esc(r.player)}</b>${r.agent ? ` <span class="muted">探員 ${esc(r.agent)}</span>` : ''}
         <span class="tag ${r.status === 'approved' ? 'ok' : ''}">${esc(REDEEM_ZH[r.status] || r.status)}</span></div>
       <div>${esc(r.reward)}・${r.cost} 點</div>
-      <div class="muted">${r.fromLine ? 'LINE 申請' : '店家直接兌換'}・${esc(fmtRange(r.createdAt))}
+      <div class="muted">${r.fromLine ? `LINE 申請（${esc(r.lineName || 'LINE 玩家')}）` : '店家直接兌換'}・${esc(fmtRange(r.createdAt))}
         ${r.status === 'pending' ? `・餘額 ${r.balance}（申請中共保留 ${r.held}）` : r.decidedAt ? '・處理 ' + esc(fmtRange(r.decidedAt)) : ''}</div>
       ${r.title && !(actions && title) ? `<div>稱號：${esc(r.title)}</div>` : ''}
       ${r.storeNote ? `<div class="muted">備註：${esc(r.storeNote)}</div>` : ''}
@@ -1438,7 +1439,7 @@
         <div><div>${esc(l.detail || KIND_ZH[l.kind] || l.kind)}</div>
           <div class="muted">${recordDate(l.date)}${l.script ? '・' + esc(l.script) : ''}${l.note ? '・' + esc(l.note) : ''}
             ${l.voided ? `・已作廢${l.voidReason ? '：' + esc(/^hidden:/.test(l.voidReason) ? '記錄已隱藏' : l.voidReason) : ''}` : ''}</div>
-          ${l.voided ? '' : `<details><summary class="link">作廢這筆</summary><div class="row2" style="margin-top:6px">
+          ${l.voided ? '' : `<details><summary class="link">${l.kind === 'redeem' ? '作廢這筆（退還點數）' : '作廢這筆'}</summary><div class="row2" style="margin-top:6px">
             <input type="text" maxlength="200" placeholder="作廢原因" data-vwhy="${esc(l.id)}"><button class="danger" data-void="${esc(l.id)}">確定作廢</button></div></details>`}</div>
         <b>${l.points > 0 ? '+' : ''}${l.points}</b></div>`).join('') : '<div class="muted">沒有點數紀錄。</div>'}</div>
 
