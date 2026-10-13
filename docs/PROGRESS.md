@@ -35,6 +35,10 @@
 - **2026-10-13 店家在 SQL Editor 貼上** 0035 最後一段、`tests/role_survey.sql`、0036、`tests/play_records.sql`，兩個測試都 PASS。
   Claude 查證：`record_state.source='gas'`、沒有匯入資料、測試資料全數回滾、內部函式只授權 service_role、10 張表都開 RLS；
   以 pg_net 實測 api：心得清單與送出回 503 `live:false`（網站照舊走 Apps Script）、點數總覽 200（Apps Script 副本）。
+- **10/13 第一次匯入失敗（已修，0037）**：Supabase 經 PostgREST 呼叫時載入 safeupdate，0036 匯入函式裡「整表刪除」與
+  `record_state` 的「整列更新」沒有 WHERE，被拒絕（21000「DELETE requires a WHERE clause」），資料庫沒有任何改變；
+  切換、補匯入也會遇到。本機 PGlite 沒有 safeupdate 所以沒測到。0037 只在這 4 個函式加上 `where true`／`where id`；
+  `tests/database.test.mjs` 新增檢查：migration 跑完後任何函式裡都不能有沒 WHERE 的 DELETE／UPDATE。
 - **店家要做的事（依序）**：
   1. ~~SQL Editor 貼上角色問卷最後一段＋ `tests/role_survey.sql`~~（10/13 完成）。
   2. 管理員 OA：發行 Channel access token，自己貼到 Supabase Secrets 的 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`；Secrets 刪除 `GOOGLE_SHEET_ID`。

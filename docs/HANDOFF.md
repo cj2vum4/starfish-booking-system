@@ -145,6 +145,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 - 0001–0033 在 **Supabase Dashboard SQL Editor 手動套用**；0034、0035 於 2026-10-12 由 Claude 透過 Supabase 連接器（MCP `execute_sql`）套用，
   0035 含 `delete` 的最後一段與 0036 由店家 2026-10-13 在 SQL Editor 貼上（測試 PASS）。CLI 的 migration history 是空的：
   若改用 `supabase db push`，必須先 `supabase migration repair --status applied <每個版本>`，否則會重跑 CREATE 而失敗。
+- **DELETE／UPDATE 一定要有 WHERE**（整表也要寫 `where true`）：Supabase 的 API 連線載入 safeupdate，沒有 WHERE 會被拒絕（21000），
+  本機 PGlite 不會；`tests/database.test.mjs` 會掃所有函式。
 - **新資料表要明確授權**：`grant select,insert,update,delete on public.<table> to service_role;`
   （Supabase 新表不再預設授權 service_role；`tests/database.test.mjs` 已模擬這個行為，漏了會在本機測試失敗。）
 - 新表一律 `enable row level security` 並 `revoke all … from public,anon,authenticated`；RPC 只 `grant execute … to service_role`。
