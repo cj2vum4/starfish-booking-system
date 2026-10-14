@@ -102,3 +102,18 @@ test('the store OA menu: six cells to the store pages, built with the store OA t
   const noToken = backend({ adminToken: '' });
   assert.equal((await (await call(noToken.settings, '/admin/richmenu/store', { method: 'POST' })).json()).error, 'ADMIN_OA_NOT_CONFIGURED');
 });
+
+test('my game history carries the play records under the member card name; none while the function is not there', async () => {
+  const rec = { id, script: 'SA', title: 'st A', game_id: null, image_url: null, date: '2025/5/3', played_on: '2025-05-03', role: '偵探' };
+  let b = backend({ isAdmin: false, answer: name => name === 'list_my_history' ? Response.json([])
+    : name === 'list_my_records' ? Response.json([rec]) : undefined });
+  let res = await call(b.settings, '/me/history');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { history: [], records: [{ id, script: 'SA', title: 'st A', gameId: null, imageUrl: null,
+    date: '2025/5/3', playedOn: '2025-05-03', role: '偵探' }] });
+  assert.deepEqual(args(b, 'list_my_records'), [{ p_actor: userId }]);
+  b = backend({ isAdmin: false, answer: name => name === 'list_my_history' ? Response.json([])
+    : name === 'list_my_records' ? Response.json({ code: 'PGRST202', message: 'not found' }, { status: 404 }) : undefined });
+  res = await call(b.settings, '/me/history');
+  assert.deepEqual(await res.json(), { history: [], records: [] });
+});

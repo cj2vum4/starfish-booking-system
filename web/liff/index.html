@@ -311,15 +311,22 @@
   // ---- 我的遊戲紀錄 ---------------------------------------------------------------------
   async function showHistory() {
     render(`<h2>我的遊戲紀錄</h2><div class="card">讀取中…</div>`);
-    let history;
-    try { ({ history } = await api('/me/history')); }
+    let history, records;
+    try { ({ history, records = [] } = await api('/me/history')); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>我的遊戲紀錄</h2><div class="card error">${esc(message(e.code))}</div>
       <button class="secondary" onclick="location.hash='#/'">回首頁</button>`); return; }
-    render(`<h2>我的遊戲紀錄</h2><p class="muted">在海星玩過 ${history.length} 場。</p>
-      ${history.length ? history.map(h => `<div class="card game-card" style="cursor:default">
-        ${h.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(h.imageUrl)}">` : '<div class="poster none">海星</div>'}
-        <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div></div></div>`).join('')
-        : '<div class="card muted">還沒有紀錄。玩完第一場後，店家記錄出席就會出現在這裡。</div>'}
+    // Attended sessions and website play records (after the cutover), newest first; a record without a readable date goes last.
+    const poster = x => x.imageUrl ? `<img class="poster" loading="lazy" alt="" src="${esc(x.imageUrl)}">` : '<div class="poster none">海星</div>';
+    const ymd = d => d ? d.split('-').map(Number).join('/') : '';
+    const items = [
+      ...history.map(h => ({ at: Date.parse(h.playedAt), html: `${poster(h)}
+        <div><b>${esc(h.title)}</b><div class="muted">${esc(fmtDay(h.playedAt))}・${esc(h.venue)}・DM ${esc(h.dmName)}</div></div>` })),
+      ...records.map(r => ({ at: r.playedOn ? Date.parse(r.playedOn + 'T12:00:00+08:00') : -8.64e15, html: `${poster(r)}
+        <div><b>${esc(r.title)}</b><div class="muted">${esc(ymd(r.playedOn) || r.date)}${r.role ? `・${esc(r.role)}` : ''}・玩本記錄</div></div>` })),
+    ].sort((a, b) => b.at - a.at);
+    render(`<h2>我的遊戲紀錄</h2><p class="muted">在海星玩過 ${items.length} 場。</p>
+      ${items.length ? items.map(x => `<div class="card game-card" style="cursor:default">${x.html}</div>`).join('')
+        : '<div class="card muted">還沒有紀錄。玩完第一場後，店家記錄出席或你填了玩本記錄，就會出現在這裡。</div>'}
       <div class="card stack"><b>填玩本記錄拿點數</b>
         <div class="muted">心得、角色與點數記在海星網站的玩本記錄，每次請用同一個名字填寫。</div>
         <button data-site="新增玩本記錄.html">填寫玩本記錄</button>

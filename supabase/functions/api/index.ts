@@ -1238,7 +1238,10 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
   }
   if (req.method === 'GET' && path === '/me/history') {
     const { session } = await requireSession(req, settings);
-    return [200, { history: camel(await rpc(settings, 'list_my_history', { p_actor: session.user_id })) }];
+    // Attended sessions, plus (after the cutover) the website play records under the member card's name.
+    const [history, records] = await Promise.all([rpc(settings, 'list_my_history', { p_actor: session.user_id }),
+      unlessMissing(rpc(settings, 'list_my_records', { p_actor: session.user_id }))]);
+    return [200, { history: camel(history), records: camel(records ?? []) }];
   }
 
   // ---- 老玩家綁定 and 會員卡 ----
