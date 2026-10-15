@@ -19,6 +19,10 @@
 - **api** `GET /me/history` 多回 `records`（0040 還沒套用時回空陣列）。
 - **LINE 畫面**：出席場次和玩本記錄依日期混排，玩本記錄顯示年月日、角色與「玩本記錄」字樣；場數兩者合計。
 - 部署順序不拘：LIFF 讀不到 `records` 當作沒有、api 找不到函式回空陣列。全部上線後玩家才看得到。
+- **上線（10/15）**：0040 由 Claude 以連接器套用，`tests/history_records.sql` 在正式資料庫 PASS 並確認全部回滾（仍是 supabase、無測試資料）；
+  api v49＝`387626e` 的入口檔（index.ts SHA-256 b6dfe046… 與 GitHub 一致；和 v48 `b3ba0f0` 只差 `/me/history`）。
+  pg_net 實測 `/public/records`、`/public/play-records` 200，`/me/history` 未登入 401。8 位已綁定的老玩家都列得出玩本記錄（1–3 筆）。
+- 店家定案：沒預約、也沒填玩後問卷的場次不記；玩家要加進紀錄就是填玩後問卷，點數照常給（不另做店家補記）。
 
 ## 移除 GAS：第 3 階段（店家點數管理）程式完成（2026-10-13）
 
