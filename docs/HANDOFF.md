@@ -201,6 +201,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 ### 圖文選單
 - 圖片：`python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png [new member store]` → `richmenu-new.jpg`、`richmenu-member.jpg`、
   `richmenu-store.jpg`（2500×1686；只重做指定的幾組，Linux 用文泉驛正黑）。
+- 加好友 QR：`python scripts/line_qr_image.py docs/assets <starfishlarp>/pwa/icon-512.png` → `line-oa-qr-poster.png`、`line-oa-qr-square.png`
+  （海星主視覺；有裝 zxing-cpp 會自動驗證能掃）。
 - 店家 OA 選單：格子在 `storeRichMenuDefinition()`；店家在 LIFF 店家後台按「設定店家 OA 選單」（`POST /admin/richmenu/store`，用 `LINE_ADMIN_CHANNEL_ACCESS_TOKEN`）。
 - 格子順序與連結在 `richMenuDefinition()`；改完先 push（等 Pages 上線），再 `POST /hooks/richmenu-setup`（帶 `X-Sync-Secret`）。會建立兩組選單、設新玩家為預設、連結老玩家、刪除舊版。
 

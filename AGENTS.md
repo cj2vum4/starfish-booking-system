@@ -21,4 +21,5 @@
 npm test                      # 全部測試（含 PGlite 本機資料庫）
 node --test tests/xxx.test.mjs
 python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png
+python scripts/line_qr_image.py docs/assets <starfishlarp>/pwa/icon-512.png
 ```
