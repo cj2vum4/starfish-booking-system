@@ -187,8 +187,11 @@ begin
     raise exception 'backfill %', r; end if;
   if not (public.submit_play_record(jsonb_build_object('name','新人三','date',today,'script','Z','role','A','rating','4'))->'award'->>'detail') like '%首探%' then
     raise exception 'a backfilled record took 首探'; end if;
-  -- An unknown referrer earns nothing (new rule), and neither does a self-referral.
-  perform public.submit_play_record(jsonb_build_object('name','新人二','date',today,'script','Y','role','A','rating','4','referrer','不存在'));
+  -- An unknown referrer is sent back (0042: pick from the list), and a self-referral earns nothing.
+  begin
+    perform public.submit_play_record(jsonb_build_object('name','新人二','date',today,'script','Y','role','A','rating','4','referrer','不存在'));
+    raise exception 'unknown referrer accepted';
+  exception when others then if sqlerrm <> 'REFERRER_NOT_FOUND' then raise; end if; end;
   perform public.submit_play_record(jsonb_build_object('name','自己','date',today,'script','Y','role','A','rating','4','referrer',' 自 己'));
   if exists(select 1 from public.point_ledger where kind in ('referred','referrer') and player_id in
       (select id from public.record_players where name in ('新人二','自己','不存在'))) or exists(select 1 from public.record_players where name='不存在') then
