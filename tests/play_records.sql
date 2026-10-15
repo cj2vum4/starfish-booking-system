@@ -152,15 +152,15 @@ begin
   exception when others then if sqlerrm <> 'LEDGER_APPEND_ONLY' then raise; end if; end;
 
   -- ---- website submissions, fixed at submit time ----
-  -- New player 阿華 today: 基本10, short comment, 首玩5 首探10 (script Y is new), 新手好運20; referred by 小美.
+  -- New player 阿華 today: 基本10, short comment, 首探10 (script Y is new), 新手好運20 instead of 首玩 (0041); referred by 小美.
   r := public.submit_play_record(jsonb_build_object('name',' 阿華 ','date',today,'script','Y','role','A','rating','5','comment','短','referrer','小美'),
     '00000000-0000-4000-8000-000000000001');
-  if r->>'status' <> 'earn' or (r->'award'->>'points')::int <> 45 or r->'award'->>'detail' <> '基本10＋首玩5＋首探10＋新手好運20' then
+  if r->>'status' <> 'earn' or (r->'award'->>'points')::int <> 40 or r->'award'->>'detail' <> '基本10＋首探10＋新手好運20' then
     raise exception 'new player award %', r; end if;
   select id into pid from public.record_players where name='阿華';
   if (select agent from public.record_players where id=pid) <> '#004' then raise exception 'agent number'; end if;  -- #003 is 老手 (replayed)
   -- Referral by an existing player: both +10, not doubled; 小美 completes 揪團 for this month (+30, once).
-  if (select sum(points) from public.point_ledger where player_id=pid) <> 55
+  if (select sum(points) from public.point_ledger where player_id=pid) <> 50
      or (select count(*) from public.point_ledger l join public.record_players p on p.id=l.player_id where p.name='小美' and l.kind in ('referrer','quest')) <> 2 then
     raise exception 'referral'; end if;
   -- The same submission resent: recognised, nothing added.
@@ -193,11 +193,11 @@ begin
   if exists(select 1 from public.point_ledger where kind in ('referred','referrer') and player_id in
       (select id from public.record_players where name in ('新人二','自己','不存在'))) or exists(select 1 from public.record_players where name='不存在') then
     raise exception 'unknown or self referrer'; end if;
-  -- Double day: changing the setting only affects new points.
+  -- Double day: changing the setting only affects new points; only the base points double (0041): 10x2＋首探10＋新手好運20.
   insert into public.record_settings(key,value) values ('雙倍日',today) on conflict (key) do update set value=excluded.value;
   r := public.submit_play_record(jsonb_build_object('name','雙倍君','date',today,'script','W','role','A','rating','4'));
-  if (r->'award'->>'points')::int <> 90 or r->'award'->>'detail' not like '%雙倍日 x2' then raise exception 'double day %', r; end if;
-  if (select points from public.point_ledger where kind='record' and player_id=pid order by created_at limit 1) <> 45 then raise exception 'old points changed'; end if;
+  if (r->'award'->>'points')::int <> 50 or r->'award'->>'detail' not like '%雙倍日 基本x2' then raise exception 'double day %', r; end if;
+  if (select points from public.point_ledger where kind='record' and player_id=pid order by created_at limit 1) <> 40 then raise exception 'old points changed'; end if;
   -- Validation like validate_.
   foreach t in array array['{"name":"","date":"2026/10/3","script":"Y","role":"A","rating":"5"}','{"name":"A","date":"2026/10/3","script":"Y","role":"A","rating":"6"}',
       '{"name":"A","date":"","script":"Y","role":"A","rating":"5"}','{"name":"A","date":"2026/10/3","script":"Y","role":"","rating":"5"}'] loop

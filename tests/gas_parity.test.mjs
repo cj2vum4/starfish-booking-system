@@ -30,6 +30,30 @@ async function freshDb() {
 }
 const json = async (db, sql, params) => (await db.query(sql, params)).rows[0]?.v;
 
+// 2026-10-15 the store changed two rules for new submissions (0041); the Apps Script keeps the old ones:
+// a double day doubles only the base points, and a player's first record gets 新手好運 instead of (not on top of) 首玩.
+// So the expectations are the Apps Script's, with each of its record rows rescored under the new rules.
+const RULE_LABELS = { '第一次玩這個劇本': '第一次玩這個劇本（生涯第一筆改給新手好運）',
+  '生涯第一筆記錄（新手好運）': '生涯第一筆記錄（新手好運，取代首玩）' };
+const newRules = (rules) => rules.map((r) => ({ ...r, label: RULE_LABELS[r.label] ?? r.label,
+  ...(r.note === '當天所有點數加倍' ? { note: '當天基本點數加倍' } : {}) }));
+function newRuleDelta(ledger) {
+  const [head, ...rows] = ledger;
+  const col = (name) => head.indexOf(name);
+  const delta = new Map();
+  for (const row of rows) {
+    const detail = String(row[col('明細')] ?? '');
+    if (row[col('類型')] !== 'earn' || row[col('狀態')] !== '有效' || !detail.startsWith('基本')) continue;
+    const part = (name) => Number(detail.match(new RegExp(`${name}(\\d+)`))?.[1] ?? 0);
+    const dbl = detail.includes('雙倍日 x2');
+    const rescored = part('基本') * (dbl ? 2 : 1) + part('心得') + part('首探') + part('新手好運')
+      + (part('新手好運') ? 0 : part('首玩'));
+    const who = norm(row[col('歸戶名')] || row[col('玩家名')]);
+    delta.set(who, (delta.get(who) ?? 0) + rescored - Number(row[col('點數')]));
+  }
+  return delta;
+}
+
 cases.forEach((c, i) => test(`${c.kind} case ${i + 1}: ${c.sheet['表單回應 1'].length - 1} rows, double day "${c.doubleDay}"`, async () => {
   const { db, adm } = await freshDb();
   const sheet = await playRecordsFromSheet(c.sheet, '表單回應 1', 'Asia/Taipei');
@@ -51,7 +75,7 @@ cases.forEach((c, i) => test(`${c.kind} case ${i + 1}: ${c.sheet['表單回應 1
     assert.deepEqual(payload.quests, c.expected.quests, 'quests');
     assert.deepEqual(payload.rewards.map((r) => [r.track, r.name, r.cost, r.note]), c.expected.rewards.map((r) => [r.track, r.name, r.cost, r.note]));
     assert.deepEqual(payload.rules.map((r) => JSON.stringify(r, Object.keys(r).sort())).sort(),
-      c.expected.rules.map((r) => JSON.stringify(r, Object.keys(r).sort())).sort(), 'rules');
+      newRules(c.expected.rules).map((r) => JSON.stringify(r, Object.keys(r).sort())).sort(), 'rules');
     assert.equal(payload.doubleDayNote, c.expected.doubleDayNote);
     // The switch only opens once the copy matches the Apps Script's last summary.
     await db.query(`insert into public.play_record_snapshot(id,payload) values (1,$1)`, [{ ok: true, summary: c.expected.summary }]);
@@ -79,10 +103,13 @@ cases.forEach((c, i) => test(`${c.kind} case ${i + 1}: ${c.sheet['表單回應 1
     const summary = await json(db, 'select public._sf_records_summary() v');
     const mine = new Map(summary.map((s) => [norm(s.name), s]));
     assert.equal(mine.size, c.expected.summary.length, 'same number of players');
+    const delta = newRuleDelta(c.sheet['點數帳本']);
     for (const want of c.expected.summary) {
       const got = mine.get(norm(want.name));
       assert.ok(got, `player ${want.name}`);
-      for (const f of ['earned', 'balance', 'plays', 'last']) assert.equal(got[f], want[f], `${want.name} ${f}`);
+      const d = delta.get(norm(want.name)) ?? 0;
+      for (const f of ['plays', 'last']) assert.equal(got[f], want[f], `${want.name} ${f}`);
+      for (const f of ['earned', 'balance']) assert.equal(got[f], want[f] + d, `${want.name} ${f}`);
     }
   }
   await db.close();

@@ -24,7 +24,7 @@ begin
   update public.record_quests set active = false where true;
   insert into public.record_settings(key,value)
     select k, v from (values ('基本點數','10'),('心得點數','5'),('心得字數門檻','15'),('首玩點數','5'),('首探點數','10'),
-      ('新手好運點數','20'),('介紹人點數','10'),('被介紹點數','10'),('每日上限筆數','3'),('讚點數','2'),('讚點數上限','10'),
+      ('新手好運點數','25'),('介紹人點數','10'),('被介紹點數','10'),('每日上限筆數','3'),('讚點數','2'),('讚點數上限','10'),
       ('精選點數','20'),('雙倍日',''),('補登寬限天數','7')) t(k,v)
     on conflict (key) do update set value = excluded.value;
   insert into public.record_rewards(sort,track,name,cost,note) values (1,'保底','折抵 50 元',50,'') returning id into rw_50;
@@ -40,7 +40,7 @@ begin
   if (public.my_redemptions(u1)->>'live')::boolean then raise exception 'redemption live before cutover'; end if;
 
   update public.record_state set source='supabase', went_live_at=now() where id;
-  -- 小美: SA 10+5+5+10+20 = 50, SB 10+5+5+10 = 30 → 80. 阿華: SC 10+5+10+20 = 45 (no comment points).
+  -- 新手好運 25 replaces 首玩 on a first record (0041). 小美: SA 10+5+10+25 = 50, SB 10+5+5+10 = 30 → 80. 阿華: SC 10+10+25 = 45 (no comment points).
   rec_a := (public.submit_play_record(jsonb_build_object('name','小美','date',today,'script','SA','role','A','rating','5',
     'comment','這是一段超過十五個字的心得內容真的很好玩')))->>'id';
   rec_b := (public.submit_play_record(jsonb_build_object('name','小美','date',today,'script','SB','role','A','rating','5',
