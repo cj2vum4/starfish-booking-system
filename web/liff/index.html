@@ -54,6 +54,13 @@
   .group-row { display:block; width:100%; text-align:left; background:var(--card); color:var(--fg); border:1px solid var(--line);
     font-weight:400; }
   .big { font-size:20px; font-weight:700; }
+  .pick { display:flex; align-items:center; gap:8px; font-size:14px; color:var(--muted); }
+  .pick input { width:20px; height:20px; margin:0; }
+  .pick-bar { position:fixed; left:0; right:0; bottom:0; padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+    background:var(--bg); border-top:1px solid var(--line); }
+  .pick-bar button { max-width:448px; margin:0 auto; }
+  .fit { font-size:13px; padding:2px 8px; border-radius:999px; background:var(--soft); white-space:nowrap; }
+  .fit.no { background:var(--chip); color:var(--warn); }
   .friend-bar { border-color:var(--accent); background:var(--soft); }
   .game-card { display:flex; gap:12px; align-items:flex-start; text-align:left; background:var(--card); color:var(--fg);
     border:1px solid var(--line); font-weight:400; padding:10px; }
@@ -573,6 +580,10 @@
   // Answers are sensitive (gender, relationships, who a player likes): this page is store-only.
   const SURVEY_NAME = /稱呼|名字|名稱|暱稱|姓名/, SURVEY_DATE = /日期/, SURVEY_GENDER = /性別/;
   const surveyField = (r, re) => (r.fields.find(f => re.test(f.label)) || {}).value || '';
+  const fmtPlayDate = d => fmtDay(`${d}T12:00:00+08:00`);
+  // 勾選來配對的回覆（換頁、看更早的回覆都保留），以劇本分開。
+  const surveyPicks = new Map();
+  const picksOf = script => { if (!surveyPicks.has(script)) surveyPicks.set(script, new Set()); return surveyPicks.get(script); };
   async function showSurveys() {
     render(`<h2>角色問卷回覆</h2><div class="card">讀取中…</div>`);
     let scripts;
@@ -618,9 +629,11 @@
   // cursor = the last answer already shown ({submittedAt, id}); older answers are added below the shown ones.
   async function showSurveyScript(script, cursor = null, shown = []) {
     if (!cursor) render(`<h2>${esc(script)}</h2><div class="card">讀取中…</div>`);
-    let responses;
-    try { ({ responses } = await api(`/admin/role-surveys/responses?script=${encodeURIComponent(script)}${cursor
-      ? `&before=${encodeURIComponent(cursor.submittedAt)}&beforeId=${encodeURIComponent(cursor.id)}` : ''}`)); }
+    let responses, sessions = null;
+    try { [{ responses }, sessions] = await Promise.all([api(`/admin/role-surveys/responses?script=${encodeURIComponent(script)}${cursor
+      ? `&before=${encodeURIComponent(cursor.submittedAt)}&beforeId=${encodeURIComponent(cursor.id)}` : ''}`),
+      // 場次與配對是後來加的：讀不到（例如 api 還沒更新）就照舊只列回覆。
+      api(`/admin/role-surveys/sessions?script=${encodeURIComponent(script)}`).catch(e => { if (e.message === 'reauth') throw e; return null; })]); }
     catch (e) { if (e.message !== 'reauth') render(`<h2>${esc(script)}</h2><div class="card error">${esc(message(e.code))}</div>${homeBtn}`); return; }
     const all = [...shown, ...responses];
     const card = r => `<div class="card stack" id="r-${esc(r.id)}">
@@ -634,13 +647,40 @@
         <input type="text" maxlength="100" placeholder="分配的角色" value="${esc(r.assignedRole)}" data-role="${esc(r.id)}">
         <textarea maxlength="1000" placeholder="備註（只有店家看得到）" data-note="${esc(r.id)}">${esc(r.storeNote)}</textarea>
         <div class="chips"><button data-save="${esc(r.id)}">儲存</button><button class="secondary" data-del="${esc(r.id)}">刪除這份</button></div>
-        <div class="muted" data-saved="${esc(r.id)}"></div></div>`;
+        <div class="muted" data-saved="${esc(r.id)}"></div>
+        ${sessions ? `<label class="pick"><input type="checkbox" data-pick="${esc(r.id)}" ${picks.has(r.id) ? 'checked' : ''}>勾選來配對（沒填日期、或要自己挑哪幾份時用）</label>` : ''}</div>`;
+    const picks = picksOf(script);
+    const sessionRow = x => `<button class="card group-row" data-session="${esc(x.playDate)}">
+        <div><b>${esc(fmtPlayDate(x.playDate))}</b>
+          ${sessions.players && x.total >= sessions.players ? `<span class="tag ok">已收齊 ${x.total} 份</span>` : `<span class="tag">${x.total}${sessions.players ? '/' + sessions.players : ''} 份</span>`}
+          ${x.unassigned ? `<span class="tag">${x.unassigned} 份未分配</span>` : ''}</div>
+        <div class="muted">${sessions.rule ? '點開看配對建議' : '點開看這場的回覆'}</div></button>`;
     render(`<h2>${esc(script)}</h2>
+      ${sessions ? `<h3>場次（依玩家填的遊玩日期）</h3>
+        ${sessions.sessions.length ? sessions.sessions.map(sessionRow).join('') : '<div class="card muted">還沒有填遊玩日期的回覆。沒填日期的可以在下面勾選後配對。</div>'}
+        ${sessions.rule ? '' : '<p class="muted">這本還沒有配對規則，只能看回覆；要自動配對，請把 DM 本的角色分配表交給維護者加進系統。</p>'}
+        <h3>全部回覆</h3>` : ''}
       <p class="muted">新的在前。填好分配的角色按「儲存」；回覆是垃圾或玩家要求刪除個資時按「刪除這份」。</p>
       ${all.length ? all.map(card).join('') : '<div class="card muted">這本還沒有回覆。</div>'}
+      ${sessions ? '<div style="height:72px"></div><div class="pick-bar" id="pickBar" hidden><button id="pickGo"></button></div>' : ''}
       ${responses.length === 30 ? '<button class="secondary" id="more">看更早的回覆</button>' : ''}
       <div class="stack"><button class="secondary" id="back">回問卷列表</button>${homeBtn}</div>`);
     document.getElementById('back').onclick = () => go('#/surveys');
+    document.querySelectorAll('[data-session]').forEach(b => b.onclick = () =>
+      go(`#/match/${encodeURIComponent(script)}/${b.dataset.session}`));
+    const paintPicks = () => {
+      const bar = document.getElementById('pickBar');
+      if (!bar) return;
+      bar.hidden = !picks.size;
+      document.getElementById('pickGo').textContent = `${sessions?.rule ? '配對' : '一起看'}勾選的 ${picks.size} 份`;
+    };
+    document.querySelectorAll('[data-pick]').forEach(c => c.onchange = () => {
+      if (c.checked && picks.size >= 30) { c.checked = false; alert('一次最多勾 30 份。'); return; }
+      c.checked ? picks.add(c.dataset.pick) : picks.delete(c.dataset.pick);
+      paintPicks();
+    });
+    document.getElementById('pickGo')?.addEventListener('click', () => go(`#/match/${encodeURIComponent(script)}/${[...picks].join(',')}`));
+    paintPicks();
     const next = responses.length ? { submittedAt: responses.at(-1).submittedAt, id: responses.at(-1).id } : cursor;
     document.getElementById('more')?.addEventListener('click', () => {
       // Keep what the store typed but has not saved yet.
@@ -671,6 +711,82 @@
         document.getElementById('r-' + btn.dataset.del)?.remove();
       } catch (x) { if (x.message !== 'reauth') { busy(btn, false); alert(message(x.code)); } }
     });
+  }
+
+  // ---- 配對建議（店家）: one session's answers (a play date, or the ones the store ticked) matched to roles ----
+  async function showMatch(script, sel) {
+    const title = `${script}・${sel.date ? fmtPlayDate(sel.date) : `勾選的 ${sel.ids.length} 份`}`;
+    const back = `<button class="secondary" id="mBack">回《${esc(script)}》的回覆</button>`;
+    render(`<h2>${esc(title)}</h2><div class="card">配對中…</div>`);
+    let responses, match;
+    try { ({ responses, match } = await api('/admin/role-surveys/match', { method: 'POST', body: { script, ...sel } })); }
+    catch (e) { if (e.message !== 'reauth') { render(`<h2>${esc(title)}</h2><div class="card error">${esc(message(e.code))}</div><div class="stack">${back}${homeBtn}</div>`);
+      document.getElementById('mBack').onclick = () => go('#/surveys/' + encodeURIComponent(script)); } return; }
+    const byId = new Map(responses.map(r => [r.id, r]));
+    const nameOf = r => surveyField(r, SURVEY_NAME) || '（沒填名字）';
+    if (!match) {
+      render(`<h2>${esc(title)}</h2>
+        <p class="muted">${responses.length ? '這本還沒有配對規則，以下是這幾份的重點；要自動配對，請把 DM 本的角色分配表交給維護者加進系統。' : '找不到回覆，可能已經刪除。'}</p>
+        ${responses.map(r => `<div class="card"><b>${esc(nameOf(r))}</b> ${r.assignedRole ? `<span class="tag ok">${esc(r.assignedRole)}</span>` : '<span class="tag">未分配</span>'}
+          <div class="muted">${esc(surveyField(r, SURVEY_GENDER))}</div></div>`).join('')}
+        <div class="stack">${back}${homeBtn}</div>`);
+      document.getElementById('mBack').onclick = () => go('#/surveys/' + encodeURIComponent(script));
+      return;
+    }
+    const roleOptions = chosen => `<option value="">（不分配）</option>` + match.roles.map(r =>
+      `<option value="${esc(r.name)}" ${r.name === chosen ? 'selected' : ''}>${esc(r.name)}（${esc(r.gender)}）</option>`).join('');
+    const row = a => {
+      const r = byId.get(a.id) || { fields: [], assignedRole: '' };
+      return `<div class="card stack">
+        <div><b>${esc(a.name || '（沒填名字）')}</b> <span class="tag">${esc(a.gender || '沒填性別')}</span>
+          ${r.assignedRole ? `<span class="tag ok">目前：${esc(r.assignedRole)}</span>` : ''}</div>
+        <select data-assign="${esc(a.id)}">${roleOptions(a.role)}</select>
+        ${a.role ? `<div class="chips wrap">${a.checks.map(c => `<span class="fit${c.ok ? '' : ' no'}">${c.ok ? '✓' : '✗'} ${esc(c.key)}：${esc(c.answer || '沒填')}${c.ok ? '' : `（角色是${esc(c.want.join('／'))}）`}</span>`).join('')}</div>`
+          : '<div class="error">沒分到角色（回覆比角色多，可能有人填了兩次）</div>'}
+        ${a.genderNote ? `<div class="${a.genderNote.startsWith('性別不合') ? 'error' : 'muted'}">⚠ ${esc(a.genderNote)}</div>` : ''}
+        ${a.alternatives.length ? `<div class="muted">也完全適合：${esc(a.alternatives.join('、'))}</div>` : ''}
+        ${[a.partner && `另一半：${a.partner}`, a.experience && `玩過：${a.experience}`].filter(Boolean).length
+          ? `<div class="muted">${esc([a.partner && `另一半：${a.partner}`, a.experience && `玩過：${a.experience}`].filter(Boolean).join('・'))}</div>` : ''}
+      </div>`;
+    };
+    const fits = match.assignments.filter(a => a.role && a.checks.every(c => c.ok) && !a.genderNote.startsWith('性別不合')).length;
+    render(`<h2>${esc(title)}</h2>
+      <div class="card stack"><b>建議分配：${fits}/${match.assignments.length} 人每題都符合</b>
+        <div class="muted">依每位玩家的性別與問卷答案，算出整場最合適的分配（同性別優先，可接受反串的才會反串）。
+          可以直接改下拉選單，再按最下面的「套用」，會寫進每份的「分配的角色」。</div>
+        ${match.unusedRoles.length ? `<div class="muted">還沒人玩的角色：${esc(match.unusedRoles.join('、'))}${sel.date ? '（這場還沒收齊）' : ''}</div>` : ''}</div>
+      ${match.assignments.map(row).join('')}
+      <details class="card"><summary class="link">角色分配表</summary>
+        ${match.roles.map(r => `<div style="margin-top:8px"><b>${esc(r.name)}</b>（${esc(r.gender)}）${r.note ? `<span class="muted">${esc(r.note)}</span>` : ''}
+          <div class="muted">${match.traits.map(k => `${esc(k)}：${esc((r.prefs[k] || []).join('／'))}`).join('・')}</div></div>`).join('')}
+      </details>
+      <div id="mErr" class="error" hidden></div>
+      <div class="stack"><button id="mApply">套用這個分配</button>${back}${homeBtn}</div>`);
+    document.getElementById('mBack').onclick = () => go('#/surveys/' + encodeURIComponent(script));
+    const selects = [...document.querySelectorAll('[data-assign]')];
+    const err = document.getElementById('mErr'), apply = document.getElementById('mApply');
+    const check = () => {
+      const picked = selects.map(x => x.value).filter(Boolean);
+      const dup = picked.filter((v, i) => picked.indexOf(v) !== i);
+      err.hidden = !dup.length;
+      err.textContent = dup.length ? `「${[...new Set(dup)].join('、')}」分給了兩個人，請改掉一個。` : '';
+      apply.disabled = dup.length > 0;
+    };
+    selects.forEach(x => x.onchange = check);
+    check();
+    apply.onclick = async () => {
+      const assignments = selects.map(x => ({ id: x.dataset.assign, role: x.value }));
+      const changed = assignments.filter(a => (byId.get(a.id)?.assignedRole || '') && byId.get(a.id).assignedRole !== a.role);
+      if (changed.length && !confirm(`有 ${changed.length} 份原本已經分配了別的角色，要改成這次的分配嗎？`)) return;
+      busy(apply, true); err.hidden = true;
+      try {
+        await api('/admin/role-surveys/assign', { method: 'POST', body: { assignments } });
+        if (sel.ids) picksOf(script).clear();
+        busy(apply, false);
+        apply.textContent = '已套用 ✓'; apply.disabled = true;
+        assignments.forEach(a => { const r = byId.get(a.id); if (r) r.assignedRole = a.role; });
+      } catch (x) { if (x.message === 'reauth') return; busy(apply, false); err.textContent = message(x.code); err.hidden = false; }
+    };
   }
 
   // ---- 缺人場次: public groups that still have open seats ---------------------------------
@@ -1681,6 +1797,8 @@
     if (h === '#/report' && me.isAdmin) return showRecordsReport();
     if ((m = /^#\/player\/(.+)$/.exec(h)) && me.isAdmin) return showPlayer(decodeURIComponent(m[1]));
     if ((m = /^#\/surveys\/(.+)$/.exec(h)) && me.isAdmin) return showSurveyScript(decodeURIComponent(m[1]));
+    if ((m = /^#\/match\/([^/]+)\/(\d{4}-\d{2}-\d{2}|[0-9a-f-]{36}(?:,[0-9a-f-]{36})*)$/.exec(h)) && me.isAdmin)
+      return showMatch(decodeURIComponent(m[1]), /^\d{4}-/.test(m[2]) ? { date: m[2] } : { ids: m[2].split(',') });
     if ((m = /^#\/group\/([0-9a-f-]{36})$/.exec(h))) return showGroup(m[1]);
     if ((m = /^#\/invite\/([A-Za-z0-9_-]{43})$/.exec(h))) return showInvite(m[1]);
     return showHome();
@@ -1705,6 +1823,10 @@
       if (params.get('review')) history.replaceState(null, '', location.pathname + '#/history');
       const views = ['open', 'create', 'history', 'guide', 'veteran', 'card', 'survey', 'bindings', 'surveys', 'records', 'admin', 'redemptions', 'players', 'reviews'];
       if (views.includes(view)) history.replaceState(null, '', location.pathname + '#/' + view);
+      // 角色問卷收齊的通知：?view=surveys&script=<劇本>&date=<遊玩日期> 直接打開那一場的配對建議。
+      const surveyScript = view === 'surveys' ? params.get('script') : null, surveyDate = params.get('date');
+      if (surveyScript && surveyScript.length <= 100) history.replaceState(null, '', location.pathname + (surveyDate && /^\d{4}-\d{2}-\d{2}$/.test(surveyDate)
+        ? `#/match/${encodeURIComponent(surveyScript)}/${surveyDate}` : `#/surveys/${encodeURIComponent(surveyScript)}`));
       const gameParam = params.get('game');
       if (view === 'create' && gameParam && /^[A-Za-z0-9_-]{1,64}$/.test(gameParam)) pendingGame = gameParam;
       const invite = new URLSearchParams(location.search).get('invite');

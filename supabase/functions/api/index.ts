@@ -530,6 +530,11 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
       return `【兌換完成】已為你兌換「${p.reward}」，扣 ${p.cost} 點，目前餘額 ${p.balance} 點。${p.title ? `\n你的稱號「${p.title}」已掛上榮譽牆。` : ''}\n到店時出示會員卡即可。\n會員卡：https://liff.line.me/${liffId}?view=card`;
     case 'redemption_rejected':
       return `【兌換未通過】「${p.reward}」的兌換申請沒有通過${p.note ? `：${p.note}` : ''}。點數沒有扣，有問題請直接在聊天室留言。\n會員卡：https://liff.line.me/${liffId}?view=card`;
+    case 'role_survey_complete': {
+      const day = taipeiFormat({ month: 'numeric', day: 'numeric', weekday: 'short' }).format(new Date(`${p.play_date}T12:00:00+08:00`));
+      const rule = ROLE_MATCH_RULES[p.script] ? '看配對建議' : '看回覆';
+      return `【角色問卷收齊】《${p.script}》${day}場次的問卷收到 ${p.count} 份了（${p.players} 人本）\n${rule}：https://liff.line.me/${liffId}?view=surveys&script=${encodeURIComponent(p.script)}&date=${p.play_date}`;
+    }
     case 'binding_rejected':
       return `【綁定未通過】店家沒有通過「${p.record_name}」的綁定。名字選錯的話可以重新申請，有問題請直接在聊天室留言。\n重新申請：https://liff.line.me/${liffId}?view=veteran`;
     default:
@@ -540,7 +545,7 @@ export function notificationText(p: Record<string, any>, liffId = DEFAULT_LIFF_I
 // Store-facing notifications go out from the store's own OA (a second LINE OA with its own free message
 // quota) when LINE_ADMIN_CHANNEL_ACCESS_TOKEN is set. If that OA cannot reach the admin (not its friend yet,
 // or its channel sits under another provider, where LINE user IDs differ), the players' OA sends it instead.
-export const ADMIN_NOTIFICATION_KINDS = new Set(['group_created', 'group_full', 'binding_requested', 'redemption_requested']);
+export const ADMIN_NOTIFICATION_KINDS = new Set(['group_created', 'group_full', 'binding_requested', 'redemption_requested', 'role_survey_complete']);
 function pushText(settings: Settings, token: string, to: string, text: string, retryKey: string) {
   return (settings.fetcher ?? fetch)('https://api.line.me/v2/bot/message/push', {
     method: 'POST', signal: AbortSignal.timeout(8000),
@@ -826,6 +831,98 @@ export async function surveyRowsFromSheet(tab: string, shown: unknown[][], seria
   return { rows, skipped };
 }
 const UUID_ANY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ---- 角色問卷配對：同一場次的回覆依劇本的角色分配表，算出整場最合適的分配 ------------------------
+// 規則以 reviewKey（問卷的 window.SURVEY.script）為鍵，取自 DM 本的角色分配表：角色性別，以及每一題玩家答哪些選項算適合。
+// question 要和問卷題目文字（或 label）一字不差；新的劇本要能配對，就在這裡加一份。
+type MatchRole = { name: string; gender: '男' | '女'; prefs: Record<string, string[]>; note?: string };
+type MatchRule = { gender: string; partner?: string; experience?: string; traits: { key: string; question: string }[]; roles: MatchRole[] };
+export const ROLE_MATCH_RULES: Record<string, MatchRule> = {
+  // DM 本：歸屬（家鄉／遠方）→ 夢境、羈絆（戀人／親人；問卷寫「家人」）→ 來信、太陽／星空 → 天空。
+  群星: {
+    gender: '您的性別是？',
+    partner: '群星計劃中有您的另一半嗎？如有請留下他/她在社群裡的名字',
+    experience: '您玩過多少劇本呢？',
+    traits: [
+      { key: '夢境', question: '你希望夢境內容是關於家鄉還是遠方' },
+      { key: '天空', question: '當你抬頭看向天空時，你希望看到的是太陽還是星空呢' },
+      { key: '來信', question: '當你拿著這封信時，你希望這是家人寄來的還是戀人寄來的呢?' },
+    ],
+    roles: [
+      { name: '張北斗', gender: '男', prefs: { 夢境: ['家鄉'], 天空: ['星空'], 來信: ['戀人', '家人'] }, note: '熱愛祖國與家庭' },
+      { name: '馬斯克', gender: '男', prefs: { 夢境: ['家鄉'], 天空: ['太陽'], 來信: ['戀人', '家人'] }, note: '中年危機大叔，愛家庭' },
+      { name: '伊萬', gender: '男', prefs: { 夢境: ['遠方'], 天空: ['太陽'], 來信: ['家人'] }, note: '鬱鬱不得志的中年人' },
+      { name: '索菲亞', gender: '女', prefs: { 夢境: ['遠方'], 天空: ['太陽'], 來信: ['戀人', '家人'] }, note: '獨立堅強的女性' },
+      { name: '達莉婭', gender: '女', prefs: { 夢境: ['遠方'], 天空: ['星空'], 來信: ['家人'] }, note: '愧疚的母親' },
+      { name: '貝斯', gender: '女', prefs: { 夢境: ['家鄉', '遠方'], 天空: ['星空'], 來信: ['戀人'] }, note: '虛無主義者（很適合戀愛腦玩家）' },
+    ],
+  },
+};
+
+const SURVEY_NAME_LABEL = /稱呼|名字|名稱|暱稱|姓名/;
+// 「男，可接受玩女角」：可以反串，但同性別的角色優先；沒寫可接受就盡量不反串（角色真的不夠才會）。
+const CROSS_PENALTY = 0.5, FORCED_CROSS_PENALTY = 10, NO_ROLE_PENALTY = 100;
+type SurveyAnswer = { id: string; fields: { label: string; value: string }[] };
+export function matchRoles(rule: MatchRule, responses: SurveyAnswer[]) {
+  const answer = (r: SurveyAnswer, label?: string) => label ? (r.fields.find(f => f.label === label)?.value ?? '').trim() : '';
+  const players = responses.map(r => {
+    const genderText = answer(r, rule.gender);
+    const gender = genderText.startsWith('男') ? '男' : genderText.startsWith('女') ? '女' : '';
+    const nameField = r.fields.find(f => SURVEY_NAME_LABEL.test(f.label) && f.label !== rule.partner);
+    return { id: r.id, name: (nameField?.value ?? '').trim(), gender, genderText, cross: /可接受|可反串|都可以|皆可/.test(genderText),
+      partner: answer(r, rule.partner), experience: answer(r, rule.experience),
+      answers: Object.fromEntries(rule.traits.map(t => [t.key, answer(r, t.question)])) as Record<string, string> };
+  });
+  const fit = (p: typeof players[number], role: MatchRole) => {
+    const checks = rule.traits.map(t => ({ key: t.key, answer: p.answers[t.key], want: role.prefs[t.key] ?? [],
+      ok: !!p.answers[t.key] && (role.prefs[t.key] ?? []).includes(p.answers[t.key]) }));
+    const crossed = !!p.gender && p.gender !== role.gender;
+    const genderNote = !crossed ? '' : p.cross ? '反串（玩家可接受）' : '性別不合（角色不夠分）';
+    const score = checks.filter(c => c.ok).length - (crossed ? (p.cross ? CROSS_PENALTY : FORCED_CROSS_PENALTY) : 0);
+    return { checks, crossed, genderNote, score };
+  };
+  // Best total over every way to give each player at most one role (bitmask DP; roles stay ≤ 12).
+  const R = rule.roles.length, full = 1 << R;
+  const score = players.map(p => rule.roles.map(role => fit(p, role).score));
+  let best = new Float64Array(full).fill(-Infinity); best[0] = 0;
+  const choice: Int8Array[] = [];
+  for (let i = 0; i < players.length; i++) {
+    const next = new Float64Array(full).fill(-Infinity), pick = new Int8Array(full).fill(-2);
+    for (let mask = 0; mask < full; mask++) {
+      if (best[mask] === -Infinity) continue;
+      const skip = best[mask] - NO_ROLE_PENALTY;
+      if (skip > next[mask]) { next[mask] = skip; pick[mask] = -1; }
+      for (let j = 0; j < R; j++) {
+        if (mask & (1 << j)) continue;
+        const to = mask | (1 << j), value = best[mask] + score[i][j];
+        if (value > next[to]) { next[to] = value; pick[to] = j; }
+      }
+    }
+    best = next; choice.push(pick);
+  }
+  let mask = 0;
+  for (let m = 1; m < full; m++) if (best[m] > best[mask]) mask = m;
+  const given: number[] = new Array(players.length).fill(-1);
+  for (let i = players.length - 1; i >= 0; i--) {
+    const j = choice[i][mask];
+    given[i] = j;
+    if (j >= 0) mask &= ~(1 << j);
+  }
+  const used = new Set(given.filter(j => j >= 0));
+  return {
+    roles: rule.roles.map(r => ({ name: r.name, gender: r.gender, note: r.note ?? '', prefs: r.prefs })),
+    traits: rule.traits.map(t => t.key),
+    assignments: players.map((p, i) => {
+      const role = given[i] >= 0 ? rule.roles[given[i]] : null;
+      const f = role ? fit(p, role) : null;
+      return { id: p.id, name: p.name, gender: p.genderText, partner: p.partner, experience: p.experience,
+        role: role?.name ?? null, checks: f?.checks ?? [], genderNote: f?.genderNote ?? '',
+        // 其他也完全適合的角色（同性別或可反串、每題都符合），店家想換人時參考。
+        alternatives: rule.roles.filter(r => r !== role).filter(r => { const x = fit(p, r); return (!x.crossed || p.cross) && x.checks.every(c => c.ok); }).map(r => r.name) };
+    }),
+    unusedRoles: rule.roles.filter((_, j) => !used.has(j)).map(r => r.name),
+  };
+}
 
 // actor null = the scheduled import (answers the website sent to the old Apps Script during the transition).
 async function importRoleSurveys(settings: Settings, actor: string | null) {
@@ -1464,6 +1561,32 @@ async function route(req: Request, path: string, settings: Settings): Promise<[n
     const { session } = await requireSession(req, settings);
     if (!session.is_admin) throw new ApiError(403, 'NOT_ADMIN');
     return [200, await importRoleSurveys(settings, session.user_id)];
+  }
+  // 場次（同一本、同一個遊玩日期）與配對：rule＝這本有沒有配對規則。
+  if (req.method === 'GET' && path === '/admin/role-surveys/sessions') {
+    const { session } = await requireSession(req, settings);
+    const script = new URL(req.url).searchParams.get('script') ?? '';
+    const data = camel(await rpc(settings, 'admin_role_survey_sessions', { p_actor: session.user_id, p_script: script })) as Record<string, unknown>;
+    return [200, { ...data, rule: Boolean(ROLE_MATCH_RULES[script]) }];
+  }
+  if (req.method === 'POST' && path === '/admin/role-surveys/match') {
+    const { session } = await requireSession(req, settings);
+    const { script, date, ids } = await readJson(req);
+    const byDate = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(date));
+    const byIds = Array.isArray(ids) && ids.length > 0 && ids.length <= 30 && ids.every(x => typeof x === 'string' && UUID.test(x));
+    if (typeof script !== 'string' || byDate === byIds) throw new ApiError(400, 'INVALID_SURVEY');
+    const responses = camel(await rpc(settings, 'admin_role_survey_pick', { p_actor: session.user_id, p_script: script,
+      p_play_date: byDate ? date : null, p_ids: byIds ? ids : null })) as SurveyAnswer[];
+    const rule = ROLE_MATCH_RULES[script];
+    return [200, { responses, match: rule && responses.length ? matchRoles(rule, responses) : null }];
+  }
+  if (req.method === 'POST' && path === '/admin/role-surveys/assign') {
+    const { session } = await requireSession(req, settings);
+    const { assignments } = await readJson(req);
+    if (!Array.isArray(assignments) || !assignments.length || assignments.length > 30
+      || !assignments.every(a => a && typeof a.id === 'string' && UUID.test(a.id) && typeof a.role === 'string')) throw new ApiError(400, 'INVALID_SURVEY');
+    return [200, await rpc(settings, 'admin_assign_role_surveys', { p_actor: session.user_id,
+      p_assignments: assignments.map(a => ({ id: a.id, role: a.role })) })];
   }
   const surveyRoute = /^\/admin\/role-surveys\/responses\/([0-9a-f-]{36})(\/delete)?$/.exec(path);
   if (req.method === 'POST' && surveyRoute && UUID.test(surveyRoute[1])) {

@@ -167,3 +167,107 @@ test('the 5-minute tick imports answers the website left in the old sheet, at mo
   await runScheduledWork(none.settings);
   assert.ok(!none.rpcs.some(r => r[0] === 'claim_scheduled_job'));
 });
+
+// ---- 配對：群星的角色分配表 ----
+const Q = { name: '您在社群裡的名字是？', gender: '您的性別是？', dream: '你希望夢境內容是關於家鄉還是遠方',
+  sky: '當你抬頭看向天空時，你希望看到的是太陽還是星空呢', letter: '當你拿著這封信時，你希望這是家人寄來的還是戀人寄來的呢?',
+  partner: '群星計劃中有您的另一半嗎？如有請留下他/她在社群裡的名字' };
+const answer = (id, name, gender, dream, sky, letter, partner = '') => ({ id, fields: [
+  { label: Q.name, value: name }, { label: Q.gender, value: gender }, { label: Q.partner, value: partner },
+  { label: Q.dream, value: dream }, { label: Q.sky, value: sky }, { label: Q.letter, value: letter }] });
+
+test('群星: every player gets the role whose 歸屬／天空／羈絆 match, men and women kept apart', async () => {
+  const { matchRoles, ROLE_MATCH_RULES } = await import('../supabase/functions/api/index.ts');
+  const result = matchRoles(ROLE_MATCH_RULES['群星'], [
+    answer('a', '阿北', '男', '家鄉', '星空', '戀人', '小貝'),
+    answer('b', '小貝', '女', '家鄉', '星空', '戀人', '阿北'),
+    answer('c', '伊伊', '男', '遠方', '太陽', '家人'),
+    answer('d', '索索', '女', '遠方', '太陽', '戀人'),
+    answer('e', '馬哥', '男', '家鄉', '太陽', '家人'),
+    answer('f', '莉莉', '女', '遠方', '星空', '家人'),
+  ]);
+  assert.deepEqual(result.assignments.map(a => [a.name, a.role]),
+    [['阿北', '張北斗'], ['小貝', '貝斯'], ['伊伊', '伊萬'], ['索索', '索菲亞'], ['馬哥', '馬斯克'], ['莉莉', '達莉婭']]);
+  assert.ok(result.assignments.every(a => a.checks.length === 3 && a.checks.every(c => c.ok) && !a.genderNote));
+  assert.equal(result.assignments[0].partner, '小貝', 'the partner answer is shown to the store');
+  assert.deepEqual(result.unusedRoles, []);
+});
+
+test('群星: a player who accepts cross-play takes the other gender only when that fits better; others are never forced unless roles run out', async () => {
+  const { matchRoles, ROLE_MATCH_RULES } = await import('../supabase/functions/api/index.ts');
+  const rule = ROLE_MATCH_RULES['群星'];
+  // 4 women, 2 men: one woman must play a man. The one who accepts it does, even though another woman matches 伊萬 better.
+  const r = matchRoles(rule, [
+    answer('a', 'A', '女', '遠方', '太陽', '家人'),
+    answer('b', 'B', '女，可接受玩男角', '家鄉', '星空', '家人'),
+    answer('c', 'C', '女', '遠方', '星空', '家人'),
+    answer('d', 'D', '女', '家鄉', '星空', '戀人'),
+    answer('e', 'E', '男', '遠方', '太陽', '家人'),
+    answer('f', 'F', '男', '家鄉', '太陽', '戀人'),
+  ]);
+  const by = Object.fromEntries(r.assignments.map(a => [a.name, a]));
+  assert.equal(by.B.role, '張北斗');
+  assert.equal(by.B.genderNote, '反串（玩家可接受）');
+  assert.deepEqual([by.A.role, by.C.role, by.D.role, by.E.role, by.F.role], ['索菲亞', '達莉婭', '貝斯', '伊萬', '馬斯克']);
+  // 5 women, nobody accepting: someone is still placed, flagged so the store can talk to them.
+  const forced = matchRoles(rule, ['a', 'b', 'c', 'd', 'e'].map(id => answer(id, id, '女', '遠方', '星空', '家人'))
+    .concat(answer('m', 'm', '男', '遠方', '太陽', '家人')));
+  assert.equal(forced.assignments.filter(a => a.genderNote === '性別不合（角色不夠分）').length, 2);
+  assert.ok(forced.assignments.every(a => a.role));
+});
+
+test('群星: fewer answers than roles leave roles open; extra answers (a duplicate) get none; blanks never crash', async () => {
+  const { matchRoles, ROLE_MATCH_RULES } = await import('../supabase/functions/api/index.ts');
+  const rule = ROLE_MATCH_RULES['群星'];
+  const few = matchRoles(rule, [answer('a', 'A', '男', '遠方', '太陽', '家人')]);
+  assert.deepEqual([few.assignments[0].role, few.unusedRoles.length], ['伊萬', 5]);
+  assert.deepEqual(few.assignments[0].alternatives, [], 'no other role fits him on every answer');
+  const many = matchRoles(rule, Array.from({ length: 7 }, (_, i) => answer(String(i), 'P' + i, i < 3 ? '男' : '女', '遠方', '星空', '家人')));
+  assert.equal(many.assignments.filter(a => !a.role).length, 1);
+  assert.equal(new Set(many.assignments.map(a => a.role).filter(Boolean)).size, 6, 'no role is given twice');
+  const blank = matchRoles(rule, [{ id: 'x', fields: [{ label: 'other', value: '1' }] }]);
+  assert.ok(blank.assignments[0].role);
+  assert.equal(blank.assignments[0].name, '');
+});
+
+test('store pages: sessions say whether a script can be matched; match picks by date or ticked answers; assign applies all at once', async () => {
+  const picked = [answer('11111111-1111-4111-8111-111111111111', '阿北', '男', '家鄉', '星空', '戀人')];
+  const b = backend({ answer: name => name === 'admin_role_survey_sessions'
+    ? Response.json({ players: 6, sessions: [{ play_date: '2026-10-25', total: 6, unassigned: 6 }] })
+    : name === 'admin_role_survey_pick' ? Response.json(picked) : name === 'admin_assign_role_surveys' ? Response.json({ updated: 1 }) : undefined });
+  const s = await (await call(b.settings, '/admin/role-surveys/sessions?script=%E7%BE%A4%E6%98%9F')).json();
+  assert.deepEqual(s, { players: 6, sessions: [{ playDate: '2026-10-25', total: 6, unassigned: 6 }], rule: true });
+  assert.equal((await (await call(b.settings, '/admin/role-surveys/sessions?script=x')).json()).rule, false);
+
+  const m = await (await call(b.settings, '/admin/role-surveys/match', { method: 'POST', body: JSON.stringify({ script: '群星', date: '2026-10-25' }) })).json();
+  assert.deepEqual(b.rpcs.filter(r => r[0] === 'admin_role_survey_pick').at(-1)[1],
+    { p_actor: 'owner', p_script: '群星', p_play_date: '2026-10-25', p_ids: null });
+  assert.equal(m.match.assignments[0].role, '張北斗');
+  const ids = [picked[0].id];
+  await call(b.settings, '/admin/role-surveys/match', { method: 'POST', body: JSON.stringify({ script: '群星', ids }) });
+  assert.deepEqual(b.rpcs.filter(r => r[0] === 'admin_role_survey_pick').at(-1)[1], { p_actor: 'owner', p_script: '群星', p_play_date: null, p_ids: ids });
+  const none = await (await call(b.settings, '/admin/role-surveys/match', { method: 'POST', body: JSON.stringify({ script: '王座', ids }) })).json();
+  assert.equal(none.match, null, 'a script without a rule still lists the answers');
+  for (const body of [{ script: '群星' }, { script: '群星', date: '2026-10-25', ids }, { script: '群星', date: '10/25' },
+    { script: '群星', ids: ['x'] }, { script: '群星', ids: Array(31).fill(ids[0]) }]) {
+    assert.equal((await call(b.settings, '/admin/role-surveys/match', { method: 'POST', body: JSON.stringify(body) })).status, 400, JSON.stringify(body));
+  }
+
+  const ok = await call(b.settings, '/admin/role-surveys/assign', { method: 'POST',
+    body: JSON.stringify({ assignments: [{ id: ids[0], role: '張北斗', extra: 1 }] }) });
+  assert.deepEqual(await ok.json(), { updated: 1 });
+  assert.deepEqual(b.rpcs.filter(r => r[0] === 'admin_assign_role_surveys').at(-1)[1], { p_actor: 'owner', p_assignments: [{ id: ids[0], role: '張北斗' }] });
+  for (const body of [{}, { assignments: [] }, { assignments: [{ id: 'x', role: 'a' }] }, { assignments: [{ id: ids[0] }] }]) {
+    assert.equal((await call(b.settings, '/admin/role-surveys/assign', { method: 'POST', body: JSON.stringify(body) })).status, 400);
+  }
+});
+
+test('a full session is announced to the store from the store OA with a link to the suggestion', async () => {
+  const { notificationText, ADMIN_NOTIFICATION_KINDS } = await import('../supabase/functions/api/index.ts');
+  const text = notificationText({ kind: 'role_survey_complete', script: '群星', play_date: '2026-10-25', count: 6, players: 6 });
+  assert.equal(text, '【角色問卷收齊】《群星》10/25（週日）場次的問卷收到 6 份了（6 人本）\n'
+    + `看配對建議：https://liff.line.me/2011840025-6cuU9x8P?view=surveys&script=${encodeURIComponent('群星')}&date=2026-10-25`);
+  assert.ok(text.includes('看配對建議'));
+  assert.ok(notificationText({ kind: 'role_survey_complete', script: '王座', play_date: '2026-10-25', count: 7, players: 7 }).includes('看回覆'));
+  assert.ok(ADMIN_NOTIFICATION_KINDS.has('role_survey_complete'));
+});

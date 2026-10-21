@@ -184,12 +184,9 @@
 5. 觀察一段時間無誤 → 第 4 階段。
 
 ### 第 4 階段步驟（關閉 GAS）
-角色問卷：
-1. starfishlarp `survey.js` 清空 `LEGACY_ENDPOINT`，12 份問卷頁進 `survey.js?v=`。
-2. 等 GitHub Pages 與瀏覽器快取過期（約 10 分鐘），再留一天給還開著舊頁面的人。
-3. LINE 店家後台「角色問卷回覆」按一次「匯入舊回覆」（或等下一次 6 小時自動匯入）。
-4. 停用 `GoogleAppsScript_角色問卷.gs` 的網頁部署；從 api 移除自動匯入；從 starfishlarp 刪除該 .gs；
-   店家可移除總表對服務帳戶的共用，總表留作唯讀備份。
+角色問卷：**取消，不關**（2026-10-21 店家要求舊的「角色問卷總表」照舊能看）。
+網站每份回覆都同時送預約系統與 `GoogleAppsScript_角色問卷.gs`（`survey.js` 的 `LEGACY_ENDPOINT`，帶「送出編號」）；
+6 小時自動匯入照舊，靠送出編號略過重複。不要清空 `LEGACY_ENDPOINT`、不要停用這支 Apps Script、不要移除自動匯入。
 
 玩本記錄：
 1. 網站讀寫全部改走 Supabase 並觀察一段時間、對帳一致。

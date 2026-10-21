@@ -59,7 +59,7 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 | Google 服務帳戶 | `starfish-freebusy@larpyoutube.iam.gserviceaccount.com`（專案 `larpyoutube`） |
 | 玩本記錄 Apps Script | `https://script.google.com/macros/s/AKfycbz2jFZhU9tSm-WvZaC_lLSovG2zy3Up2-HNlK6sO6xyfnFDQu8DxRUIKmhDBg1AHMDsDg/exec` |
 | 玩本記錄試算表 | `1hjdPJQo5Z6nVICZsvljihSXoZAJ32DpiAEQikCaog-8` |
-| 角色問卷總表（舊，過渡期備援） | `1NrmyrSq3UqoU0m-2JWVJsvF18VKwW18n-P-w-iyYb5M`；Apps Script `…/AKfycbx5Fyc528P0kL6sdNAdNcYElbQj8xhJb7dkIm0khATVeRizzouNcI04MGhcrmBUxiHM/exec`（starfishlarp `survey.js` 的 `LEGACY_ENDPOINT`，清空前不可停用） |
+| 角色問卷總表（舊，2026-10-21 起每份都另送一份，保留） | `1NrmyrSq3UqoU0m-2JWVJsvF18VKwW18n-P-w-iyYb5M`；Apps Script `…/AKfycbx5Fyc528P0kL6sdNAdNcYElbQj8xhJb7dkIm0khATVeRizzouNcI04MGhcrmBUxiHM/exec`（starfishlarp `survey.js` 的 `LEGACY_ENDPOINT`，清空前不可停用） |
 | 角色問卷網站送出 | starfishlarp `survey.js` → api `POST /public/role-survey`；問卷頁 `問卷/<劇本>.html`，`script` 必須＝reviewKey |
 | 管理員 OA | 待店家提供 ID（須與玩家 OA 同一個 Provider 2005594335） |
 | 圖文選單 | 新玩家 `richmenu-c3b5b2e5a18ccb4f3f35cdadb858d217`（預設）；老玩家 `richmenu-2f2565347ba9fde8a7184f4a53a38072`（2026-10-06 第二次重建） |
@@ -196,7 +196,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 ### LIFF 頁
 - `web/liff/index.html` 單頁應用，所有輸出經 `esc()`。push main 即由 GitHub Actions 發布。
 - `tests/liff.test.mjs` 檢查頁面腳本可解析、只載入 LINE SDK 與 config.js、每個圖文選單 `?view=` 都有對應路由。
-- Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings|survey|surveys`（bindings、surveys 只限店家）、`?game=<scripts.js id>`、`?invite=`、`?group=`。
+- Rich Menu 網址參數：`?view=open|create|history|guide|veteran|card|bindings|survey|surveys`（bindings、surveys 只限店家；
+  `?view=surveys&script=<劇本>&date=<YYYY-MM-DD>` 直接開那一場的配對建議，角色問卷收齊通知用）、`?game=<scripts.js id>`、`?invite=`、`?group=`。
 
 ### 圖文選單
 - 圖片：`python scripts/richmenu_image.py web/liff <starfishlarp>/pwa/icon-512.png [new member store]` → `richmenu-new.jpg`、`richmenu-member.jpg`、
@@ -227,7 +228,8 @@ Postgres pg_cron（每 5 分鐘 `starfish-tick`）──pg_net──► api POST
 `GET /admin/events/:id/participants`、`GET /admin/report`、`GET /admin/google-account`、`GET /admin/line-health`、
 `POST /admin/games/sync`、`GET /admin/bindings`、`POST /admin/bindings/:userId/approve|reject|bonus`、
 `GET /admin/role-surveys`、`GET /admin/role-surveys/responses?script=&before=`、`POST /admin/role-surveys/responses/:id[/delete]`、
-`POST /admin/role-surveys/import`（服務帳戶唯讀讀「角色問卷總表」）。
+`POST /admin/role-surveys/import`（服務帳戶唯讀讀「角色問卷總表」）、
+`GET /admin/role-surveys/sessions?script=`、`POST /admin/role-surveys/match`（`{script, date}` 或 `{script, ids}`）、`POST /admin/role-surveys/assign`（`{assignments:[{id, role}]}`）。
 
 維護（`X-Sync-Secret`）：`POST /hooks/catalog-sync`、`/hooks/richmenu-setup`、`/hooks/selftest-race`。
 
