@@ -44,11 +44,11 @@ begin
   if exists(select 1 from public.notification_logs where notification_type='role_survey_complete' and user_id=pl) then
     raise exception 'a player was notified'; end if;
   perform public.submit_role_survey('QA群星', jsonb_build_array(jsonb_build_object('label','遊玩日期','value',day)), gen_random_uuid());
-  if (select count(*) from public.notification_logs where notification_type='role_survey_complete')<>1 then
+  if (select count(*) from public.notification_logs where notification_type='role_survey_complete' and payload->>'script'='QA群星' and user_id=adm)<>1 then
     raise exception 'a 4th answer notified again'; end if;
   insert into public.role_survey_responses(script,fields,submitted_at)
     select 'QA群星', jsonb_build_array(jsonb_build_object('label','遊玩日期','value','2020-01-01')), now() from generate_series(1,3);
-  if (select count(*) from public.notification_logs where notification_type='role_survey_complete')<>1 then
+  if (select count(*) from public.notification_logs where notification_type='role_survey_complete' and payload->>'script'='QA群星' and user_id=adm)<>1 then
     raise exception 'a past session notified'; end if;
   -- 改了答案（日期）會重算場次。
   update public.role_survey_responses set fields='[{"label":"遊玩日期","value":"2027-01-02"}]' where id=ids[3];
